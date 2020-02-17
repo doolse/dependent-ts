@@ -1,0 +1,40 @@
+proveNode needs flags (names only for example)
+
+object proofs
+- any number of key/value proofs
+- numbers only - max size
+- strings or numbers only
+- function arguments (ordered)
+- duplicate key policy (merge / disallowed / replace)
+
+
+
+func something()
+{
+    args: object
+    let x = args.x 
+    let y = args.y
+    let f = args.f
+    let o_0 = x.hello
+    let o_1 = x.something
+    let o = f(o_0, o_1)
+    in add(o, y)
+}
+
+x {expr, any}
+y {expr, any}
+f {expr, any}
+o {expr, any}
+
+TypedNodes can either be - 
+a primitive
+a reference to a symbol 
+a key reference to a symbol
+a function application - consisting of only references & prims (no function calls) 
+
+add: func, args: [ref "o", ref "y"]
+
+object
+All keys must be a refinement of the key type.
+All values must be a refinement of the value type.
+If no key match, add a new field.
