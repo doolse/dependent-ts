@@ -12,44 +12,78 @@ import {
   reduceAll,
   getNodeAndRefine,
   Refinements,
+  toJS,
   numberType,
   mkValuePrim,
   isNumber,
   letExpr,
   NodeGraph,
   nodeFromExpr,
-  emptyObject
+  applyRef,
+  ref,
+  appendField,
+  emptyObject,
+  toJSPrimitive,
+  Expr,
+  JSContext,
+  reduce,
+  refinementFromNode,
+  cnst
 } from "./types";
+import { newArg, expr2string, JSExpr } from "./javascript";
 
-const lookupFunc: NativeExpr = {
+const fieldRef: NativeExpr = {
   tag: "native",
   node: (g, s) => {
     return addNode(g, {
       type: {
         type: "function",
-        name: "lookupArg",
+        name: "fieldRef",
         exec(graph, result, args) {
+          const argRefine = reduceKeys(graph, args);
+          if (argRefine.length > 0) {
+            return argRefine;
+          }
           const obj = findField(graph, args, 1);
           const a = findField(graph, args, 0);
           if (a && obj) {
+            const vals = reduceAll(graph, obj, a);
+            if (vals.length > 0) {
+              return vals;
+            }
             const key = getNode(graph, obj);
-            console.log("Looking up args", nodeToString(graph, a));
             if (isStringType(key.type) && key.type.value !== undefined) {
               const field = findField(graph, a, key.type.value);
               if (field === null) {
-                console.log("Didn't find the field");
                 return [
                   {
                     ref: a,
                     refinement: { type: singleField(graph, obj, result) }
                   }
                 ];
-              } else return unify(graph, result, field);
+              } else {
+                return unify(graph, result, field);
+              }
             }
-          } else {
-            console.log("Didn't find any args", nodeToString(graph, args));
           }
-          return [];
+          throw new Error("Missing args");
+        },
+        toJSExpr(graph, result, args, jsContext): [JSContext, JSExpr] {
+          const obj = findField(graph, args, 1);
+          const a = findField(graph, args, 0);
+          const key = getNode(graph, obj!);
+          const [nextContext, objJS] = toJS(graph, a!, jsContext);
+          if (isStringType(key.type) && key.type.value !== undefined) {
+            return [
+              nextContext,
+              {
+                type: "fieldRef",
+                left: objJS,
+                right: { type: "symbol", name: key.type.value }
+              }
+            ];
+          }
+          throw new Error("Can't get here");
         }
       }
     });
@@ -76,7 +110,6 @@ const addFunc: NativeExpr = {
               if (vals.length > 0) {
                 return vals;
               }
-              console.log("adding", arg1, arg2);
               const refinements: Refinements = [];
               const arg1N = getNodeAndRefine(
                 refinements,
@@ -111,23 +144,52 @@ const addFunc: NativeExpr = {
             }
           }
           return [];
+        },
+        toJSExpr(graph, result, args, funcDef) {
+          const arg1 = findField(graph, args, 0);
+          const arg2 = findField(graph, args, 1);
+          const [f1, left] = toJS(graph, arg1!, funcDef);
+          const [f2, right] = toJS(graph, arg2!, f1);
+          return [f2, { type: "infix", op: "+", left, right }];
         }
       }
     })
 };
 
-var graph: NodeGraph = [{ type: emptyObject([]) }];
+export function globals(expr: Expr): Expr {
+  return letExpr("add", addFunc, letExpr("fieldRef", fieldRef, expr));
+}
 
-const globals = nodeFromExpr(
-  graph,
-  0,
-  letExpr(
-    "add",
-    addFunc,
-    letExpr(
-      "lookupArg",
-      lookupFunc,
-      letExpr("main", appType, { tag: "native", node: (g, s) => s })
-    )
-  )
-);
+export function argName(name: string, expr: Expr): NativeExpr {
+  return {
+    tag: "native",
+    node: (g, s) => nodeFromExpr(g, s, expr)
+  };
+}
+
+export function lookupArg(name: string): Expr {
+  return applyRef("fieldRef", ref("args"), cnst(name));
+}
+
+export function expressionFunction(name: string, expr: Expr): NativeExpr {
+  return {
+    tag: "native",
+    node: (g, s) =>
+      addNode(g, {
+        type: {
+          type: "function",
+          name,
+          exec(execGraph, result, args) {
+            const symbols = appendField(execGraph, s, "args", args);
+            const funcExpr = nodeFromExpr(execGraph, symbols, expr);
+            var refinements = reduce(execGraph, funcExpr);
+            refinements.push({
+              ref: result,
+              refinement: refinementFromNode(execGraph, funcExpr, true)
+            });
+            return refinements;
+          }
+        }
+      })
+  };
+}

@@ -12,6 +12,12 @@ export interface JSInfixOp {
   right: JSExpr;
 }
 
+export interface JSFieldRef {
+  type: "fieldRef";
+  left: JSExpr;
+  right: JSExpr;
+}
+
 export interface JSSymbol {
   type: "symbol";
   name: string;
@@ -37,6 +43,7 @@ export type JSExpr =
   | JSPrimExpr
   | JSInfixOp
   | JSSymbol
+  | JSFieldRef
   | JSUndefined
   | JSFuncExpr;
 export type JSStatement = JSReturn | JSLet;
@@ -51,19 +58,30 @@ export function emptyFunction(): JSFunctionDef {
   return { name: "", args: [], body: [] };
 }
 
+export function appendReturn(
+  funcDef: JSFunctionDef,
+  ret: JSExpr
+): JSFunctionDef {
+  return {
+    ...funcDef,
+    body: funcDef.body.concat([{ type: "return", expr: ret }])
+  };
+}
+
 export function expr2string(t: JSExpr): string {
   switch (t.type) {
     case "infix":
       return `${expr2string(t.left)} ${t.op} ${expr2string(t.right)}`;
+    case "fieldRef":
+      return `${expr2string(t.left)}.${expr2string(t.right)}`;
     case "prim":
       return t.value.toString();
     case "symbol":
       return t.name;
     case "func":
       return func2string(t.definition);
-    default:
-      console.error("Can't convert", t);
-      throw `Can't convert ${t.type}`;
+    case "undefined":
+      return "undefined";
   }
 }
 

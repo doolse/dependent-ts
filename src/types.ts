@@ -6,7 +6,8 @@ import {
   func2string,
   JSStatement,
   emptyFunction,
-  expr2string
+  expr2string,
+  appendReturn
 } from "./javascript";
 
 export type Expr =
@@ -49,8 +50,6 @@ export interface ApplicationExpr {
 export interface ObjectExpr {
   tag: "object";
   entries: KeyValueExpr[];
-  keyType: Expr;
-  valueType: Expr;
 }
 
 export interface KeyValueExpr {
@@ -76,8 +75,6 @@ export function applyRef(name: string, ...args: Expr[]): ApplicationExpr {
 export function arrayExpr(...entries: Expr[]): ObjectExpr {
   return {
     tag: "object",
-    keyType: { tag: "primType", name: "number" },
-    valueType: { tag: "primType", name: "any" },
     entries: entries.map((value, i) => ({
       tag: "keyvalue",
       key: cnst(i),
@@ -89,8 +86,6 @@ export function arrayExpr(...entries: Expr[]): ObjectExpr {
 export function objectExpr(entries: { [key: string]: Expr }): ObjectExpr {
   return {
     tag: "object",
-    keyType: { tag: "primType", name: "string" },
-    valueType: { tag: "primType", name: "any" },
     entries: Object.entries(entries).map(([key, value]) => ({
       tag: "keyvalue",
       key: cnst(key),
@@ -120,7 +115,7 @@ export type NodeRef = number;
 
 export interface TypedNode {
   type: Type;
-  annotation?: ObjectType;
+  annotation?: NodeRef;
   apply?: [NodeRef, NodeRef];
 }
 
@@ -164,8 +159,6 @@ export interface BoolType {
 
 export interface ObjectType {
   type: "object";
-  keyType: NodeRef;
-  valueType: NodeRef;
   keyValues: NodeTuple[];
 }
 
@@ -177,7 +170,13 @@ export interface UnionType {
 export interface FunctionType {
   type: "function";
   name: string;
-  exec(symbols: NodeGraph, result: NodeRef, args: NodeRef): Refinements;
+  exec(graph: NodeGraph, result: NodeRef, args: NodeRef): Refinements;
+  toJSExpr?(
+    graph: NodeGraph,
+    result: NodeRef,
+    args: NodeRef,
+    funcDef: JSContext
+  ): [JSContext, JSExpr];
 }
 
 export type PrimType = StringType | NumberType | BoolType;
@@ -199,7 +198,7 @@ export type ObjectRefinement = {
 
 export type Refinement = {
   type: TypeRefinement;
-  annotation?: ObjectRefinement;
+  annotation?: boolean;
   apply?: [NodeRef, NodeRef];
 };
 
@@ -208,9 +207,12 @@ export type Refinements = { ref: NodeRef; refinement: Refinement }[];
 export function emptyObject(graph: NodeGraph): ObjectType {
   return {
     type: "object",
-    keyValues: [],
-    keyType: addNode(graph, { type: anyType }),
-    valueType: addNode(graph, { type: anyType })
+    keyValues: [
+      {
+        key: addNode(graph, { type: anyType }),
+        value: addNode(graph, { type: anyType })
+      }
+    ]
   };
 }
 
@@ -287,12 +289,8 @@ export function typedRefinementToType(
 
 export function refinementToNode(graph: NodeGraph, ref: Refinement): NodeRef {
   const mainType = typedRefinementToType(graph, ref.type);
-  const annType = ref.annotation
-    ? objectFromRefinement(graph, ref.annotation)
-    : undefined;
   return addNode(graph, {
     type: mainType,
-    annotation: annType,
     apply: ref.apply
   });
 }
@@ -309,9 +307,7 @@ export function objectFromRefinement(
   });
   return {
     type: "object",
-    keyValues: fields,
-    keyType: addNode(graph, { type: untyped }),
-    valueType: addNode(graph, { type: untyped })
+    keyValues: fields
   };
 }
 
@@ -320,20 +316,25 @@ export function refineNode(
   ref: NodeRef,
   refinement: Refinement
 ): void {
-  const n = getNode(graph, ref);
+  var n = getNode(graph, ref);
+  if (refinement.annotation) {
+    if (n.annotation !== undefined)
+      return refineNode(graph, n.annotation, {
+        ...refinement,
+        annotation: false
+      });
+    const newAnn = refinementToNode(graph, refinement);
+    graph[ref] = {
+      ...n,
+      annotation: newAnn
+    };
+    return;
+  }
   const mainType = n.type;
   const mainRefine = refineType(graph, mainType, refinement.type);
-  var ann = n.annotation;
-  if (refinement.annotation) {
-    if (ann) {
-      ann = refineObject(graph, ann, refinement.annotation);
-    } else {
-      ann = objectFromRefinement(graph, refinement.annotation);
-    }
-  }
   const newNode: TypedNode = {
     type: mainRefine,
-    annotation: ann,
+    annotation: n.annotation,
     apply: refinement.apply ?? n.apply
   };
   graph[ref] = newNode;
@@ -373,14 +374,30 @@ export function refinementFromNode(
 ): Refinement {
   const n = getNode(graph, ref);
   const mainRefine = refinementFromType(graph, n.type);
-  const annRef = n.annotation
-    ? refineFromObjectType(graph, n.annotation)
-    : undefined;
   return {
     type: mainRefine,
-    annotation: annRef,
     apply: includeApply ? n.apply : undefined
   };
+}
+
+type RefineValue = { node: NodeRef; refine: Refinement };
+
+type FieldRefinementChoice = "disallow" | RefineValue[] | null;
+
+export function refineField(
+  graph: NodeGraph,
+  rf: FieldRefinement,
+  field: NodeTuple
+): FieldRefinementChoice {
+  const k = getNode(graph, field.key);
+  if (
+    isPrim(k.type) &&
+    isPrim(rf.key.type) &&
+    k.type.value === rf.key.type.value
+  ) {
+    return [{ node: field.value, refine: rf.value }];
+  }
+  return null;
 }
 
 export function refineObject(
@@ -388,16 +405,34 @@ export function refineObject(
   obj: ObjectType,
   refine: ObjectRefinement
 ): ObjectType {
-  const fields = obj.keyValues;
-  const newKV = fields.concat(
-    refine.fields.map(fr => {
+  return refine.fields.reduce((latestObj, field) => {
+    const fieldChoice = latestObj.keyValues.reduce((choice, cur) => {
+      if (choice === "disallow") {
+        return choice;
+      }
+      const next = refineField(graph, field, cur);
+      if (next === "disallow") {
+        return next;
+      }
+      if (next === null) {
+        return choice;
+      }
+      return choice ? choice.concat(next) : next;
+    }, null as FieldRefinementChoice);
+    if (fieldChoice == null) {
+      const key = refinementToNode(graph, field.key);
+      const value = refinementToNode(graph, field.value);
       return {
-        key: refinementToNode(graph, fr.key),
-        value: refinementToNode(graph, fr.value)
+        ...latestObj,
+        keyValues: latestObj.keyValues.concat([{ key, value }])
       };
-    })
-  );
-  return { ...obj, keyValues: newKV };
+    } else if (fieldChoice === "disallow") {
+      throw new Error("Not allowed to ");
+    } else {
+      fieldChoice.forEach(c => refineNode(graph, c.node, c.refine));
+      return latestObj;
+    }
+  }, obj);
 }
 
 export function refinePrimitive(
@@ -416,6 +451,7 @@ export function refinePrimitive(
       thisType.value,
       refinement.value
     );
+    throw new Error("Type error");
   }
   return thisType;
 }
@@ -471,16 +507,16 @@ export function nodeNeedsRefining(
 ): boolean {
   const n = getNode(graph, from);
   const o = getNode(graph, to);
-  if (needsRefining(n.type, o.type)) {
+  if (needsRefining(graph, n.type, o.type)) {
     return true;
   }
   if (n.annotation && o.annotation) {
-    return needsRefining(n.annotation, o.annotation);
+    return nodeNeedsRefining(graph, n.annotation, o.annotation);
   }
-  return o.annotation != null;
+  return o.annotation !== undefined;
 }
 
-export function needsRefining(t: Type, ot: Type): boolean {
+export function needsRefining(graph: NodeGraph, t: Type, ot: Type): boolean {
   if (isUntyped(t)) {
     return !isUntyped(ot);
   }
@@ -490,7 +526,28 @@ export function needsRefining(t: Type, ot: Type): boolean {
   if (isPrim(t) && isPrim(ot)) {
     return t.value !== ot.value && ot.value !== undefined;
   }
-  return false;
+  if (isObjectType(t) && isObjectType(ot)) {
+    return objectNeedsRefining(graph, t, ot);
+  }
+  return true;
+}
+
+export function objectNeedsRefining(
+  graph: NodeGraph,
+  obj: ObjectType,
+  other: ObjectType
+): boolean {
+  function fieldNeedsRefine(rf: NodeTuple, field: NodeTuple): boolean {
+    const k1 = getNode(graph, field.key);
+    const k2 = getNode(graph, rf.key);
+    if (isPrim(k1.type) && isPrim(k2.type) && k1.type.value === k2.type.value) {
+      return nodeNeedsRefining(graph, field.value, rf.value);
+    }
+    return false;
+  }
+  return other.keyValues.some(okv =>
+    obj.keyValues.some(tkv => fieldNeedsRefine(okv, tkv))
+  );
 }
 
 export function getNodeAndRefine(
@@ -500,7 +557,7 @@ export function getNodeAndRefine(
   t: Type
 ): TypedNode {
   const n = getNode(graph, ref);
-  if (needsRefining(n.type, t)) {
+  if (needsRefining(graph, n.type, t)) {
     refinements.push({
       ref,
       refinement: { type: refinementFromType(graph, t) }
@@ -527,8 +584,8 @@ export function appendField(
       }
     });
   } else {
-    console.log("It's not an object");
-    return objRef;
+    console.log("It's not an object", obj);
+    throw new Error("It's not an object");
   }
 }
 
@@ -570,22 +627,28 @@ export function primEquals(t: Type, v: string | number | boolean) {
   return false;
 }
 
+export function matchField(
+  graph: NodeGraph,
+  obj: NodeRef,
+  f: (kv: NodeTuple) => boolean
+): NodeTuple | undefined {
+  const objNode = getNode(graph, obj);
+  if (isObjectType(objNode.type)) {
+    return objNode.type.keyValues.find(f);
+  }
+  return undefined;
+}
+
 export function findField(
   graph: NodeGraph,
   obj: NodeRef,
   key: string | number | boolean
 ): NodeRef | null {
-  const objNode = getNode(graph, obj);
-  if (isObjectType(objNode.type)) {
-    const v = objNode.type.keyValues.find(nt => {
-      const keyType = graph[nt.key].type;
-      return primEquals(keyType, key);
-    });
-    if (v) {
-      return v.value;
-    }
-  }
-  return null;
+  const field = matchField(graph, obj, kv => {
+    const keyType = graph[kv.key].type;
+    return primEquals(keyType, key);
+  });
+  return field ? field.value : null;
 }
 
 export function addNode(graph: NodeGraph, type: TypedNode): NodeRef {
@@ -615,15 +678,13 @@ export function nodeFromExpr(
       }
       return addNode(graph, { type });
     case "object":
-      const keyType = nodeFromExpr(graph, symbols, expr.keyType);
-      const valueType = nodeFromExpr(graph, symbols, expr.valueType);
       const keyValues = expr.entries.map(kv => {
         const key = nodeFromExpr(graph, symbols, kv.key);
         const value = nodeFromExpr(graph, symbols, kv.value);
         return { key, value };
       });
       return addNode(graph, {
-        type: { type: "object", keyValues, keyType, valueType }
+        type: { type: "object", keyValues }
       });
     case "native":
       return expr.node(graph, symbols);
@@ -665,7 +726,7 @@ export function reduce(graph: NodeGraph, ref: NodeRef): Refinements {
 
 export function nodeToString(graph: NodeGraph, node: NodeRef): string {
   var n = getNode(graph, node);
-  var withoutApply = typeToString(graph, n.type);
+  var withoutApply = node + "-" + typeToString(graph, n.type);
   if (n.apply) {
     return withoutApply + "[" + n.apply[0] + ", " + n.apply[1] + "]";
   }
@@ -699,36 +760,45 @@ export function typeToString(graph: NodeGraph, type: Type): string {
   }
 }
 
-export function argName(name: string, expr: Expr): NativeExpr {
-  return {
-    tag: "native",
-    node: (g, s) => nodeFromExpr(g, s, expr)
-  };
+export interface JSContext {
+  funcDef: JSFunctionDef;
+  exprs: { [n: number]: JSExpr };
 }
 
-export function lookupArg(name: string): Expr {
-  return applyRef("lookupArg", ref("args"), cnst(name));
+export function toJSPrimitive(graph: NodeGraph, type: Type): JSExpr | null {
+  if (isPrim(type) && type.value) {
+    return { type: "prim", value: type.value };
+  }
+  return null;
 }
 
-export function expressionFunction(name: string, expr: Expr): NativeExpr {
-  return {
-    tag: "native",
-    node: (g, s) =>
-      addNode(g, {
-        type: {
-          type: "function",
-          name,
-          exec(execGraph, result, args) {
-            const symbols = appendField(execGraph, s, "args", args);
-            const funcExpr = nodeFromExpr(execGraph, symbols, expr);
-            var refinements = reduce(execGraph, funcExpr);
-            refinements.push({
-              ref: result,
-              refinement: refinementFromNode(execGraph, funcExpr, true)
-            });
-            return refinements;
-          }
-        }
-      })
-  };
+export function toJS(
+  graph: NodeGraph,
+  ref: NodeRef,
+  jsContext: JSContext
+): [JSContext, JSExpr] {
+  const already = jsContext.exprs[ref];
+  if (already) {
+    return [jsContext, already];
+  }
+  const n = getNode(graph, ref);
+  const ret = toJSPrimitive(graph, n.type);
+  if (ret) {
+    return [jsContext, ret];
+  }
+  if (n.apply) {
+    const func = getNode(graph, n.apply[0]);
+    if (isFunctionType(func.type)) {
+      if (func.type.toJSExpr) {
+        return func.type.toJSExpr(graph, ref, n.apply[1], jsContext);
+      } else {
+        console.log("No JS def for func", func);
+        throw new Error("No JS def for func");
+      }
+    } else {
+      throw new Error("Not a function when genning JS");
+    }
+  }
+  console.log("Can't generate any JS for", nodeToString(graph, ref));
+  return [jsContext, { type: "undefined" }];
 }
