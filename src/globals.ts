@@ -28,7 +28,8 @@ import {
   JSContext,
   reduce,
   refinementFromNode,
-  cnst
+  cnst,
+  isFlagSet
 } from "./types";
 import { newArg, expr2string, JSExpr } from "./javascript";
 
@@ -58,7 +59,7 @@ const fieldRef: NativeExpr = {
                 return [
                   {
                     ref: a,
-                    refinement: { type: singleField(graph, obj, result) }
+                    refinement: { refine: singleField(graph, obj, result) }
                   }
                 ];
               } else {
@@ -72,14 +73,18 @@ const fieldRef: NativeExpr = {
           const obj = findField(graph, args, 1);
           const a = findField(graph, args, 0);
           const key = getNode(graph, obj!);
-          const [nextContext, objJS] = toJS(graph, a!, jsContext);
           if (isStringType(key.type) && key.type.value !== undefined) {
+            const fieldName: JSExpr = { type: "symbol", name: key.type.value };
+            if (isFlagSet(graph, a!, "inScope")) {
+              return [jsContext, fieldName];
+            }
+            const [nextContext, objJS] = toJS(graph, a!, jsContext);
             return [
               nextContext,
               {
                 type: "fieldRef",
                 left: objJS,
-                right: { type: "symbol", name: key.type.value }
+                right: fieldName
               }
             ];
           }

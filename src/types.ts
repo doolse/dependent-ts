@@ -1,14 +1,4 @@
-import * as util from "util";
-import {
-  JSExpr,
-  JSFunctionDef,
-  newArg,
-  func2string,
-  JSStatement,
-  emptyFunction,
-  expr2string,
-  appendReturn
-} from "./javascript";
+import { JSExpr, JSFunctionDef, newArg } from "./javascript";
 
 export type Expr =
   | PrimitiveExpr
@@ -197,24 +187,17 @@ export type ObjectRefinement = {
 };
 
 export type Refinement = {
-  type: TypeRefinement;
+  refine: TypeRefinement;
   annotation?: boolean;
   apply?: [NodeRef, NodeRef];
 };
 
 export type Refinements = { ref: NodeRef; refinement: Refinement }[];
 
-export function emptyObject(graph: NodeGraph): ObjectType {
-  return {
-    type: "object",
-    keyValues: [
-      {
-        key: addNode(graph, { type: anyType }),
-        value: addNode(graph, { type: anyType })
-      }
-    ]
-  };
-}
+export const emptyObject: ObjectType = {
+  type: "object",
+  keyValues: []
+};
 
 export function singleField(
   graph: NodeGraph,
@@ -254,6 +237,17 @@ export function isStringType(t: Type): t is StringType {
   return t.type === "string";
 }
 
+export function getStringValue(
+  graph: NodeGraph,
+  ref: NodeRef
+): string | undefined {
+  const n = getNode(graph, ref);
+  if (isStringType(n.type)) {
+    return n.type.value;
+  }
+  return undefined;
+}
+
 export function isAnyType(t: Type): boolean {
   return t.type === "any";
 }
@@ -288,7 +282,7 @@ export function typedRefinementToType(
 }
 
 export function refinementToNode(graph: NodeGraph, ref: Refinement): NodeRef {
-  const mainType = typedRefinementToType(graph, ref.type);
+  const mainType = typedRefinementToType(graph, ref.refine);
   return addNode(graph, {
     type: mainType,
     apply: ref.apply
@@ -331,7 +325,7 @@ export function refineNode(
     return;
   }
   const mainType = n.type;
-  const mainRefine = refineType(graph, mainType, refinement.type);
+  const mainRefine = refineType(graph, mainType, refinement.refine);
   const newNode: TypedNode = {
     type: mainRefine,
     annotation: n.annotation,
@@ -375,7 +369,7 @@ export function refinementFromNode(
   const n = getNode(graph, ref);
   const mainRefine = refinementFromType(graph, n.type);
   return {
-    type: mainRefine,
+    refine: mainRefine,
     apply: includeApply ? n.apply : undefined
   };
 }
@@ -392,8 +386,8 @@ export function refineField(
   const k = getNode(graph, field.key);
   if (
     isPrim(k.type) &&
-    isPrim(rf.key.type) &&
-    k.type.value === rf.key.type.value
+    isPrim(rf.key.refine) &&
+    k.type.value === rf.key.refine.value
   ) {
     return [{ node: field.value, refine: rf.value }];
   }
@@ -560,7 +554,7 @@ export function getNodeAndRefine(
   if (needsRefining(graph, n.type, t)) {
     refinements.push({
       ref,
-      refinement: { type: refinementFromType(graph, t) }
+      refinement: { refine: refinementFromType(graph, t) }
     });
   }
   return n;
@@ -765,7 +759,7 @@ export interface JSContext {
   exprs: { [n: number]: JSExpr };
 }
 
-export function toJSPrimitive(graph: NodeGraph, type: Type): JSExpr | null {
+export function toJSPrimitive(type: Type): JSExpr | null {
   if (isPrim(type) && type.value) {
     return { type: "prim", value: type.value };
   }
@@ -782,7 +776,7 @@ export function toJS(
     return [jsContext, already];
   }
   const n = getNode(graph, ref);
-  const ret = toJSPrimitive(graph, n.type);
+  const ret = toJSPrimitive(n.type);
   if (ret) {
     return [jsContext, ret];
   }
@@ -801,4 +795,96 @@ export function toJS(
   }
   console.log("Can't generate any JS for", nodeToString(graph, ref));
   return [jsContext, { type: "undefined" }];
+}
+
+export function isFlagSet(
+  graph: NodeGraph,
+  ref: NodeRef,
+  key: string
+): boolean {
+  const n = getNode(graph, ref);
+  if (n.annotation) {
+    const f = findField(graph, n.annotation, key);
+    if (f) {
+      const flag = getNode(graph, f);
+      return Boolean(isBoolType(flag.type) && flag.type.value);
+    }
+  }
+  return false;
+}
+
+export function ensureAnnotation(graph: NodeGraph, ref: NodeRef): NodeRef {
+  const n = getNode(graph, ref);
+  if (n.annotation) {
+    return n.annotation;
+  }
+  const annotation = addNode(graph, { type: emptyObject });
+  graph[ref] = { ...n, annotation };
+  return annotation;
+}
+
+export function updateType(
+  graph: NodeGraph,
+  objRef: NodeRef,
+  f: (o: Type) => Type
+) {
+  const n = getNode(graph, objRef);
+  graph[objRef] = { ...n, type: f(n.type) };
+}
+
+export function updateObjectType(
+  graph: NodeGraph,
+  objRef: NodeRef,
+  f: (o: ObjectType) => ObjectType
+) {
+  const n = getNode(graph, objRef);
+  if (isObjectType(n.type)) {
+    graph[objRef] = { ...n, type: f(n.type) };
+  } else throw new Error("Not an object: " + nodeToString(graph, objRef));
+}
+
+export function ensureField(
+  graph: NodeGraph,
+  objRef: NodeRef,
+  key: string
+): NodeRef {
+  const field = findField(graph, objRef, key);
+  if (field) {
+    return field;
+  }
+  const kf = addNode(graph, { type: mkValuePrim(key) });
+  const value = addNode(graph, { type: untyped });
+  updateObjectType(graph, objRef, o => ({
+    ...o,
+    keyValues: o.keyValues.concat([{ key: kf, value }])
+  }));
+  return value;
+}
+
+export function setAnnotationValue(
+  graph: NodeGraph,
+  ref: NodeRef,
+  key: string,
+  val: string | boolean | number
+) {
+  const an = ensureField(graph, ensureAnnotation(graph, ref), key);
+  updateType(graph, an, e => mkValuePrim(val));
+}
+
+export function createArgs(
+  graph: NodeGraph,
+  objRef: NodeRef,
+  funcDef: JSFunctionDef
+): JSFunctionDef {
+  setAnnotationValue(graph, objRef, "inScope", true);
+  const n = getNode(graph, objRef);
+  if (isObjectType(n.type)) {
+    n.type.keyValues.forEach(({ key, value }) => {
+      const keyString = getStringValue(graph, key);
+      if (keyString) {
+        newArg(funcDef, keyString);
+      }
+    });
+  }
+  return funcDef;
 }

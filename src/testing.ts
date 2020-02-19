@@ -10,7 +10,9 @@ import {
   emptyObject,
   nodeFromExpr,
   nodeToString,
-  toJS
+  toJS,
+  getNode,
+  createArgs
 } from "./types";
 
 import { globals, expressionFunction, lookupArg, argName } from "./globals";
@@ -43,7 +45,11 @@ const appType = expressionFunction(
   applyRef(
     "add",
     applyRef("fieldRef", lookupArg("arg"), cnst("field")),
-    applyRef("fieldRef", lookupArg("arg2"), cnst("anotherField"))
+    applyRef(
+      "fieldRef",
+      applyRef("fieldRef", lookupArg("arg2"), cnst("anotherField")),
+      cnst("lastField")
+    )
   )
 );
 
@@ -56,12 +62,13 @@ const allGlobals = nodeFromExpr(
 );
 
 const runMain = nodeFromExpr(graph, allGlobals, applyRef("main"));
+const mainNode = getNode(graph, runMain);
+const argsNode = mainNode.apply![1];
 
 var iter = 1;
 var finished = false;
-while (iter < 10) {
+while (iter < 50) {
   const refinements = reduce(graph, runMain);
-  console.log(inspect(refinements, false, null, true));
   for (const k in refinements) {
     refineNode(graph, refinements[k].ref, refinements[k].refinement);
   }
@@ -73,15 +80,18 @@ while (iter < 10) {
 }
 
 if (finished) {
+  const funcDef = createArgs(graph, argsNode, emptyFunction());
   const [funcCode, ret] = toJS(graph, runMain, {
-    funcDef: emptyFunction(),
+    funcDef,
     exprs: {}
   });
   console.log(func2string(appendReturn(funcCode.funcDef, ret)));
 }
-graph.map((r, i) => console.log(nodeToString(graph, i)));
-console.log(runMain);
 if (!finished) {
+  console.log(runMain, argsNode);
+  graph.map((r, i) =>
+    console.log(nodeToString(graph, i), r.annotation ? r.annotation : "")
+  );
   console.log("Couldn't finish refining");
 }
 
