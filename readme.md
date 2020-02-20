@@ -71,3 +71,23 @@ values
 TBC!
 
 ```
+
+```
+match hello.field
+{
+    case "soggy":
+        hello.field
+}
+
+{ hello: { field: string, poo: boolean } }
+{ hello: { field: "soggy", poo: true } }
+{ hello: { field: string & ! == "soggy", poo: false } }
+
+if hello.field == "soggy" && hello.poo then
+
+{ hello: { field: string, poo: true } }
+{ hello: { field: string, poo: boolean } }
+{ hello: { field: string, poo: true } }
+
+refine(hello.field == "soggy" || hello.poo, left, right)
+```

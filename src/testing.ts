@@ -12,10 +12,13 @@ import {
   nodeToString,
   toJS,
   getNode,
-  createArgs
+  createArgs,
+  addNodeType,
+  addNode,
+  untyped
 } from "./types";
 
-import { globals, expressionFunction, lookupArg, argName } from "./globals";
+import { lookupArg, argName, defineFunction, declareGlobals } from "./globals";
 import { emptyFunction, func2string, appendReturn } from "./javascript";
 
 // const appType = expressionFunction(
@@ -40,7 +43,11 @@ import { emptyFunction, func2string, appendReturn } from "./javascript";
 //   )
 // );
 
-const appType = expressionFunction(
+var graph: NodeGraph = [{ type: untyped }];
+
+const appSymbols = defineFunction(
+  graph,
+  declareGlobals(graph),
   "main",
   applyRef(
     "add",
@@ -53,24 +60,21 @@ const appType = expressionFunction(
   )
 );
 
-var graph: NodeGraph = [{ type: { type: "object", keyValues: [] } }];
+console.log(appSymbols);
 
-const allGlobals = nodeFromExpr(
-  graph,
-  0,
-  globals(letExpr("main", appType, { tag: "native", node: (g, s) => s }))
-);
-
-const runMain = nodeFromExpr(graph, allGlobals, applyRef("main"));
-const mainNode = getNode(graph, runMain);
-const argsNode = mainNode.apply![1];
+const argsNode = addNodeType(graph, emptyObject);
+const runMain = addNode(graph, {
+  type: untyped,
+  apply: [appSymbols["main"], argsNode]
+});
 
 var iter = 1;
 var finished = false;
 while (iter < 50) {
   const refinements = reduce(graph, runMain);
+  console.log(refinements);
   for (const k in refinements) {
-    refineNode(graph, refinements[k].ref, refinements[k].refinement);
+    refineNode(graph, refinements[k]);
   }
   if (refinements.length == 0) {
     finished = true;
@@ -79,18 +83,30 @@ while (iter < 50) {
   iter++;
 }
 
+console.log("Entry point", runMain);
+console.log("Entry point", argsNode);
+
 if (finished) {
-  const funcDef = createArgs(graph, argsNode, emptyFunction());
-  const [funcCode, ret] = toJS(graph, runMain, {
-    funcDef,
-    exprs: {}
-  });
-  console.log(func2string(appendReturn(funcCode.funcDef, ret)));
+  try {
+    const funcDef = createArgs(graph, argsNode, emptyFunction());
+    const [funcCode, ret] = toJS(graph, runMain, {
+      funcDef,
+      exprs: {}
+    });
+    console.log(func2string(appendReturn(funcCode.funcDef, ret)));
+  } catch (e) {
+    console.log(e);
+    finished = false;
+  }
 }
+
 if (!finished) {
-  console.log(runMain, argsNode);
   graph.map((r, i) =>
-    console.log(nodeToString(graph, i), r.annotation ? r.annotation : "")
+    console.log(
+      nodeToString(graph, i),
+      r.annotation ? r.annotation : "",
+      r.expr
+    )
   );
   console.log("Couldn't finish refining");
 }
