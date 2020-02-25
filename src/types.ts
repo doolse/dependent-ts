@@ -57,6 +57,24 @@ export function applyRef(name: string, ...args: Expr[]): ApplicationExpr {
   };
 }
 
+export function applyObj(
+  name: string,
+  ...args: [Expr, Expr][]
+): ApplicationExpr {
+  return {
+    tag: "apply",
+    args: {
+      tag: "object",
+      entries: args.map(([key, value]) => ({
+        tag: "keyvalue",
+        key,
+        value
+      }))
+    },
+    function: ref(name)
+  };
+}
+
 export function arrayExpr(...entries: Expr[]): ObjectExpr {
   return {
     tag: "object",
@@ -217,14 +235,15 @@ export const emptyObject: ObjectType = {
 export function singleField(
   graph: NodeGraph,
   key: NodeRef,
-  value: NodeRef
+  value: NodeRef,
+  refineValue: boolean
 ): ObjectRefinement {
   return {
     type: "object",
     fields: [
       {
-        key: refinementFromNode(graph, key),
-        value: refinementFromNode(graph, value)
+        key: refinementFromNode(graph, key, refineValue),
+        value: refinementFromNode(graph, value, refineValue)
       }
     ]
   };
@@ -353,12 +372,13 @@ export function refineNode(
 
 export function refineFromObjectType(
   graph: NodeGraph,
-  type: ObjectType
+  type: ObjectType,
+  refineValue: boolean
 ): ObjectRefinement {
   const fields = type.keyValues.map(kv => {
     return {
-      key: refinementFromNode(graph, kv.key),
-      value: refinementFromNode(graph, kv.value)
+      key: refinementFromNode(graph, kv.key, refineValue),
+      value: refinementFromNode(graph, kv.value, refineValue)
     };
   });
   return { type: "object", fields };
@@ -366,13 +386,20 @@ export function refineFromObjectType(
 
 export function refinementFromType(
   graph: NodeGraph,
-  type: Type
+  type: Type,
+  refineValue: boolean
 ): TypeRefinement {
-  if (isPrim(type) || isUntyped(type)) {
+  if (isPrim(type)) {
+    if (!refineValue && type.value !== undefined) {
+      return { ...type, value: undefined };
+    }
+    return type;
+  }
+  if (isUntyped(type)) {
     return type;
   }
   if (type.type == "object") {
-    return refineFromObjectType(graph, type);
+    return refineFromObjectType(graph, type, refineValue);
   }
   console.log("Can't make a refinement from", type);
   return { type: "untyped" };
@@ -381,10 +408,11 @@ export function refinementFromType(
 export function refinementFromNode(
   graph: NodeGraph,
   srcNode: NodeRef,
-  includeApply?: boolean
+  refineValue: boolean,
+  includeApply: boolean = false
 ): Refinement {
   const n = getNode(graph, srcNode);
-  const mainRefine = refinementFromType(graph, n.type);
+  const mainRefine = refinementFromType(graph, n.type, refineValue);
   return {
     refine: mainRefine,
     apply: includeApply ? n.apply : undefined
@@ -489,45 +517,49 @@ export function refineType(
 }
 
 export function unify(
+  refinements: Refinements,
   graph: NodeGraph,
   node1: NodeRef,
-  node2: NodeRef
+  node2: NodeRef,
+  refineValue: boolean
 ): Refinements {
-  if (nodeNeedsRefining(graph, node1, node2)) {
-    return [
-      {
-        ...refinementFromNode(graph, node2),
-        ref: node1
-      }
-    ];
-  } else if (nodeNeedsRefining(graph, node2, node1)) {
-    return [
-      {
-        ...refinementFromNode(graph, node1),
-        ref: node2
-      }
-    ];
+  if (nodeNeedsRefining(graph, node1, node2, refineValue)) {
+    refinements.push({
+      ...refinementFromNode(graph, node2, refineValue),
+      ref: node1
+    });
+  } else if (nodeNeedsRefining(graph, node2, node1, refineValue)) {
+    refinements.push({
+      ...refinementFromNode(graph, node1, refineValue),
+      ref: node2
+    });
   }
-  return [];
+  return refinements;
 }
 
 export function nodeNeedsRefining(
   graph: NodeGraph,
   from: NodeRef,
-  to: NodeRef
+  to: NodeRef,
+  includeValue: boolean
 ): boolean {
   const n = getNode(graph, from);
   const o = getNode(graph, to);
-  if (needsRefining(graph, n.type, o.type)) {
+  if (needsRefining(graph, n.type, o.type, includeValue)) {
     return true;
   }
   if (n.annotation && o.annotation) {
-    return nodeNeedsRefining(graph, n.annotation, o.annotation);
+    return nodeNeedsRefining(graph, n.annotation, o.annotation, true);
   }
   return o.annotation !== undefined;
 }
 
-export function needsRefining(graph: NodeGraph, t: Type, ot: Type): boolean {
+export function needsRefining(
+  graph: NodeGraph,
+  t: Type,
+  ot: Type,
+  includeValue: boolean
+): boolean {
   if (isUntyped(t)) {
     return !isUntyped(ot);
   }
@@ -535,10 +567,10 @@ export function needsRefining(graph: NodeGraph, t: Type, ot: Type): boolean {
     return !isUntyped(ot);
   }
   if (isPrim(t) && isPrim(ot)) {
-    return t.value !== ot.value && ot.value !== undefined;
+    return includeValue && t.value !== ot.value && ot.value !== undefined;
   }
   if (isObjectType(t) && isObjectType(ot)) {
-    return objectNeedsRefining(graph, t, ot);
+    return objectNeedsRefining(graph, t, ot, includeValue);
   }
   return true;
 }
@@ -546,13 +578,14 @@ export function needsRefining(graph: NodeGraph, t: Type, ot: Type): boolean {
 export function objectNeedsRefining(
   graph: NodeGraph,
   obj: ObjectType,
-  other: ObjectType
+  other: ObjectType,
+  includeValue: boolean
 ): boolean {
   function fieldNeedsRefine(rf: NodeTuple, field: NodeTuple): boolean {
     const k1 = getNode(graph, field.key);
     const k2 = getNode(graph, rf.key);
     if (isPrim(k1.type) && isPrim(k2.type) && k1.type.value === k2.type.value) {
-      return nodeNeedsRefining(graph, field.value, rf.value);
+      return nodeNeedsRefining(graph, field.value, rf.value, includeValue);
     }
     return false;
   }
@@ -561,17 +594,18 @@ export function objectNeedsRefining(
   );
 }
 
-export function getNodeAndRefine(
+export function getAndRefine(
   refinements: Refinements,
   graph: NodeGraph,
   ref: NodeRef,
-  t: Type
+  t: Type,
+  refineValue: boolean = true
 ): TypedNode {
   const n = getNode(graph, ref);
-  if (needsRefining(graph, n.type, t)) {
+  if (needsRefining(graph, n.type, t, refineValue)) {
     refinements.push({
       ref,
-      refine: refinementFromType(graph, t)
+      refine: refinementFromType(graph, t, refineValue)
     });
   }
   return n;
@@ -796,7 +830,7 @@ export interface JSContext {
 }
 
 export function toJSPrimitive(type: Type): JSExpr | null {
-  if (isPrim(type) && type.value) {
+  if (isPrim(type) && type.value !== undefined) {
     return { type: "prim", value: type.value };
   }
   return null;

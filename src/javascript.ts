@@ -75,6 +75,9 @@ export function expr2string(t: JSExpr): string {
     case "fieldRef":
       return `${expr2string(t.left)}.${expr2string(t.right)}`;
     case "prim":
+      if (typeof t.value == "string") {
+        return `"${t.value}"`;
+      }
       return t.value.toString();
     case "symbol":
       return t.name;

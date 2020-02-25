@@ -15,7 +15,8 @@ import {
   createArgs,
   addNodeType,
   addNode,
-  untyped
+  untyped,
+  applyObj
 } from "./types";
 
 import { lookupArg, argName, defineFunction, declareGlobals } from "./globals";
@@ -45,19 +46,32 @@ import { emptyFunction, func2string, appendReturn } from "./javascript";
 
 var graph: NodeGraph = [{ type: untyped }];
 
+// const appSymbols = defineFunction(
+//   graph,
+//   declareGlobals(graph),
+//   "main",
+//   applyRef(
+//     "add",
+//     applyRef("fieldRef", lookupArg("arg"), cnst("field")),
+//     applyRef(
+//       "fieldRef",
+//       applyRef("fieldRef", lookupArg("arg2"), cnst("anotherField")),
+//       cnst("lastField")
+//     )
+//   )
+// );
+
 const appSymbols = defineFunction(
   graph,
   declareGlobals(graph),
   "main",
-  applyRef(
-    "add",
-    applyRef("fieldRef", lookupArg("arg"), cnst("field")),
-    applyRef(
-      "fieldRef",
-      applyRef("fieldRef", lookupArg("arg2"), cnst("anotherField")),
-      cnst("lastField")
-    )
-  )
+  applyRef("==", lookupArg("all"), cnst("hello"))
+  // applyRef(
+  //   "ifThenElse",
+  //   applyRef("==", lookupArg("arg"), cnst("hello")),
+  //   applyRef("==", lookupArg("arg"), cnst("hello")),
+  //   applyRef("==", lookupArg("arg"), cnst("hello"))
+  // )
 );
 
 console.log(appSymbols);

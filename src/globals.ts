@@ -9,7 +9,7 @@ import {
   isObjectType,
   reduceKeys,
   reduceAll,
-  getNodeAndRefine,
+  getAndRefine,
   Refinements,
   toJS,
   numberType,
@@ -34,7 +34,13 @@ import {
   addNodeType,
   simpleRefinement,
   getStringValue,
-  untyped
+  untyped,
+  needsRefining,
+  nodeNeedsRefining,
+  boolType,
+  Refinement,
+  isPrim,
+  Type
 } from "./types";
 import { newArg, expr2string, JSExpr } from "./javascript";
 import { networkInterfaces } from "os";
@@ -61,11 +67,11 @@ const fieldRef: FunctionType = {
           return [
             {
               ref: a,
-              refine: singleField(graph, obj, result)
+              refine: singleField(graph, obj, result, true)
             }
           ];
         } else {
-          return unify(graph, result, field);
+          return unify([], graph, result, field, true);
         }
       }
     }
@@ -94,6 +100,45 @@ const fieldRef: FunctionType = {
   }
 };
 
+const eqRef: FunctionType = {
+  type: "function",
+  name: "==",
+  exec(graph, result, args) {
+    const argRefine = reduceKeys(graph, args);
+    if (argRefine.length > 0) {
+      return argRefine;
+    }
+    const val1 = findField(graph, args, 0);
+    const val2 = findField(graph, args, 1);
+    if (val1 && val2) {
+      const vals = reduceAll(graph, val1, val2);
+      if (vals.length > 0) {
+        return vals;
+      }
+      const n1 = getNode(graph, val1).type;
+      const n2 = getNode(graph, val2).type;
+      const ref = unify([], graph, val1, val2, false);
+      const resultType =
+        isPrim(n1) &&
+        isPrim(n2) &&
+        n1.value !== undefined &&
+        n2.value !== undefined
+          ? mkValuePrim(n1.value === n2.value)
+          : boolType;
+      getAndRefine(ref, graph, result, resultType, true);
+      return ref;
+    }
+    throw new Error("Missing args");
+  },
+  toJSExpr(graph, result, args, jsContext): [JSContext, JSExpr] {
+    const arg1 = findField(graph, args, 0);
+    const arg2 = findField(graph, args, 1);
+    const [f1, left] = toJS(graph, arg1!, jsContext);
+    const [f2, right] = toJS(graph, arg2!, f1);
+    return [f2, { type: "infix", op: "==", left, right }];
+  }
+};
+
 const addFunc: FunctionType = {
   type: "function",
   name: "add",
@@ -111,22 +156,23 @@ const addFunc: FunctionType = {
           return vals;
         }
         const refinements: Refinements = [];
-        const arg1N = getNodeAndRefine(refinements, graph, arg1, numberType);
-        const arg2N = getNodeAndRefine(refinements, graph, arg2, numberType);
+        const arg1N = getAndRefine(refinements, graph, arg1, numberType);
+        const arg2N = getAndRefine(refinements, graph, arg2, numberType);
         if (
           isNumber(arg1N.type) &&
           isNumber(arg2N.type) &&
           arg1N.type.value !== undefined &&
           arg2N.type.value !== undefined
         ) {
-          getNodeAndRefine(
+          getAndRefine(
             refinements,
             graph,
             result,
-            mkValuePrim(arg1N.type.value + arg2N.type.value)
+            mkValuePrim(arg1N.type.value + arg2N.type.value),
+            true
           );
         } else {
-          getNodeAndRefine(refinements, graph, result, numberType);
+          getAndRefine(refinements, graph, result, numberType);
         }
         return refinements;
       } else {
@@ -149,7 +195,8 @@ const addFunc: FunctionType = {
 export function declareGlobals(graph: NodeGraph): SymbolTable {
   return {
     add: addNodeType(graph, addFunc),
-    fieldRef: addNodeType(graph, fieldRef)
+    fieldRef: addNodeType(graph, fieldRef),
+    "==": addNodeType(graph, eqRef)
   };
 }
 
