@@ -1,26 +1,20 @@
-import { inspect } from "util";
 import {
-  letExpr,
   applyRef,
   cnst,
-  ref,
-  reduce,
-  refineNode,
-  NodeGraph,
-  emptyObject,
-  nodeFromExpr,
-  nodeToString,
-  toJS,
-  getNode,
-  createArgs,
-  addNodeType,
-  addNode,
   untyped,
-  applyObj
+  node,
+  applyFunction,
+  nodeToString,
+  cnstType,
+  arrayType,
+  defineFunction,
+  Expr,
+  reduceFully
 } from "./types";
+import { globals, lookupArg } from "./globals";
 
-import { lookupArg, argName, defineFunction, declareGlobals } from "./globals";
-import { emptyFunction, func2string, appendReturn } from "./javascript";
+// import { lookupArg, argName, defineFunction, declareGlobals } from "./globals";
+// import { emptyFunction, func2string, appendReturn } from "./javascript";
 
 // const appType = expressionFunction(
 //   "main",
@@ -44,85 +38,36 @@ import { emptyFunction, func2string, appendReturn } from "./javascript";
 //   )
 // );
 
-var graph: NodeGraph = [{ type: untyped }];
+// var graph: NodeGraph = [{ type: untyped }];
+
+function dot(obj: Expr, field: Expr): Expr {
+  return applyRef("fieldRef", obj, field);
+}
+
+const mainFunc = defineFunction(
+  "main",
+  globals,
+  applyRef(
+    "add",
+    dot(lookupArg("arg"), cnst("field")),
+    dot(lookupArg("arg2"), cnst("anotherField"))
+  )
+);
 
 // const appSymbols = defineFunction(
 //   graph,
 //   declareGlobals(graph),
 //   "main",
-//   applyRef(
-//     "add",
-//     applyRef("fieldRef", lookupArg("arg"), cnst("field")),
-//     applyRef(
-//       "fieldRef",
-//       applyRef("fieldRef", lookupArg("arg2"), cnst("anotherField")),
-//       cnst("lastField")
-//     )
-//   )
-// );
+//   applyRef("==", lookupArg("all"), cnst("hello"))
+//   // applyRef(
+//   //   "ifThenElse",
+//   //   applyRef("==", lookupArg("arg"), cnst("hello")),
+//   //   applyRef("==", lookupArg("arg"), cnst("hello")),
+//   //   applyRef("==", lookupArg("arg"), cnst("hello"))
+//   // )
+// )
 
-const appSymbols = defineFunction(
-  graph,
-  declareGlobals(graph),
-  "main",
-  applyRef("==", lookupArg("all"), cnst("hello"))
-  // applyRef(
-  //   "ifThenElse",
-  //   applyRef("==", lookupArg("arg"), cnst("hello")),
-  //   applyRef("==", lookupArg("arg"), cnst("hello")),
-  //   applyRef("==", lookupArg("arg"), cnst("hello"))
-  // )
-);
-
-console.log(appSymbols);
-
-const argsNode = addNodeType(graph, emptyObject);
-const runMain = addNode(graph, {
-  type: untyped,
-  apply: [appSymbols["main"], argsNode]
-});
-
-var iter = 1;
-var finished = false;
-while (iter < 50) {
-  const refinements = reduce(graph, runMain);
-  console.log(refinements);
-  for (const k in refinements) {
-    refineNode(graph, refinements[k]);
-  }
-  if (refinements.length == 0) {
-    finished = true;
-    break;
-  }
-  iter++;
-}
-
-console.log("Entry point", runMain);
-console.log("Entry point", argsNode);
-
-if (finished) {
-  try {
-    const funcDef = createArgs(graph, argsNode, emptyFunction());
-    const [funcCode, ret] = toJS(graph, runMain, {
-      funcDef,
-      exprs: {}
-    });
-    console.log(func2string(appendReturn(funcCode.funcDef, ret)));
-  } catch (e) {
-    console.log(e);
-    finished = false;
-  }
-}
-
-if (!finished) {
-  graph.map((r, i) =>
-    console.log(
-      nodeToString(graph, i),
-      r.annotation ? r.annotation : "",
-      r.expr
-    )
-  );
-  console.log("Couldn't finish refining");
-}
-
-// console.log(typeCompare({ type: "string" }, { type: "string", value: "sdf" }));
+const result = reduceFully(applyFunction(mainFunc, node(arrayType())));
+console.log(result.reducible);
+console.log(nodeToString(result.application!.args));
+console.log(nodeToString(result));

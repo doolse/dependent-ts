@@ -38,3 +38,18 @@ object
 All keys must be a refinement of the key type.
 All values must be a refinement of the value type.
 If no key match, add a new field.
+
+{
+    "frogs": any,
+    string: any,    
+}
+
+isEquals: exact match - type and value  
+isRefinementOf: if primitive type equals (or if )
+
+type equality & value equality
+
+Type equality - 
+Same primitive type - (int == int)
+&& value equality of refinements 
+

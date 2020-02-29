@@ -11,7 +11,9 @@
   "author": "",
   "license": "ISC",
   "dependencies": {
+    "@types/cli-color": "^2.0.0",
     "@types/node": "^13.7.1",
+    "cli-color": "^2.0.0",
     "ts-node-dev": "^1.0.0-pre.44",
     "typescript": "^3.7.4"
   }
