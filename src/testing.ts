@@ -49,10 +49,18 @@ const mainFunc = defineFunction(
   globals,
   applyRef(
     "add",
-    dot(lookupArg("arg"), cnst("field")),
-    dot(lookupArg("arg2"), cnst("anotherField"))
+    cnst(3),
+    cnst(34)
+    // dot(lookupArg("arg"), cnst("field")),
+    // dot(lookupArg("arg"), cnst("another"))
   )
 );
+
+// const mainFunc = defineFunction(
+//   "main",
+//   globals,
+//   dot(lookupArg("arg"), cnst("field"))
+// );
 
 // const appSymbols = defineFunction(
 //   graph,

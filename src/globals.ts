@@ -19,7 +19,8 @@ import {
   nodeToString,
   emptyObject,
   typeToString,
-  refineNode
+  refineNode,
+  Closure
 } from "./types";
 
 const fieldRef: FunctionType = {
@@ -35,17 +36,25 @@ const fieldRef: FunctionType = {
     var newObjType = refineToType(arg0, emptyObject);
     if (isObjectNode(newObjType)) {
       if (fieldName !== undefined) {
-        const [key, valueType] = findField(newObjType, fieldName);
-        const [value, resultValue] = unifyNode(valueType, appNode);
-        return refineNode(resultValue, {
-          ...resultValue,
+        const [key, fieldNode] = findField(newObjType, fieldName);
+        const [fieldUnified, appNodeUnified] = unifyNode(fieldNode, appNode);
+        // console.log(
+        //   `APP=${nodeToString(appNode)} RES=${nodeToString(
+        //     appNodeUnified
+        //   )} Field=${nodeToString(fieldNode)} NewField=${nodeToString(
+        //     fieldUnified
+        //   )}`
+        // );
+        const newObjNode = refineFields(newObjType, {
+          key,
+          value: refineToType(fieldNode, fieldUnified.type)
+        });
+        return refineNode(appNodeUnified, {
+          ...appNodeUnified,
           application: {
             args: refineFields(argsObj, {
               key: arg0Key,
-              value: refineFields(newObjType, {
-                key,
-                value
-              })
+              value: newObjNode
             }),
             func
           }
@@ -128,27 +137,19 @@ const addFunc: FunctionType = {
   exec(appNode) {
     const { args, func } = appNode.application;
     const argsObj = reduceToObject(args);
-    if (argsObj) {
-      const [arg0Key, arg0] = findField(argsObj, 0);
-      const [arg1Key, arg1] = findField(argsObj, 1);
-      const numValue = numberOp(arg0, arg1, (a, b) => a + b);
-      const resultVal =
-        numValue !== undefined ? cnstType(numValue) : numberType;
-      const newArgs = refineToType(args, {
-        ...argsObj.type,
-        keyValues: [
-          { key: arg0Key, value: refineToType(arg0, numberType) },
-          { key: arg1Key, value: refineToType(arg1, numberType) }
-        ]
-      });
-      return refineToType(
-        refineNode(appNode, {
-          ...appNode,
-          application: { func, args: newArgs }
-        }),
-        resultVal
-      );
-    } else throw new Error("Not an object");
+    const [arg0Key, arg0] = findField(argsObj, 0);
+    const [arg1Key, arg1] = findField(argsObj, 1);
+    const numValue = numberOp(arg0, arg1, (a, b) => a + b);
+    const resultVal = numValue !== undefined ? cnstType(numValue) : numberType;
+    const newArgs = refineFields(
+      argsObj,
+      { key: arg0Key, value: refineToType(arg0, numberType) },
+      { key: arg1Key, value: refineToType(arg1, numberType) }
+    );
+    return refineNode(appNode, {
+      type: resultVal,
+      application: { func, args: newArgs }
+    });
     // if (isObjectType(graph[args].type)) {
     //   const keys = reduceKeys(graph, args);
     //   if (keys.length > 0) {
@@ -198,10 +199,12 @@ const addFunc: FunctionType = {
   // }
 };
 
-export const globals: SymbolTable = {
-  add: node(addFunc),
-  fieldRef: node(fieldRef),
-  "==": node(eqRef)
+export const globals: Closure = {
+  symbols: {
+    add: node(addFunc),
+    fieldRef: node(fieldRef),
+    "==": node(eqRef)
+  }
 };
 
 export function argName(expr: Expr): Expr {

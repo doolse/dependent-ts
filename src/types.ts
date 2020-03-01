@@ -52,6 +52,7 @@ export interface KeyValueExpr {
 
 export type NodeGraph = TypedNode[];
 export type SymbolTable = { [symbol: string]: TypedNode };
+export type Closure = { parent?: Closure; symbols: SymbolTable };
 
 export function applyRef(name: string, ...args: Expr[]): ApplicationExpr {
   return {
@@ -160,10 +161,8 @@ export interface TypedNodeT<T extends Type> {
   expr?: Expr;
   application?: Application;
   reducible?: boolean;
-  symbols?: SymbolTable;
-  closure?: TypedNode;
-  defineSymbol?: string;
-  lookupSymbol?: string;
+  closure?: Closure;
+  symbol?: string;
 }
 
 export function isAppNode(node: TypedNode): node is ApplicationNode {
@@ -513,33 +512,40 @@ export function isRefinementOf(source: Type, refinement: Type): boolean {
     return (
       isRefinementOfNode(source.keyType, refinement.keyType) &&
       isRefinementOfNode(source.valueType, refinement.valueType) &&
-      refinement.keyValues.every(
-        ({ key, value }) =>
-          isRefinementOfNode(source.keyType, key) &&
-          isRefinementOfNode(source.valueType, value)
-      )
+      refinement.keyValues.every(({ key, value }) => {
+        const ind = source.keyValues.findIndex(kv =>
+          valueEqualsNode(key, kv.key)
+        );
+        if (ind >= 0) {
+          return isRefinementOfNode(source.keyValues[ind].value, value);
+        } else {
+          return (
+            isRefinementOfNode(source.keyType, key) &&
+            isRefinementOfNode(source.valueType, value)
+          );
+        }
+      })
     );
   }
   if (isPrim(source)) {
     return false;
   }
-  console.log(source, refinement);
+  console.log(source, "AND", refinement);
   throw new Error("Don't know how to check if already refine yet");
-}
-
-export function exprEqual(node1: TypedNode, node2: TypedNode) {
-  return node1.expr === node2.expr;
 }
 
 export function refineType(source: Type, refinement: Type): Type {
   if (source === refinement) {
     return source;
   }
-  if (isUntyped(source)) {
-    if (!isUntyped(refinement)) {
-      return refinement;
+  if (isUntyped(refinement)) {
+    if (!isUntyped(source)) {
+      throw new Error("Can't refine back to untyped");
     }
     return source;
+  }
+  if (isUntyped(source)) {
+    return refinement;
   }
   if (isPrim(source) && isPrim(refinement)) {
     if (source.type !== refinement.type) {
@@ -564,8 +570,8 @@ export function refineType(source: Type, refinement: Type): Type {
     // );
     const newKeyValues = refinement.keyValues.reduce(
       (changes, { key, value }) => {
-        const ind = source.keyValues.findIndex(
-          kv => exprEqual(kv.key, key) || valueEqualsNode(key, kv.key)
+        const ind = source.keyValues.findIndex(kv =>
+          valueEqualsNode(key, kv.key)
         );
         var newValue: TypedNode | null = null;
         var newKey: TypedNode | null = null;
@@ -615,12 +621,17 @@ export function refineType(source: Type, refinement: Type): Type {
     }
     return source;
   }
+  debugger;
   throw new Error(
     "Don't know how to refine this yet: " +
       inspect(source, false, null, true) +
-      " : " +
+      " AND " +
       inspect(refinement, false, null, true)
   );
+}
+
+export function printClosure(closure: Closure) {
+  return printSymbols(closure.symbols);
 }
 
 export function printSymbols(
@@ -629,7 +640,8 @@ export function printSymbols(
   application?: boolean
 ): string {
   const symStrings = Object.entries(symbols).map(
-    ([sym, node]) => `${sym}: ${nodeToString(node, printExpr, application)}`
+    ([sym, node]) =>
+      `${sym}: ${nodeToString(node, printExpr, application)} ${node.reducible}`
   );
   return `{${symStrings.join(", ")} }`;
 }
@@ -688,21 +700,21 @@ export function refineNode(
   //     `${source.lookupSymbol} ${source.defineSymbol} ${source.closure}`
   //   );
   // }
-  if (
-    refinement.lookupSymbol &&
-    source.lookupSymbol !== refinement.lookupSymbol &&
-    source.defineSymbol !== refinement.lookupSymbol
-  ) {
-    if (!source.closure) {
-      return source;
-    }
-    console.log("Refinment applies to closure not us");
-    const closure = refineNode(source.closure, refinement);
-    if (closure !== source.closure) {
-      return { ...source, closure };
-    }
-    return source;
-  }
+  // if (
+  //   refinement.lookupSymbol &&
+  //   source.lookupSymbol !== refinement.lookupSymbol &&
+  //   source.defineSymbol !== refinement.lookupSymbol
+  // ) {
+  //   if (!source.closure) {
+  //     return source;
+  //   }
+  //   console.log("Refinment applies to closure not us");
+  //   const closure = refineNode(source.closure, refinement);
+  //   if (closure !== source.closure) {
+  //     return { ...source, closure };
+  //   }
+  //   return source;
+  // }
   const type = refineType(source.type, refinement.type);
 
   const application = !source.application
@@ -734,27 +746,54 @@ export function refineNode(
   // );
 
   if (changedType || changedApp) {
-    var closure = source.closure;
-    if (closure && source.lookupSymbol) {
-      console.log("Unifying " + source.lookupSymbol);
-      closure = refineNode(closure, {
-        type,
-        application: undefined,
-        lookupSymbol: source.lookupSymbol
-      });
+    // var closure = source.closure;
+    // if (closure && source.lookupSymbol) {
+    //   console.log("Unifying " + source.lookupSymbol);
+    //   closure = refineNode(closure, {
+    //     type,
+    //     application: undefined,
+    //     lookupSymbol: source.lookupSymbol
+    //   });
+    // }
+    if (source.symbol && source.closure) {
+      const symTable = findSymbol(source.symbol, source.closure);
+      // console.log(
+      //   `Unifying ${source.symbol} sym-${nodeToString(
+      //     symTable
+      //   )} source-${nodeToString(source)} refinement-${nodeToString(
+      //     refinement
+      //   )}`
+      // );
+      source.closure.symbols[source.symbol] = refineToType(symTable, type);
     }
+
     return {
       ...source,
       type,
       application,
-      reducible,
-      closure
+      reducible
     };
   }
   if (Boolean(source.reducible) === reducible) {
     return source;
   }
   return { ...source, reducible };
+}
+
+function refineSymbol(
+  closure: Closure | undefined,
+  symbol: string,
+  type: Type
+) {
+  console.log("Refining symbol " + symbol);
+  while (closure) {
+    const symNode = closure.symbols[symbol];
+    if (symNode) {
+      closure.symbols[symbol] = refineToType(symNode, type);
+      return;
+    }
+    closure = closure.parent;
+  }
 }
 
 export function reduceToObject(
@@ -782,20 +821,15 @@ export function reduceFully(node: TypedNode): TypedNode {
   return canReduce(node) ? reduceFully(reduce(node)) : node;
 }
 
-function findSymbol(
-  name: string,
-  node: TypedNode | undefined
-): TypedNode | null {
-  while (node) {
-    if (node.defineSymbol === name) {
+function findSymbol(name: string, closure?: Closure): TypedNode {
+  while (closure) {
+    const node = closure.symbols[name];
+    if (node) {
       return node;
     }
-    if (node.symbols && node.symbols[name]) {
-      return node.symbols[name];
-    }
-    node = node.closure;
+    closure = closure.parent;
   }
-  return null;
+  throw new Error("No symbol for" + name);
 }
 
 let counter = 0;
@@ -813,12 +847,12 @@ export function reduce(node: TypedNode): TypedNode {
         reducible: true
       };
     }
-  } else if (node.lookupSymbol) {
-    const lookedUp = findSymbol(node.lookupSymbol, node.closure);
+  } else if (node.symbol) {
+    const lookedUp = findSymbol(node.symbol, node.closure);
     if (!lookedUp) {
-      throw new Error(`Couldn't find: ${node.lookupSymbol}`);
+      throw new Error(`Couldn't find: ${node.symbol}`);
     }
-    return refineNode(node, { ...lookedUp, application: undefined });
+    return refineToType(node, lookedUp.type);
   }
   console.log(node);
   throw new Error("Can't reduce this");
@@ -841,7 +875,7 @@ export function reduceObjectType(
   });
   return keyType !== obj.keyType ||
     valueType !== obj.valueType ||
-    keyValues != obj.keyValues
+    keyValues !== obj.keyValues
     ? { ...obj, keyValues, keyType, valueType }
     : obj;
 }
@@ -918,6 +952,13 @@ export function unifyNode(
 ): [TypedNode, TypedNode] {
   const lRef = isRefinementOf(node.type, node2.type);
   const rRef = isRefinementOf(node2.type, node.type);
+  // console.log(
+  //   "l:" +
+  //     typeToString(node.type) +
+  //     " r:" +
+  //     typeToString(node2.type) +
+  //     ` ${lRef} ${rRef}`
+  // );
   if (lRef && rRef) {
     return [node, node2];
   }
@@ -927,50 +968,51 @@ export function unifyNode(
   ];
 }
 
-export function exprToNode(expr: Expr, closure: TypedNode): TypedNode {
-  function mkExprNode(type: Type): TypedNode {
-    return { type, expr, closure };
+export function exprToNode(exprs: Expr, closure: Closure): TypedNode {
+  function recurse(expr: Expr): TypedNode {
+    function mkExprNode(type: Type): TypedNode {
+      return { type, expr, closure };
+    }
+    switch (expr.tag) {
+      case "apply":
+        return {
+          ...mkExprNode(untyped),
+          application: {
+            func: recurse(expr.function),
+            args: recurse(expr.args)
+          },
+          reducible: true
+        };
+      case "prim":
+        return mkExprNode(cnstType(expr.value));
+      case "primType":
+        return mkExprNode({ type: expr.name });
+      case "object":
+        const keyValues = expr.entries.map(kv => {
+          const key = recurse(kv.key);
+          const value = recurse(kv.value);
+          return { key, value };
+        });
+        const keyType = recurse(expr.keyExpr);
+        const valueType = recurse(expr.valueExpr);
+        return mkExprNode({ type: "object", keyValues, keyType, valueType });
+      case "symbol":
+        return {
+          ...mkExprNode(untyped),
+          reducible: true,
+          symbol: expr.symbol
+        };
+      case "let":
+        closure.symbols[expr.symbol] = recurse(expr.expr);
+        return recurse(expr.in);
+    }
   }
-  switch (expr.tag) {
-    case "apply":
-      return {
-        ...mkExprNode(untyped),
-        application: {
-          func: exprToNode(expr.function, closure),
-          args: exprToNode(expr.args, closure)
-        },
-        reducible: true
-      };
-    case "prim":
-      return mkExprNode(cnstType(expr.value));
-    case "primType":
-      return mkExprNode({ type: expr.name });
-    case "object":
-      const keyValues = expr.entries.map(kv => {
-        const key = exprToNode(kv.key, closure);
-        const value = exprToNode(kv.value, closure);
-        return { key, value };
-      });
-      const keyType = exprToNode(expr.keyExpr, closure);
-      const valueType = exprToNode(expr.keyExpr, closure);
-      return mkExprNode({ type: "object", keyValues, keyType, valueType });
-    case "symbol":
-      return {
-        ...mkExprNode(untyped),
-        reducible: true,
-        lookupSymbol: expr.symbol
-      };
-    case "let":
-      return exprToNode(expr.in, {
-        ...exprToNode(expr.expr, closure),
-        defineSymbol: expr.symbol
-      });
-  }
+  return recurse(exprs);
 }
 
 export function defineFunction(
   name: string,
-  symbols: SymbolTable,
+  parent: Closure,
   expr: Expr
 ): TypedNode {
   return {
@@ -980,13 +1022,15 @@ export function defineFunction(
       exec(appNode) {
         const { args, func } = appNode.application;
         const closure = {
-          ...args,
-          defineSymbol: "args",
-          symbols
+          parent,
+          symbols: { args }
         };
-        const reduced = reduceFully(exprToNode(expr, closure));
-        debugger;
-        return refineNode(appNode, reduced);
+        const r = reduceFully(exprToNode(expr, closure));
+        console.log("CLOSURE " + printClosure(closure));
+        return refineNode(appNode, {
+          ...r,
+          application: { args: closure.symbols.args, func }
+        });
       }
     }
   };
