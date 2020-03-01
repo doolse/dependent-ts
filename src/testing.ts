@@ -9,7 +9,7 @@ import {
   arrayType,
   defineFunction,
   Expr,
-  reduceFully
+  reduce
 } from "./types";
 import { globals, lookupArg } from "./globals";
 
@@ -49,10 +49,10 @@ const mainFunc = defineFunction(
   globals,
   applyRef(
     "add",
-    cnst(3),
-    cnst(34)
-    // dot(lookupArg("arg"), cnst("field")),
-    // dot(lookupArg("arg"), cnst("another"))
+    // cnst(2),
+    // cnst(3)
+    dot(lookupArg("arg"), cnst("field")),
+    dot(lookupArg("arg"), cnst("another"))
   )
 );
 
@@ -75,7 +75,7 @@ const mainFunc = defineFunction(
 //   // )
 // )
 
-const result = reduceFully(applyFunction(mainFunc, node(arrayType())));
+const result = reduce(applyFunction(mainFunc, node(arrayType())));
 console.log(result.reducible);
 console.log(nodeToString(result.application!.args));
 console.log(nodeToString(result));

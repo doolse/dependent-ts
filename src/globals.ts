@@ -9,7 +9,6 @@ import {
   SymbolTable,
   getStringValue,
   node,
-  reduceToObject,
   findField,
   refineToType,
   numberOp,
@@ -20,7 +19,11 @@ import {
   emptyObject,
   typeToString,
   refineNode,
-  Closure
+  Closure,
+  reduceToObject,
+  canReduceObject,
+  reduce,
+  reduceTo
 } from "./types";
 
 const fieldRef: FunctionType = {
@@ -29,43 +32,46 @@ const fieldRef: FunctionType = {
   exec(appNode) {
     const { args, func } = appNode.application;
     const argsObj = reduceToObject(args);
-    // console.log("fieldRef-args " + nodeToString(argsObj, true));
     const [arg0Key, arg0] = findField(argsObj, 0);
     const [, arg1] = findField(argsObj, 1);
     const fieldName = getStringValue(arg1.type);
-    var newObjType = refineToType(arg0, emptyObject);
-    if (isObjectNode(newObjType)) {
-      if (fieldName !== undefined) {
-        const [key, fieldNode] = findField(newObjType, fieldName);
-        const [fieldUnified, appNodeUnified] = unifyNode(fieldNode, appNode);
-        // console.log(
-        //   `APP=${nodeToString(appNode)} RES=${nodeToString(
-        //     appNodeUnified
-        //   )} Field=${nodeToString(fieldNode)} NewField=${nodeToString(
-        //     fieldUnified
-        //   )}`
-        // );
-        const newObjNode = refineFields(newObjType, {
-          key,
-          value: refineToType(fieldNode, fieldUnified.type)
-        });
-        return refineNode(appNodeUnified, {
-          ...appNodeUnified,
-          application: {
-            args: refineFields(argsObj, {
-              key: arg0Key,
-              value: newObjNode
-            }),
-            func
-          }
-        });
-      } else {
-        console.log(nodeToString(argsObj, true));
-        throw new Error("Fields must be strings atm");
-      }
+    var newObjType = reduceToObject(refineToType(arg0, emptyObject), {
+      keys: true
+    });
+    if (fieldName !== undefined) {
+      const [key, fieldNode] = findField(newObjType, fieldName);
+      const [fieldUnified, appNodeUnified] = unifyNode(fieldNode, appNode);
+      // console.log(
+      //   `${fieldName}-${nodeToString(appNode)}-${nodeToString(fieldNode)}-
+      //   ${nodeToString(fieldUnified)}-${nodeToString(appNodeUnified)}`
+      // );
+      // console.log(
+      //   `APP=${nodeToString(appNode)} RES=${nodeToString(
+      //     appNodeUnified
+      //   )} Field=${nodeToString(fieldNode)} NewField=${nodeToString(
+      //     fieldUnified
+      //   )}`
+      // );
+      const newObjNode = refineFields(newObjType, {
+        key,
+        value: reduce(fieldUnified)
+      });
+      const newArgs = refineFields(argsObj, {
+        key: arg0Key,
+        value: newObjNode
+      });
+      const result = {
+        ...appNodeUnified,
+        application: {
+          args: newArgs,
+          func
+        },
+        reducible: newArgs.reducible
+      };
+      return result;
     } else {
-      console.log(newObjType);
-      throw new Error("Didn't refine to object");
+      console.log(nodeToString(argsObj));
+      throw new Error("Fields must be strings atm");
     }
   }
   // toJSExpr(graph, result, args, jsContext): [JSContext, JSExpr] {
@@ -141,10 +147,20 @@ const addFunc: FunctionType = {
     const [arg1Key, arg1] = findField(argsObj, 1);
     const numValue = numberOp(arg0, arg1, (a, b) => a + b);
     const resultVal = numValue !== undefined ? cnstType(numValue) : numberType;
+
+    const a0 = refineToType(arg0, numberType);
+    const a1 = refineToType(arg1, numberType);
+    // console.log(
+    //   nodeToString(arg0, false, true) + ":" + nodeToString(a0, false, true)
+    // );
+    // console.log(
+    //   nodeToString(arg1, false, true) + ":" + nodeToString(a1, false, true)
+    // );
+
     const newArgs = refineFields(
       argsObj,
-      { key: arg0Key, value: refineToType(arg0, numberType) },
-      { key: arg1Key, value: refineToType(arg1, numberType) }
+      { key: arg0Key, value: a0 },
+      { key: arg1Key, value: a1 }
     );
     return refineNode(appNode, {
       type: resultVal,
