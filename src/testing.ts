@@ -15,12 +15,19 @@ import {
   exprToNode,
   primTypeExpr,
   letExpr,
-  ref
+  ref,
+  Closure,
+  applyObj
 } from "./types";
 import { globals, lookupArg } from "./globals";
+import { runMain } from "module";
 
 // import { lookupArg, argName, defineFunction, declareGlobals } from "./globals";
 // import { emptyFunction, func2string, appendReturn } from "./javascript";
+
+function dot(obj: Expr, field: Expr): Expr {
+  return applyRef("fieldRef", obj, field);
+}
 
 const appType = defineFunction(
   "main",
@@ -42,11 +49,19 @@ const appType = defineFunction(
   )
 );
 
-// var graph: NodeGraph = [{ type: untyped }];
+const withMain: Closure = {
+  parent: globals,
+  symbols: { main: appType },
+  nodes: []
+};
 
-function dot(obj: Expr, field: Expr): Expr {
-  return applyRef("fieldRef", obj, field);
-}
+const callMain = defineFunction(
+  "callMain",
+  withMain,
+  applyObj("main", [cnst("frog"), objectExpr({ field: cnst(12) })])
+);
+
+// var graph: NodeGraph = [{ type: untyped }];
 
 const mainFunc = defineFunction(
   "main",
@@ -67,37 +82,18 @@ const mainFunc = defineFunction(
 //   dot(lookupArg("arg"), cnst("field"))
 // );
 
-// const appSymbols = defineFunction(
-//   graph,
-//   declareGlobals(graph),
-//   "main",
-//   applyRef("==", lookupArg("all"), cnst("hello"))
-//   // applyRef(
-//   //   "ifThenElse",
-//   //   applyRef("==", lookupArg("arg"), cnst("hello")),
-//   //   applyRef("==", lookupArg("arg"), cnst("hello")),
-//   //   applyRef("==", lookupArg("arg"), cnst("hello"))
-//   // )
-// )
-
-const node1 = exprToNode(
-  objectExpr({ merge: primTypeExpr("untyped") }),
-  globals
-);
-const node2 = exprToNode(
-  objectExpr({
-    merge: cnst(1),
-    frogs: primTypeExpr("number")
-  }),
-  globals
+const appSymbols = defineFunction(
+  "main",
+  globals,
+  applyRef("==", lookupArg(0), cnst("hello"))
+  // applyRef(
+  //   "ifThenElse",
+  //   applyRef("==", lookupArg("arg"), cnst("hello")),
+  //   applyRef("==", lookupArg("arg"), cnst("hello")),
+  //   applyRef("==", lookupArg("arg"), cnst("hello"))
+  // )
 );
 
-// console.log(nodeToString(node1));
-// console.log(nodeToString(node2));
-// unifyNode(node1, node2);
-// console.log(nodeToString(node1));
-// console.log(nodeToString(node2));
-
-const appNode = applyFunction(appType, node(arrayType()));
+const appNode = applyFunction(appSymbols, node(arrayType(cnstType("hello"))));
 console.log(nodeToString(appNode.application!.args));
 console.log(nodeToString(appNode));

@@ -701,11 +701,10 @@ function findSymbol(name: string, closure?: Closure): TypedNode {
 export function reduceToObject(
   node: TypedNode,
   flags?: ReduceFlags
-): TypedNodeT<ObjectType> {
-  if (reduceTo(node, emptyObject, flags ?? { keys: true, values: true })) {
-    return node;
+): asserts node is TypedNodeT<ObjectType> {
+  if (!reduceTo(node, emptyObject, flags ?? { keys: true, values: true })) {
+    throw new Error("Not an object");
   }
-  throw new Error("Not an object");
 }
 
 export function reduceTo<T extends Type>(
@@ -888,20 +887,15 @@ export function reduceClosure(
       type: "function",
       name: "reduceClosure",
       reduce(appNode) {
-        while (closure.nodes.some(n => canReduce(n))) {
-          closure.nodes
-            .filter(n => n.application && n.reducible)
-            .forEach(n => {
+        if (entry.application) {
+          reduce(entry);
+          while (closure.nodes.some(n => canReduce(n))) {
+            const n = closure.nodes.find(n => n.application && n.reducible);
+            if (n) {
+              // console.log(`Reducing ${nodeToString(n, { application: true })}`);
               reduce(n);
-              console.log(
-                "Needs reducing" +
-                  nodeToString(n, {
-                    application: true,
-                    nodeId: true,
-                    appFlags: { nodeId: true }
-                  })
-              );
-            });
+            }
+          }
         }
         refineNode(appNode, entry.type);
       }
@@ -927,17 +921,11 @@ export function defineFunction(
           nodes: []
         };
         const entry = exprToNode(expr, closure);
-        if (entry.application) {
-          reduce(entry);
-          while (closure.nodes.some(n => canReduce(n))) {
-            const n = closure.nodes.find(n => n.application && n.reducible);
-            if (n) {
-              console.log(`Reducing ${nodeToString(n, { application: true })}`);
-              reduce(n);
-            }
-          }
-        }
-        refineNode(appNode, entry.type);
+        appNode.application = {
+          func: reduceClosure(closure, entry),
+          args
+        };
+        appNode.reducible = true;
       }
     }
   };

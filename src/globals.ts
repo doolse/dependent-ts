@@ -21,7 +21,9 @@ import {
   reduceToObject,
   canReduceObject,
   reduce,
-  reduceTo
+  reduceTo,
+  isPrim,
+  boolType
 } from "./types";
 
 const fieldRef: FunctionType = {
@@ -29,20 +31,17 @@ const fieldRef: FunctionType = {
   name: "fieldRef",
   reduce(appNode) {
     const { args } = appNode.application;
-    const argsObj = reduceToObject(args);
-    const [, arg0] = findField(argsObj, 0);
-    const [, arg1] = findField(argsObj, 1);
-    const fieldName = getStringValue(arg1.type);
+    reduceToObject(args);
+    const [, arg0] = findField(args, 0);
+    const [, arg1] = findField(args, 1);
     refineNode(arg0, emptyObject);
-    const newObjType = reduceToObject(arg0, {
-      keys: true
-    });
-    if (fieldName !== undefined) {
-      const [, fieldNode] = findField(newObjType, fieldName);
+    reduceToObject(arg0, { keys: true });
+    if (isPrim(arg1.type) && arg1.type.value !== undefined) {
+      const [, fieldNode] = findField(arg0, arg1.type.value);
       unifyNode(fieldNode, appNode);
     } else {
-      console.log(nodeToString(argsObj));
-      throw new Error("Fields must be strings atm");
+      console.log(nodeToString(args));
+      throw new Error("Fields must be prims");
     }
   }
 };
@@ -51,6 +50,16 @@ const eqRef: FunctionType = {
   type: "function",
   name: "==",
   reduce(appNode) {
+    const { args } = appNode.application;
+    reduceToObject(args);
+    const [, arg0] = findField(args, 0);
+    const [, arg1] = findField(args, 1);
+    refineNode(appNode, boolType);
+    if (isPrim(arg0.type) && isPrim(arg1.type)) {
+      if (arg0.type.value !== undefined && arg1.type.value !== undefined) {
+        refineNode(appNode, cnstType(arg0.type.value === arg1.type.value));
+      }
+    }
     return appNode;
   }
 };
@@ -59,10 +68,10 @@ const addFunc: FunctionType = {
   type: "function",
   name: "add",
   reduce(appNode) {
-    const { args, func } = appNode.application;
-    const argsObj = reduceToObject(args);
-    const [, arg0] = findField(argsObj, 0);
-    const [, arg1] = findField(argsObj, 1);
+    const { args } = appNode.application;
+    reduceToObject(args);
+    const [, arg0] = findField(args, 0);
+    const [, arg1] = findField(args, 1);
     const numValue = numberOp(arg0, arg1, (a, b) => a + b);
     const resultVal = numValue !== undefined ? cnstType(numValue) : numberType;
     refineNode(arg0, numberType);
@@ -80,7 +89,7 @@ export const globals: Closure = {
   nodes: []
 };
 
-export function lookupArg(name: string): Expr {
+export function lookupArg(name: string | number | boolean): Expr {
   return applyRef("fieldRef", ref("args"), cnst(name));
 }
 
