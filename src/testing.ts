@@ -9,34 +9,38 @@ import {
   arrayType,
   defineFunction,
   Expr,
-  reduce
+  reduce,
+  unifyNode,
+  objectExpr,
+  exprToNode,
+  primTypeExpr,
+  letExpr,
+  ref
 } from "./types";
 import { globals, lookupArg } from "./globals";
 
 // import { lookupArg, argName, defineFunction, declareGlobals } from "./globals";
 // import { emptyFunction, func2string, appendReturn } from "./javascript";
 
-// const appType = expressionFunction(
-//   "main",
-//   letExpr(
-//     "h",
-//     // cnst(123),
-//     lookupArg("howza"),
-//     // applyRef("argNamed", cnst("h")),
-//     applyRef(
-//       "add",
-//       argName("l", cnst(10)),
-//       argName(
-//         "r",
-//         applyRef(
-//           "add",
-//           argName("l", applyRef("fieldRef", lookupArg("frog"), cnst("field"))),
-//           argName("r", cnst(23))
-//         )
-//       )
-//     )
-//   )
-// );
+const appType = defineFunction(
+  "main",
+  globals,
+  letExpr(
+    "h",
+    // cnst(123),
+    applyRef("add", dot(lookupArg("howza"), cnst("poo")), cnst(1)),
+    // applyRef("argNamed", cnst("h")),
+    applyRef(
+      "add",
+      cnst(10),
+      applyRef(
+        "add",
+        applyRef("fieldRef", lookupArg("frog"), cnst("field")),
+        cnst(3)
+      )
+    )
+  )
+);
 
 // var graph: NodeGraph = [{ type: untyped }];
 
@@ -49,10 +53,11 @@ const mainFunc = defineFunction(
   globals,
   applyRef(
     "add",
-    // cnst(2),
+    cnst(2),
+    lookupArg("as")
     // cnst(3)
-    dot(lookupArg("arg"), cnst("field")),
-    dot(lookupArg("arg"), cnst("another"))
+    // dot(lookupArg("arg"), cnst("field")),
+    // dot(lookupArg("arg2"), cnst("A"))
   )
 );
 
@@ -75,7 +80,24 @@ const mainFunc = defineFunction(
 //   // )
 // )
 
-const result = reduce(applyFunction(mainFunc, node(arrayType())));
-console.log(result.reducible);
-console.log(nodeToString(result.application!.args));
-console.log(nodeToString(result));
+const node1 = exprToNode(
+  objectExpr({ merge: primTypeExpr("untyped") }),
+  globals
+);
+const node2 = exprToNode(
+  objectExpr({
+    merge: cnst(1),
+    frogs: primTypeExpr("number")
+  }),
+  globals
+);
+
+// console.log(nodeToString(node1));
+// console.log(nodeToString(node2));
+// unifyNode(node1, node2);
+// console.log(nodeToString(node1));
+// console.log(nodeToString(node2));
+
+const appNode = applyFunction(appType, node(arrayType()));
+console.log(nodeToString(appNode.application!.args));
+console.log(nodeToString(appNode));

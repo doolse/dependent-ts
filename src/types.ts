@@ -51,7 +51,11 @@ export interface KeyValueExpr {
 }
 
 export type SymbolTable = { [symbol: string]: TypedNode };
-export type Closure = { parent?: Closure; symbols: SymbolTable };
+export type Closure = {
+  parent?: Closure;
+  symbols: SymbolTable;
+  nodes: TypedNode[];
+};
 
 export function applyRef(name: string, ...args: Expr[]): ApplicationExpr {
   return {
@@ -157,15 +161,14 @@ export type ApplicationNode = TypedNode & {
 
 export interface TypedNodeT<T extends Type> {
   type: T;
+  nodeId: number;
   expr?: Expr;
   application?: Application;
   reducible?: boolean;
-  closure?: Closure;
   symbol?: string;
 }
 
 export type ReduceFlags = {
-  object?: boolean;
   keys?: boolean;
   values?: boolean;
 };
@@ -221,7 +224,7 @@ export interface ObjectType {
 export interface FunctionType {
   type: "function";
   name: string;
-  exec(app: ApplicationNode): TypedNode;
+  reduce(app: ApplicationNode): void;
   // toJSExpr?(
   //   graph: NodeGraph,
   //   result: NodeRef,
@@ -245,9 +248,12 @@ export const emptyObject: ObjectType = {
   valueType: node(untyped)
 };
 
+var nodeIdCount = 0;
+
 export function node(type: Type): TypedNode {
   return {
-    type
+    type,
+    nodeId: nodeIdCount++
   };
 }
 
@@ -382,6 +388,7 @@ export function exprToString(expr: Expr): string {
 
 export type PrintFlags = {
   expr?: boolean;
+  nodeId?: boolean;
   reducible?: boolean;
   application?: boolean;
   appFlags?: PrintFlags;
@@ -409,6 +416,9 @@ export function nodeToString(typedNode: TypedNode, flags?: PrintFlags): string {
   }
   if (typedNode.symbol) {
     typeOnly = typeOnly + color.italic("%" + typedNode.symbol);
+  }
+  if (flags?.nodeId) {
+    typeOnly = typeOnly + "@" + typedNode.nodeId;
   }
   return typeOnly;
 }
@@ -445,15 +455,14 @@ export function applyFunction(
   args: TypedNode
 ): ApplicationNode {
   if (isFunctionType(func.type)) {
-    const result = reduce({
+    const appNode = {
       type: untyped,
       application: { func, args },
-      reducible: true
-    });
-    if (isAppNode(result)) {
-      return result;
-    }
-    throw new Error("Not an app node");
+      reducible: true,
+      nodeId: nodeIdCount++
+    };
+    reduce(appNode);
+    return appNode;
   }
   throw new Error("Trying to apply not a function");
 }
@@ -490,10 +499,7 @@ export function mapChanges<A>(array: A[], f: (a: A) => A): A[] {
 }
 
 export function isRefinementOfNode(source: TypedNode, refinement: TypedNode) {
-  return (
-    !(refinement.reducible === false && canReduce(source)) &&
-    isRefinementOf(source.type, refinement.type)
-  );
+  return isRefinementOf(source.type, refinement.type);
 }
 
 export function isRefinementOf(source: Type, refinement: Type): boolean {
@@ -569,58 +575,9 @@ export function refineType(source: Type, refinement: Type): Type {
     // console.log(
     //   "Refining:" + typeToString(source) + " with " + typeToString(refinement)
     // );
-    const newKeyValues = refinement.keyValues.reduce(
-      (changes, { key, value }) => {
-        const ind = source.keyValues.findIndex(kv =>
-          valueEqualsNode(key, kv.key)
-        );
-        var newValue: TypedNode | null = null;
-        var newKey: TypedNode | null = null;
-        if (ind >= 0) {
-          const exKV = source.keyValues[ind];
-          newValue = refineNode(exKV.value, value);
-          newKey = refineNode(exKV.key, key);
-          if (newValue === exKV.value) {
-            newValue = null;
-          }
-          if (newKey === exKV.key) {
-            newKey = null;
-          }
-        }
-        if (newValue || newKey || ind == -1) {
-          changes = changes ? changes : [...source.keyValues];
-          if (ind == -1) {
-            changes.push({
-              key: refineNode(source.keyType, key),
-              value: refineNode(source.valueType, value)
-            });
-          } else {
-            const { key, value } = changes[ind];
-            changes[ind] = {
-              key: newKey ? newKey : key,
-              value: newValue ? newValue : value
-            };
-          }
-        }
-        return changes;
-      },
-      null as NodeTuple[] | null
-    );
-    const newKeyType = refineNode(source.keyType, refinement.keyType);
-    const newValueType = refineNode(source.valueType, refinement.valueType);
-    if (
-      newKeyValues !== null ||
-      newKeyType !== source.keyType ||
-      newValueType !== source.valueType
-    ) {
-      return {
-        ...source,
-        keyValues: newKeyValues ?? source.keyValues,
-        keyType: newKeyType,
-        valueType: newValueType
-      };
-    }
-    return source;
+    const result = refineObjects(source, refinement);
+    // console.log(`Resulting in ${result === source} ${typeToString(result)}`);
+    return result;
   }
   debugger;
   throw new Error(
@@ -629,6 +586,35 @@ export function refineType(source: Type, refinement: Type): Type {
       " AND " +
       inspect(refinement, false, null, true)
   );
+}
+
+function refineObjects(source: ObjectType, refinement: ObjectType) {
+  let newFields: NodeTuple[] = [];
+  let changed = false;
+  refinement.keyValues.forEach(({ key, value }) => {
+    const ind = source.keyValues.findIndex(kv => valueEqualsNode(key, kv.key));
+    if (ind >= 0) {
+      const exKV = source.keyValues[ind];
+      changed = refineNode(exKV.value, value.type) || changed;
+      changed = refineNode(exKV.key, key.type) || changed;
+    } else {
+      refineNode(key, source.keyType.type);
+      refineNode(value, source.valueType.type);
+      newFields.push({ key, value });
+    }
+  });
+  changed = refineNode(source.keyType, refinement.keyType.type) || changed;
+  changed = refineNode(source.valueType, refinement.valueType.type) || changed;
+  if (newFields.length) {
+    return {
+      ...source,
+      keyValues: [...source.keyValues, ...newFields]
+    };
+  }
+  if (changed) {
+    return { ...source };
+  }
+  return source;
 }
 
 export function printClosure(closure: Closure, flags?: PrintFlags) {
@@ -687,47 +673,18 @@ function printAppChange(
   throw new Error("Don't think this should happen");
 }
 
-export function refineNode(
-  source: TypedNode,
-  refinement: TypedNode
-): TypedNode {
-  const type = refineType(source.type, refinement.type);
-
-  const application = !source.application
-    ? refinement.application
-    : refinement.application
-    ? refineApp(source.application, refinement.application)
-    : source.application;
-
-  const argsReducible = application
-    ? canReduce(application.args, { keys: true, values: true })
-    : false;
-  const changedApp = source.application !== application;
-  const changedType = type !== source.type;
-  const reducible = isReducibleNode(source) && (changedType || argsReducible);
-
-  if (changedType || changedApp) {
-    if (source.symbol && source.closure) {
-      const symTable = findSymbol(source.symbol, source.closure);
-      const newSym = refineToType(symTable, type);
-      if (newSym !== symTable) {
-        // console.log(`Symbol update ${source.symbol} ${nodeToString(symTable)}
-        // ${typeToString(type)}`);
-        source.closure.symbols[source.symbol] = newSym;
-      }
-    }
-
-    return {
-      ...source,
-      type,
-      application,
-      reducible
-    };
+export function refineNode(source: TypedNode, refinement: Type): boolean {
+  if (isRefinementOf(source.type, refinement)) {
+    // console.log(`${nodeToString(source)} ${typeToString(refinement)}`);
+    return false;
   }
-  if (Boolean(source.reducible) !== reducible) {
-    return { ...source, reducible };
+  const type = refineType(source.type, refinement);
+  if (type !== source.type) {
+    source.type = type;
+    source.reducible = Boolean(source.application);
+    return true;
   }
-  return source;
+  return false;
 }
 
 function findSymbol(name: string, closure?: Closure): TypedNode {
@@ -745,96 +702,63 @@ export function reduceToObject(
   node: TypedNode,
   flags?: ReduceFlags
 ): TypedNodeT<ObjectType> {
-  return reduceTo(node, emptyObject, flags ?? { keys: true, values: true });
+  if (reduceTo(node, emptyObject, flags ?? { keys: true, values: true })) {
+    return node;
+  }
+  throw new Error("Not an object");
 }
 
 export function reduceTo<T extends Type>(
   node: TypedNode,
   type: T,
   flags?: ReduceFlags
-): TypedNodeT<T> {
-  const n = reduce(node, flags);
-  if (isNodeOfType(n, type)) {
-    return n;
-  }
-  throw new Error("Not of the right type");
+): node is TypedNodeT<T> {
+  reduce(node, flags);
+  return isNodeOfType(node, type);
 }
 
 let counter = 0;
-export function reduce(node: TypedNode, flags?: ReduceFlags): TypedNode {
+export function reduce(node: TypedNode, flags?: ReduceFlags): void {
   let count = counter++;
   while (canReduce(node, flags)) {
     if (isAppNode(node)) {
-      let { func, args } = node.application;
+      const func = node.application.func;
+      reduce(func);
       if (isFunctionType(func.type)) {
-        console.log(
-          `${func.type.name} ${count}-IN ${nodeToString(args, {
-            reducible: true
-          })} ${nodeToString(node)}`
-        );
-        node = func.type.exec(node);
-        console.log(
-          `${func.type.name} ${count}-OUT ${nodeToString(
-            node.application!.args,
-            {
-              reducible: true,
-              application: count == 66 || count == 1,
-              appFlags: {
-                reducible: true
-              }
-            }
-          )} ${nodeToString(node, {
-            reducible: true,
-            application: count == 66 || count == 1,
-            appFlags: {
-              reducible: true
-            }
-          })}`
-        );
+        node.reducible = false;
+        // console.log(
+        //   `Calling ${func.type.name} ${count} ${nodeToString(
+        //     node.application.args,
+        //     {
+        //       nodeId: true
+        //     }
+        //   )} ${nodeToString(node)}`
+        // );
+        func.type.reduce(node);
+        // console.log(
+        //   `Returned ${func.type.name} ${count} ${nodeToString(
+        //     node.application.args,
+        //     {
+        //       nodeId: true
+        //     }
+        //   )} ${nodeToString(node)}`
+        // );
       } else {
-        node = {
-          ...node,
-          application: { func: reduce(func, undefined), args },
-          reducible: true
-        };
+        throw new Error("Can't apply to non function");
       }
-    } else if (node.symbol) {
-      const lookedUp = findSymbol(node.symbol, node.closure);
-      if (!lookedUp) {
-        throw new Error(`Couldn't find: ${node.symbol}`);
-      }
-      node = refineToType(node, lookedUp.type);
-    } else if (
-      (flags?.object || flags?.keys || flags?.values) &&
-      isObjectNode(node)
-    ) {
-      node = refineNode(node, { type: reduceObjectType(node.type, flags) });
-    } else {
-      console.log(inspect(node, false, 1, true));
-      throw new Error("Don't know how to reduce this");
-    }
+    } else if (flags && (flags.keys || flags.values) && isObjectNode(node)) {
+      reduceObjectType(node.type, flags);
+    } else throw new Error("This is not reducible");
   }
-  return node;
 }
 
-export function reduceObjectType(
-  obj: ObjectType,
-  flags?: ReduceFlags
-): ObjectType {
-  const keyType = reduce(obj.keyType, undefined);
-  const valueType = reduce(obj.valueType, undefined);
-  const keyValues = mapChanges(obj.keyValues, kv => {
-    const newKey = flags?.keys ? reduce(kv.key, undefined) : kv.key;
-    const newValue = flags?.values ? reduce(kv.value, undefined) : kv.value;
-    return newKey !== kv.key || newValue !== kv.value
-      ? { key: newKey, value: newValue }
-      : kv;
+export function reduceObjectType(obj: ObjectType, flags?: ReduceFlags): void {
+  reduce(obj.keyType);
+  reduce(obj.valueType);
+  obj.keyValues.forEach(kv => {
+    if (flags?.keys) reduce(kv.key);
+    if (flags?.values) reduce(kv.value);
   });
-  return keyType !== obj.keyType ||
-    valueType !== obj.valueType ||
-    keyValues !== obj.keyValues
-    ? { ...obj, keyValues, keyType, valueType }
-    : obj;
 }
 
 export function canReduceObject(
@@ -856,7 +780,7 @@ export function isReducibleNode(node: TypedNode): boolean {
 }
 
 export function canReduce(node: TypedNode, flags?: ReduceFlags): boolean {
-  if (flags?.object || flags?.keys || flags?.values) {
+  if (flags?.keys || flags?.values) {
     if (isObjectNode(node)) {
       return canReduceObject(node, flags);
     }
@@ -865,14 +789,21 @@ export function canReduce(node: TypedNode, flags?: ReduceFlags): boolean {
 }
 
 export function findField(
-  obj: TypedNodeT<ObjectType> | null,
+  obj: TypedNodeT<ObjectType>,
   named: string | number | boolean
 ): [TypedNode, TypedNode] {
-  var kv = obj?.type.keyValues.find(({ key, value }) =>
+  var kv = obj.type.keyValues.find(({ key, value }) =>
     primEquals(key.type, named)
   );
   if (!kv) {
-    return [node(cnstType(named)), node(untyped)];
+    const exObj = obj.type;
+    const newKey = node(cnstType(named));
+    const newType = node(untyped);
+    obj.type = {
+      ...exObj,
+      keyValues: [...exObj.keyValues, { key: newKey, value: newType }]
+    };
+    return [newKey, newType];
   }
   return [kv.key, kv.value];
 }
@@ -888,47 +819,40 @@ export function isNodeOfType<T extends Type>(
   return isOfType(t.type, t2);
 }
 
-export function refineFields(
-  node: TypedNodeT<ObjectType>,
-  ...fields: NodeTuple[]
-): TypedNode {
-  return refineToType(node, { ...node.type, keyValues: fields });
-}
-
-export function refineToType(t: TypedNode, type: Type): TypedNode {
-  return refineNode(t, { type });
-}
-
-export function unifyNode(
-  node: TypedNode,
-  node2: TypedNode
-): [TypedNode, TypedNode] {
-  const lRef = isRefinementOfNode(node, node2);
-  const rRef = isRefinementOfNode(node2, node);
-  if (lRef && rRef) {
-    return [node, node2];
-  }
-  return [
-    rRef ? refineToType(node, node2.type) : node,
-    lRef ? refineToType(node2, node.type) : node2
-  ];
+export function unifyNode(node: TypedNode, node2: TypedNode): void {
+  // console.log(
+  //   `Before unification ${nodeToString(node, {
+  //     nodeId: true
+  //   })} ${nodeToString(node2, { nodeId: true })}`
+  // );
+  refineNode(node2, node.type);
+  refineNode(node, node2.type);
+  // console.log(
+  //   `After unification ${nodeToString(node, {
+  //     nodeId: true
+  //   })} ${nodeToString(node2, { nodeId: true })}`
+  // );
 }
 
 export function exprToNode(exprs: Expr, closure: Closure): TypedNode {
   function recurse(expr: Expr): TypedNode {
-    function mkExprNode(type: Type): TypedNode {
-      return { type, expr, closure };
+    function mkExprNode(type: Type, application?: Application): TypedNode {
+      const newNode = {
+        type,
+        expr,
+        application,
+        reducible: Boolean(application),
+        nodeId: nodeIdCount++
+      };
+      closure.nodes.push(newNode);
+      return newNode;
     }
     switch (expr.tag) {
       case "apply":
-        return {
-          ...mkExprNode(untyped),
-          application: {
-            func: recurse(expr.function),
-            args: recurse(expr.args)
-          },
-          reducible: true
-        };
+        return mkExprNode(untyped, {
+          func: recurse(expr.function),
+          args: recurse(expr.args)
+        });
       case "prim":
         return mkExprNode(cnstType(expr.value));
       case "primType":
@@ -943,17 +867,46 @@ export function exprToNode(exprs: Expr, closure: Closure): TypedNode {
         const valueType = recurse(expr.valueExpr);
         return mkExprNode({ type: "object", keyValues, keyType, valueType });
       case "symbol":
-        return {
-          ...mkExprNode(untyped),
-          reducible: true,
-          symbol: expr.symbol
-        };
+        return findSymbol(expr.symbol, closure);
       case "let":
-        closure.symbols[expr.symbol] = recurse(expr.expr);
+        const symbolic = recurse(expr.expr);
+        symbolic.symbol = expr.symbol;
+        closure.symbols[expr.symbol] = symbolic;
         return recurse(expr.in);
     }
   }
   return recurse(exprs);
+}
+
+export function reduceClosure(
+  closure: Closure,
+  entry: TypedNode
+): TypedNodeT<FunctionType> {
+  return {
+    nodeId: nodeIdCount++,
+    type: {
+      type: "function",
+      name: "reduceClosure",
+      reduce(appNode) {
+        while (closure.nodes.some(n => canReduce(n))) {
+          closure.nodes
+            .filter(n => n.application && n.reducible)
+            .forEach(n => {
+              reduce(n);
+              console.log(
+                "Needs reducing" +
+                  nodeToString(n, {
+                    application: true,
+                    nodeId: true,
+                    appFlags: { nodeId: true }
+                  })
+              );
+            });
+        }
+        refineNode(appNode, entry.type);
+      }
+    }
+  };
 }
 
 export function defineFunction(
@@ -962,29 +915,29 @@ export function defineFunction(
   expr: Expr
 ): TypedNode {
   return {
+    nodeId: nodeIdCount++,
     type: {
       type: "function",
       name,
-      exec(appNode) {
-        const { args, func } = appNode.application;
-        const closure = {
+      reduce(appNode) {
+        const { args } = appNode.application;
+        const closure: Closure = {
           parent,
-          symbols: { args }
+          symbols: { args },
+          nodes: []
         };
-        const afterRefine = reduce(exprToNode(expr, closure));
-
-        console.log("CLOSURE " + printClosure(closure));
-        console.log(
-          "REFINED" +
-            nodeToString(afterRefine, {
-              application: true,
-              appFlags: { application: true, appFlags: { application: true } }
-            })
-        );
-        return {
-          ...afterRefine,
-          application: { args: closure.symbols.args, func }
-        };
+        const entry = exprToNode(expr, closure);
+        if (entry.application) {
+          reduce(entry);
+          while (closure.nodes.some(n => canReduce(n))) {
+            const n = closure.nodes.find(n => n.application && n.reducible);
+            if (n) {
+              console.log(`Reducing ${nodeToString(n, { application: true })}`);
+              reduce(n);
+            }
+          }
+        }
+        refineNode(appNode, entry.type);
       }
     }
   };
