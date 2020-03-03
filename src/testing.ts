@@ -9,7 +9,7 @@ import {
   arrayType,
   defineFunction,
   Expr,
-  reduce,
+  reduceNode,
   unifyNode,
   objectExpr,
   exprToNode,
@@ -17,9 +17,13 @@ import {
   letExpr,
   ref,
   Closure,
-  applyObj
+  applyObj,
+  nodeRef,
+  refToString,
+  reduceGraph,
+  noDepNode
 } from "./types";
-import { globals, lookupArg } from "./globals";
+import { globals, lookupArg, globalGraph } from "./globals";
 import { runMain } from "module";
 
 // import { lookupArg, argName, defineFunction, declareGlobals } from "./globals";
@@ -30,6 +34,7 @@ function dot(obj: Expr, field: Expr): Expr {
 }
 
 const appType = defineFunction(
+  globalGraph,
   "main",
   globals,
   letExpr(
@@ -51,30 +56,38 @@ const appType = defineFunction(
 
 const withMain: Closure = {
   parent: globals,
-  symbols: { main: appType },
-  nodes: []
+  symbols: { main: appType.ref }
 };
 
 const callMain = defineFunction(
+  globalGraph,
   "callMain",
   withMain,
   applyObj("main", [cnst("frog"), objectExpr({ field: cnst(12) })])
 );
 
+const addNumbers = defineFunction(
+  globalGraph,
+  "addNumbers",
+  withMain,
+  applyRef("add", cnst(12), cnst(23))
+);
+
 // var graph: NodeGraph = [{ type: untyped }];
 
-const mainFunc = defineFunction(
-  "main",
-  globals,
-  applyRef(
-    "add",
-    cnst(2),
-    lookupArg("as")
-    // cnst(3)
-    // dot(lookupArg("arg"), cnst("field")),
-    // dot(lookupArg("arg2"), cnst("A"))
-  )
-);
+// const mainFunc = defineFunction(
+//   globalGraph,
+//   "main",
+//   globals,
+//   applyRef(
+//     "add",
+//     cnst(2),
+//     lookupArg("as")
+//     // cnst(3)
+//     // dot(lookupArg("arg"), cnst("field")),
+//     // dot(lookupArg("arg2"), cnst("A"))
+//   )
+// );
 
 // const mainFunc = defineFunction(
 //   "main",
@@ -83,6 +96,7 @@ const mainFunc = defineFunction(
 // );
 
 const appSymbols = defineFunction(
+  globalGraph,
   "main",
   globals,
   applyRef("==", lookupArg(0), cnst("hello"))
@@ -94,6 +108,15 @@ const appSymbols = defineFunction(
   // )
 );
 
-const appNode = applyFunction(appSymbols, node(arrayType(cnstType("hello"))));
-console.log(nodeToString(appNode.application!.args));
-console.log(nodeToString(appNode));
+const appNode = applyFunction(
+  callMain,
+  noDepNode(globalGraph, arrayType(globalGraph))
+);
+reduceGraph(globalGraph);
+console.log(
+  refToString(globalGraph, appNode, {
+    application: true,
+    nodeId: true,
+    appFlags: { nodeId: true }
+  })
+);

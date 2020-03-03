@@ -1,6 +1,7 @@
 import { JSExpr, JSFunctionDef, newArg, stmt2string } from "./javascript";
 import { inspect } from "util";
 import color from "cli-color";
+import { lookup } from "dns";
 
 export type Expr =
   | PrimitiveExpr
@@ -50,13 +51,6 @@ export interface KeyValueExpr {
   value: Expr;
 }
 
-export type SymbolTable = { [symbol: string]: TypedNode };
-export type Closure = {
-  parent?: Closure;
-  symbols: SymbolTable;
-  nodes: TypedNode[];
-};
-
 export function applyRef(name: string, ...args: Expr[]): ApplicationExpr {
   return {
     tag: "apply",
@@ -85,14 +79,14 @@ export function applyObj(
   };
 }
 
-export function arrayType(...entries: Type[]): ObjectType {
+export function arrayType(graph: NodeGraph, ...entries: Type[]): ObjectType {
   return {
     type: "object",
-    keyType: node(untyped),
-    valueType: node(untyped),
+    keyType: noDepNode(graph, untyped),
+    valueType: noDepNode(graph, untyped),
     keyValues: entries.map((value, i) => ({
-      key: node(cnstType(i)),
-      value: node(value)
+      key: noDepNode(graph, cnstType(i)),
+      value: noDepNode(graph, value)
     }))
   };
 }
@@ -146,26 +140,50 @@ export function primTypeExpr(
   return { tag: "primType", name };
 }
 
-export type NodeRef = number;
-
-export type Application = {
-  func: TypedNode;
-  args: TypedNode;
+export type NodeGraph = {
+  nodes: NodeData[];
+  types: TypeData[];
 };
 
-export type TypedNode = TypedNodeT<Type>;
+export type TypeData = {
+  type: Type;
+  owner: NodeRef;
+  deps: NodeRef[];
+};
 
-export type ApplicationNode = TypedNode & {
+export type NodeRef = number;
+export type TypeRef = number;
+export type SymbolTable = { [symbol: string]: NodeRef };
+
+export type Closure = {
+  parent?: Closure;
+  symbols: SymbolTable;
+};
+
+export type Application = {
+  func: NodeRef;
+  args: NodeRef;
+};
+
+export type TypedNode = {
+  ref: NodeRef;
+  graph: NodeGraph;
+};
+
+export type ApplicationNode = NodeData & {
   application: Application;
 };
 
-export interface TypedNodeT<T extends Type> {
-  type: T;
-  nodeId: number;
+export interface NewNodeData {
   expr?: Expr;
   application?: Application;
   reducible?: boolean;
   symbol?: string;
+}
+
+export interface NodeData extends NewNodeData {
+  typeRef: TypeRef;
+  nodeId: NodeRef;
 }
 
 export type ReduceFlags = {
@@ -173,13 +191,9 @@ export type ReduceFlags = {
   values?: boolean;
 };
 
-export function isAppNode(node: TypedNode): node is ApplicationNode {
-  return Boolean(node.application);
-}
-
 export interface NodeTuple {
-  key: TypedNode;
-  value: TypedNode;
+  key: NodeRef;
+  value: NodeRef;
 }
 
 export type Type =
@@ -216,15 +230,15 @@ export interface BoolType {
 
 export interface ObjectType {
   type: "object";
-  keyType: TypedNode;
-  valueType: TypedNode;
+  keyType: NodeRef;
+  valueType: NodeRef;
   keyValues: NodeTuple[];
 }
 
 export interface FunctionType {
   type: "function";
   name: string;
-  reduce(app: ApplicationNode): void;
+  reduce(result: TypedNode, args: TypedNode): void;
   // toJSExpr?(
   //   graph: NodeGraph,
   //   result: NodeRef,
@@ -232,6 +246,8 @@ export interface FunctionType {
   //   funcDef: JSContext
   // ): [JSContext, JSExpr];
 }
+
+export type TypeNameOnly<T extends Type> = Pick<T, "type">;
 
 export type PrimType = StringType | NumberType | BoolType;
 
@@ -241,20 +257,72 @@ export const numberType: NumberType = { type: "number" };
 export const boolType: BoolType = { type: "boolean" };
 export const stringType: StringType = { type: "string" };
 
-export const emptyObject: ObjectType = {
-  type: "object",
-  keyValues: [],
-  keyType: node(untyped),
-  valueType: node(untyped)
-};
+export const objectTypeName: TypeNameOnly<ObjectType> = { type: "object" };
 
-var nodeIdCount = 0;
-
-export function node(type: Type): TypedNode {
+export function emptyObject(depsFrom: TypedNode): ObjectType {
   return {
-    type,
-    nodeId: nodeIdCount++
+    type: "object",
+    keyValues: [],
+    keyType: node(depsFrom, untyped),
+    valueType: node(depsFrom, untyped)
   };
+}
+
+export function existingType(
+  graph: NodeGraph,
+  node: NewNodeData,
+  typeRef: TypeRef
+): NodeData {
+  const nodeId = graph.nodes.length;
+  const exTypeData = graph.types[typeRef];
+  graph.types[typeRef] = { ...exTypeData, deps: [...exTypeData.deps, nodeId] };
+  const newNode = { ...node, nodeId, typeRef };
+  graph.nodes.push(newNode);
+  return newNode;
+}
+
+export function newNode(
+  graph: NodeGraph,
+  node: NewNodeData,
+  type: Type,
+  deps: TypeRef[]
+): NodeData {
+  const nodeId = graph.nodes.length;
+  const typeRef = graph.types.length;
+  graph.types.push({ type, owner: nodeId, deps });
+  const newNode = { ...node, nodeId, typeRef };
+  graph.nodes.push(newNode);
+  return newNode;
+}
+
+export function assertType<T extends Type>(
+  t: Type,
+  t2: TypeNameOnly<T>
+): asserts t is T {
+  if (t.type !== t2.type) {
+    throw new Error(
+      `Not the correct type: expected ${t2.type} but found ${t.type}`
+    );
+  }
+}
+
+export function isNodeOfType<T extends Type>(
+  t: TypedNode,
+  expected: TypeNameOnly<T>
+): boolean {
+  return isOfType(nodeType(t), expected);
+}
+
+export function isOfType<T extends Type>(t: Type, t2: TypeNameOnly<T>): t is T {
+  return t.type === t2.type;
+}
+
+export function noDepNode(graph: NodeGraph, type: Type): NodeRef {
+  return newNode(graph, {}, type, []).nodeId;
+}
+
+export function node(deps: TypedNode, type: Type): NodeRef {
+  return newNode(deps.graph, {}, type, depsFromNode(deps)).nodeId;
 }
 
 export function isFunctionType(t: Type): t is FunctionType {
@@ -265,8 +333,71 @@ export function isObjectType(t: Type): t is ObjectType {
   return t.type === "object";
 }
 
-export function isObjectNode(t: TypedNode): t is TypedNodeT<ObjectType> {
-  return isObjectType(t.type);
+export function graphNode(graph: NodeGraph, ref: NodeRef): NodeData {
+  return graph.nodes[ref];
+}
+
+export function nodeData(node: TypedNode): NodeData {
+  return graphNode(node.graph, node.ref);
+}
+
+export function depsFromNode(node: TypedNode): TypeRef[] {
+  return node.graph.types[node.graph.nodes[node.ref].typeRef].deps;
+}
+
+export function typeFromRef(graph: NodeGraph, ref: TypeRef) {
+  return graph.types[ref].type;
+}
+
+export function lookupType(graph: NodeGraph, ref: NodeRef): Type {
+  return typeFromRef(graph, graphNode(graph, ref).typeRef);
+}
+
+export function nodeRef(graph: NodeGraph, ref: NodeRef): TypedNode {
+  return { graph, ref };
+}
+
+export function fromNodeRef(n: TypedNode, ref: NodeRef): TypedNode {
+  return { graph: n.graph, ref };
+}
+
+export function nodeType(node: TypedNode): Type {
+  return lookupType(node.graph, node.ref);
+}
+
+export function nodeExpr(node: TypedNode): Expr | undefined {
+  return nodeData(node).expr;
+}
+
+export function nodeReducible(node: TypedNode): boolean {
+  return Boolean(isReducibleNode(node) && nodeData(node).reducible);
+}
+
+export function isNodeApp(node: NodeData): node is ApplicationNode {
+  return Boolean(node.application);
+}
+
+export function isObjectNode(t: TypedNode): boolean {
+  return isObjectType(nodeType(t));
+}
+
+export function isFunctionNode(t: TypedNode): boolean {
+  return isFunctionType(nodeType(t));
+}
+
+export function assertDefined<A>(a: A | undefined): A {
+  if (a !== undefined) return a;
+  throw new Error("Is undefined");
+}
+
+export function assertApplication(node: TypedNode): Application {
+  return assertDefined(nodeData(node).application);
+}
+
+export function assertAppNode(node: NodeData): asserts node is ApplicationNode {
+  if (!node.application) {
+    throw new Error("Not an app node");
+  }
 }
 
 export function isStringType(t: Type): t is StringType {
@@ -300,9 +431,10 @@ export function isNumber(t: Type): t is NumberType {
   return t.type === "number";
 }
 
-export function getNumberValue(t: TypedNode): number | undefined {
-  if (isNumber(t.type)) {
-    return t.type.value;
+export function getNumberValue(node: TypedNode): number | undefined {
+  const t = nodeType(node);
+  if (isNumber(t)) {
+    return t.value;
   }
 }
 
@@ -394,36 +526,49 @@ export type PrintFlags = {
   appFlags?: PrintFlags;
 };
 
-export function nodeToString(typedNode: TypedNode, flags?: PrintFlags): string {
-  var typeOnly = typeToString(typedNode.type, flags);
-  if (flags?.expr && typedNode.expr) {
-    typeOnly = typeOnly + color.magenta("~" + exprToString(typedNode.expr));
+export function refToString(
+  graph: NodeGraph,
+  ref: NodeRef,
+  flags?: PrintFlags
+): string {
+  return nodeToString({ graph, ref }, flags);
+}
+
+export function nodeToString(node: TypedNode, flags?: PrintFlags): string {
+  const type = nodeType(node);
+  var typeOnly = typeToString(node.graph, type, flags);
+  const expr = nodeExpr(node);
+  if (flags?.expr && expr) {
+    typeOnly = typeOnly + color.magenta("~" + exprToString(expr));
   }
-  if (flags?.reducible && isReducibleNode(typedNode) && typedNode.reducible) {
+  if (flags?.reducible && nodeReducible(node)) {
     typeOnly = color.red("*") + typeOnly;
   }
-  if (flags?.application && typedNode.application) {
+  const app = nodeData(node).application;
+  if (flags?.application && app) {
     typeOnly =
-      " " +
       typeOnly +
       color.underline(
         `~` +
-          nodeToString(typedNode.application.func, flags?.appFlags) +
+          nodeToString(fromNodeRef(node, app.func), flags?.appFlags) +
           "(" +
-          nodeToString(typedNode.application.args, flags?.appFlags) +
+          nodeToString(fromNodeRef(node, app.args), flags?.appFlags) +
           ")"
       );
   }
-  if (typedNode.symbol) {
-    typeOnly = typeOnly + color.italic("%" + typedNode.symbol);
-  }
   if (flags?.nodeId) {
-    typeOnly = typeOnly + "@" + typedNode.nodeId;
+    if ((!isPrim(type) || type.value === undefined) && !isFunctionType(type)) {
+      typeOnly = nodeData(node).nodeId + "@" + typeOnly;
+    }
   }
   return typeOnly;
 }
 
-export function typeToString(type: Type, flags?: PrintFlags): string {
+export function typeToString(
+  graph: NodeGraph,
+  type: Type,
+  flags?: PrintFlags
+): string {
   switch (type.type) {
     case "any":
       return color.blue("any");
@@ -442,7 +587,10 @@ export function typeToString(type: Type, flags?: PrintFlags): string {
       return color.cyan(type.name + "()");
     case "object":
       const fields = type.keyValues.map(({ key, value }) => {
-        return `${nodeToString(key, flags)}: ${nodeToString(value, flags)}`;
+        return `${nodeToString(nodeRef(graph, key), flags)}: ${nodeToString(
+          nodeRef(graph, value),
+          flags
+        )}`;
       });
       return `{ ${fields.join(", ")} }`;
     default:
@@ -450,19 +598,20 @@ export function typeToString(type: Type, flags?: PrintFlags): string {
   }
 }
 
-export function applyFunction(
-  func: TypedNode,
-  args: TypedNode
-): ApplicationNode {
-  if (isFunctionType(func.type)) {
-    const appNode = {
-      type: untyped,
-      application: { func, args },
-      reducible: true,
-      nodeId: nodeIdCount++
-    };
-    reduce(appNode);
-    return appNode;
+export function applyFunction(func: TypedNode, args: NodeRef): NodeRef {
+  if (isFunctionNode(func)) {
+    const appNode = newNode(
+      func.graph,
+      {
+        application: { func: func.ref, args },
+        reducible: true
+      },
+      untyped,
+      []
+    );
+    const appRef = nodeRef(func.graph, appNode.nodeId);
+    reduceNode(appRef);
+    return appNode.nodeId;
   }
   throw new Error("Trying to apply not a function");
 }
@@ -472,7 +621,15 @@ export function inspectAll(a: any) {
 }
 
 export function valueEqualsNode(one: TypedNode, two: TypedNode): boolean {
-  return valueEqualsType(one.type, two.type);
+  return valueEqualsType(nodeType(one), nodeType(two));
+}
+
+export function valueEqualsRef(
+  graph: NodeGraph,
+  one: NodeRef,
+  two: NodeRef
+): boolean {
+  return valueEqualsType(lookupType(graph, one), lookupType(graph, two));
 }
 
 export function valueEqualsType(one: Type, two: Type): boolean {
@@ -482,8 +639,8 @@ export function valueEqualsType(one: Type, two: Type): boolean {
   return false;
 }
 
-export function typeEquals(one: Type, two: Type): boolean {
-  return isRefinementOf(one, two) && isRefinementOf(two, one);
+export function typeEquals(graph: NodeGraph, one: Type, two: Type): boolean {
+  return isRefinementOf(graph, one, two) && isRefinementOf(graph, two, one);
 }
 
 export function mapChanges<A>(array: A[], f: (a: A) => A): A[] {
@@ -499,10 +656,26 @@ export function mapChanges<A>(array: A[], f: (a: A) => A): A[] {
 }
 
 export function isRefinementOfNode(source: TypedNode, refinement: TypedNode) {
-  return isRefinementOf(source.type, refinement.type);
+  return isRefinementOf(source.graph, nodeType(source), nodeType(refinement));
 }
 
-export function isRefinementOf(source: Type, refinement: Type): boolean {
+export function isRefinementOfRef(
+  graph: NodeGraph,
+  source: NodeRef,
+  refinement: NodeRef
+) {
+  return isRefinementOf(
+    graph,
+    lookupType(graph, source),
+    lookupType(graph, refinement)
+  );
+}
+
+export function isRefinementOf(
+  graph: NodeGraph,
+  source: Type,
+  refinement: Type
+): boolean {
   if (source === refinement) {
     return true;
   }
@@ -517,18 +690,18 @@ export function isRefinementOf(source: Type, refinement: Type): boolean {
   }
   if (isObjectType(source) && isObjectType(refinement)) {
     return (
-      isRefinementOfNode(source.keyType, refinement.keyType) &&
-      isRefinementOfNode(source.valueType, refinement.valueType) &&
+      isRefinementOfRef(graph, source.keyType, refinement.keyType) &&
+      isRefinementOfRef(graph, source.valueType, refinement.valueType) &&
       refinement.keyValues.every(({ key, value }) => {
         const ind = source.keyValues.findIndex(kv =>
-          valueEqualsNode(key, kv.key)
+          valueEqualsRef(graph, key, kv.key)
         );
         if (ind >= 0) {
-          return isRefinementOfNode(source.keyValues[ind].value, value);
+          return isRefinementOfRef(graph, source.keyValues[ind].value, value);
         } else {
           return (
-            isRefinementOfNode(source.keyType, key) &&
-            isRefinementOfNode(source.valueType, value)
+            isRefinementOfRef(graph, source.keyType, key) &&
+            isRefinementOfRef(graph, source.valueType, value)
           );
         }
       })
@@ -541,7 +714,11 @@ export function isRefinementOf(source: Type, refinement: Type): boolean {
   throw new Error("Don't know how to check if already refine yet");
 }
 
-export function refineType(source: Type, refinement: Type): Type {
+export function refineType(
+  graph: NodeGraph,
+  source: Type,
+  refinement: Type
+): Type {
   if (source === refinement) {
     return source;
   }
@@ -575,7 +752,7 @@ export function refineType(source: Type, refinement: Type): Type {
     // console.log(
     //   "Refining:" + typeToString(source) + " with " + typeToString(refinement)
     // );
-    const result = refineObjects(source, refinement);
+    const result = refineObjects(graph, source, refinement);
     // console.log(`Resulting in ${result === source} ${typeToString(result)}`);
     return result;
   }
@@ -588,23 +765,29 @@ export function refineType(source: Type, refinement: Type): Type {
   );
 }
 
-function refineObjects(source: ObjectType, refinement: ObjectType) {
+function refineObjects(
+  graph: NodeGraph,
+  source: ObjectType,
+  refinement: ObjectType
+) {
   let newFields: NodeTuple[] = [];
   let changed = false;
   refinement.keyValues.forEach(({ key, value }) => {
-    const ind = source.keyValues.findIndex(kv => valueEqualsNode(key, kv.key));
+    const ind = source.keyValues.findIndex(kv =>
+      valueEqualsRef(graph, key, kv.key)
+    );
     if (ind >= 0) {
       const exKV = source.keyValues[ind];
-      changed = refineNode(exKV.value, value.type) || changed;
-      changed = refineNode(exKV.key, key.type) || changed;
+      changed = refineRef(graph, exKV.value, value) || changed;
+      changed = refineRef(graph, exKV.key, key) || changed;
     } else {
-      refineNode(key, source.keyType.type);
-      refineNode(value, source.valueType.type);
+      refineRef(graph, key, source.keyType);
+      refineRef(graph, value, source.valueType);
       newFields.push({ key, value });
     }
   });
-  changed = refineNode(source.keyType, refinement.keyType.type) || changed;
-  changed = refineNode(source.valueType, refinement.valueType.type) || changed;
+  changed = refineRef(graph, source.keyType, refinement.keyType) || changed;
+  changed = refineRef(graph, source.valueType, refinement.valueType) || changed;
   if (newFields.length) {
     return {
       ...source,
@@ -617,13 +800,21 @@ function refineObjects(source: ObjectType, refinement: ObjectType) {
   return source;
 }
 
-export function printClosure(closure: Closure, flags?: PrintFlags) {
-  return printSymbols(closure.symbols, flags);
+export function printClosure(
+  graph: NodeGraph,
+  closure: Closure,
+  flags?: PrintFlags
+) {
+  return printSymbols(graph, closure.symbols, flags);
 }
 
-export function printSymbols(symbols: SymbolTable, flags?: PrintFlags): string {
+export function printSymbols(
+  graph: NodeGraph,
+  symbols: SymbolTable,
+  flags?: PrintFlags
+): string {
   const symStrings = Object.entries(symbols).map(
-    ([sym, node]) => `${sym}: ${nodeToString(node, flags)} ${node.reducible}`
+    ([sym, node]) => `${sym}: ${nodeToString({ graph, ref: node }, flags)}`
   );
   return `{${symStrings.join(", ")} }`;
 }
@@ -651,46 +842,52 @@ function printDiff(node1: TypedNode, node2: TypedNode) {
   return `diff: orig-${nodeToString(node1)} new-${nodeToString(node2)}`;
 }
 
-function printAppChange(
-  app: Application | undefined,
-  app2: Application | undefined
-): string {
-  if (app && app2) {
-    return `func: ${printDiff(app.func, app2.func)} args: ${printDiff(
-      app.args,
-      app2.args
-    )}`;
-  }
-  if (app2) {
-    return `Was nothing now: func: ${nodeToString(
-      app2.func
-    )} args: ${nodeToString(app2.args)}`;
-  }
-  if (app)
-    return `Becoming undefined! func: ${nodeToString(
-      app.func
-    )} args: ${nodeToString(app.args)}`;
-  throw new Error("Don't think this should happen");
+export function refineNode(node1: TypedNode, node2: TypedNode): boolean {
+  return refine(node1.graph, node1.ref, nodeType(node2));
 }
 
-export function refineNode(source: TypedNode, refinement: Type): boolean {
-  if (isRefinementOf(source.type, refinement)) {
-    // console.log(`${nodeToString(source)} ${typeToString(refinement)}`);
+export function refineToType(node1: TypedNode, type: Type): boolean {
+  return refine(node1.graph, node1.ref, type);
+}
+
+export function refineRef(
+  graph: NodeGraph,
+  source: NodeRef,
+  refinement: NodeRef
+) {
+  return refine(graph, source, lookupType(graph, refinement));
+}
+
+export function refine(
+  graph: NodeGraph,
+  source: NodeRef,
+  refinement: Type
+): boolean {
+  const node = graphNode(graph, source);
+  const typeRef = node.typeRef;
+  const sourceType = typeFromRef(graph, typeRef);
+  if (isRefinementOf(graph, sourceType, refinement)) {
     return false;
   }
-  const type = refineType(source.type, refinement);
-  if (type !== source.type) {
-    source.type = type;
-    source.reducible = Boolean(source.application);
+  const type = refineType(graph, sourceType, refinement);
+  if (type !== sourceType) {
+    const tNode = graph.types[typeRef];
+    graph.types[typeRef] = { ...tNode, type };
+    tNode.deps.forEach(nRef => {
+      const r = graph.nodes[nRef];
+      if (r.application) {
+        graph.nodes[nRef] = { ...r, reducible: true };
+      }
+    });
     return true;
   }
   return false;
 }
 
-function findSymbol(name: string, closure?: Closure): TypedNode {
+function findSymbol(name: string, closure?: Closure): NodeRef {
   while (closure) {
     const node = closure.symbols[name];
-    if (node) {
+    if (node !== undefined) {
       return node;
     }
     closure = closure.parent;
@@ -698,124 +895,135 @@ function findSymbol(name: string, closure?: Closure): TypedNode {
   throw new Error("No symbol for" + name);
 }
 
-export function reduceToObject(
-  node: TypedNode,
-  flags?: ReduceFlags
-): asserts node is TypedNodeT<ObjectType> {
-  if (!reduceTo(node, emptyObject, flags ?? { keys: true, values: true })) {
-    throw new Error("Not an object");
-  }
+export function reduceToObject(node: TypedNode, flags?: ReduceFlags): void {
+  reduceTo(node, objectTypeName, flags ?? { keys: true, values: true });
 }
 
 export function reduceTo<T extends Type>(
   node: TypedNode,
-  type: T,
+  expected: TypeNameOnly<T>,
   flags?: ReduceFlags
-): node is TypedNodeT<T> {
-  reduce(node, flags);
-  return isNodeOfType(node, type);
-}
-
-let counter = 0;
-export function reduce(node: TypedNode, flags?: ReduceFlags): void {
-  let count = counter++;
-  while (canReduce(node, flags)) {
-    if (isAppNode(node)) {
-      const func = node.application.func;
-      reduce(func);
-      if (isFunctionType(func.type)) {
-        node.reducible = false;
-        // console.log(
-        //   `Calling ${func.type.name} ${count} ${nodeToString(
-        //     node.application.args,
-        //     {
-        //       nodeId: true
-        //     }
-        //   )} ${nodeToString(node)}`
-        // );
-        func.type.reduce(node);
-        // console.log(
-        //   `Returned ${func.type.name} ${count} ${nodeToString(
-        //     node.application.args,
-        //     {
-        //       nodeId: true
-        //     }
-        //   )} ${nodeToString(node)}`
-        // );
-      } else {
-        throw new Error("Can't apply to non function");
-      }
-    } else if (flags && (flags.keys || flags.values) && isObjectNode(node)) {
-      reduceObjectType(node.type, flags);
-    } else throw new Error("This is not reducible");
+): void {
+  reduceNode(node, flags);
+  if (!isOfType(nodeType(node), expected)) {
+    throw new Error("It's not of the type." + expected.type);
   }
 }
 
-export function reduceObjectType(obj: ObjectType, flags?: ReduceFlags): void {
-  reduce(obj.keyType);
-  reduce(obj.valueType);
+export function reduceNode(node: TypedNode, flags?: ReduceFlags): void {
+  reduce(node.graph, node.ref);
+}
+
+export function updateReducible(
+  graph: NodeGraph,
+  ref: NodeRef,
+  reducible: boolean
+) {
+  graph.nodes[ref] = { ...graph.nodes[ref], reducible };
+}
+
+let counter = 0;
+export function reduce(
+  graph: NodeGraph,
+  ref: NodeRef,
+  flags?: ReduceFlags
+): void {
+  let count = counter++;
+  while (canReduce(graph, ref, flags)) {
+    const data = graphNode(graph, ref);
+    if (isNodeApp(data)) {
+      const app = data.application;
+      const func = nodeRef(graph, app.func);
+      reduce(graph, app.func);
+      const funcType = nodeType(func);
+      if (isFunctionType(funcType)) {
+        updateReducible(graph, ref, false);
+        funcType.reduce({ graph, ref }, { graph, ref: app.args });
+      } else {
+        throw new Error("Can't apply to non function");
+      }
+    } else {
+      const type = typeFromRef(graph, data.typeRef);
+      if (flags && (flags.keys || flags.values) && isObjectType(type)) {
+        reduceObjectType(graph, type, flags);
+      } else throw new Error("This is not reducible");
+    }
+  }
+}
+
+export function reduceObjectType(
+  graph: NodeGraph,
+  obj: ObjectType,
+  flags?: ReduceFlags
+): void {
+  reduce(graph, obj.keyType);
+  reduce(graph, obj.valueType);
   obj.keyValues.forEach(kv => {
-    if (flags?.keys) reduce(kv.key);
-    if (flags?.values) reduce(kv.value);
+    if (flags?.keys) reduce(graph, kv.key);
+    if (flags?.values) reduce(graph, kv.value);
   });
 }
 
 export function canReduceObject(
-  node: TypedNodeT<ObjectType>,
+  graph: NodeGraph,
+  obj: ObjectType,
   flags?: ReduceFlags
 ): boolean {
   return (
-    canReduce(node.type.keyType) ||
-    canReduce(node.type.valueType) ||
-    node.type.keyValues.some(
+    canReduce(graph, obj.keyType) ||
+    canReduce(graph, obj.valueType) ||
+    obj.keyValues.some(
       ({ key, value }) =>
-        (flags?.keys && canReduce(key)) || (flags?.values && canReduce(value))
+        (flags?.keys && canReduce(graph, key)) ||
+        (flags?.values && canReduce(graph, value))
     )
   );
 }
 
 export function isReducibleNode(node: TypedNode): boolean {
-  return Boolean(node.application || node.symbol);
+  return Boolean(nodeData(node).application);
 }
 
-export function canReduce(node: TypedNode, flags?: ReduceFlags): boolean {
+export function canReduceNode(node: TypedNode): boolean {
+  return canReduce(node.graph, node.ref);
+}
+
+export function canReduce(
+  graph: NodeGraph,
+  ref: NodeRef,
+  flags?: ReduceFlags
+): boolean {
+  const data = graphNode(graph, ref);
   if (flags?.keys || flags?.values) {
-    if (isObjectNode(node)) {
-      return canReduceObject(node, flags);
+    const type = typeFromRef(graph, data.typeRef);
+    if (isObjectType(type)) {
+      return canReduceObject(graph, type, flags);
     }
   }
-  return isReducibleNode(node) ? Boolean(node.reducible) : false;
+  return data.application ? Boolean(data.reducible) : false;
 }
 
 export function findField(
-  obj: TypedNodeT<ObjectType>,
+  obj: TypedNode,
   named: string | number | boolean
 ): [TypedNode, TypedNode] {
-  var kv = obj.type.keyValues.find(({ key, value }) =>
-    primEquals(key.type, named)
+  const graph = obj.graph;
+  const data = nodeData(obj);
+  const type = nodeType(obj);
+  assertType(type, objectTypeName);
+  var kv = type.keyValues.find(({ key, value }) =>
+    primEquals(lookupType(graph, key), named)
   );
   if (!kv) {
-    const exObj = obj.type;
-    const newKey = node(cnstType(named));
-    const newType = node(untyped);
-    obj.type = {
-      ...exObj,
-      keyValues: [...exObj.keyValues, { key: newKey, value: newType }]
-    };
-    return [newKey, newType];
+    const newKey = node(obj, cnstType(named));
+    const newType = node(obj, untyped);
+    refineToType(obj, {
+      ...type,
+      keyValues: [...type.keyValues, { key: newKey, value: newType }]
+    });
+    return [nodeRef(graph, newKey), nodeRef(graph, newType)];
   }
-  return [kv.key, kv.value];
-}
-
-export function isOfType<T extends Type>(t: Type, t2: T): t is T {
-  return t.type === t2.type;
-}
-
-export function isNodeOfType<T extends Type>(
-  t: TypedNode,
-  t2: T
-): t is TypedNodeT<T> {
-  return isOfType(t.type, t2);
+  return [nodeRef(graph, kv.key), nodeRef(graph, kv.value)];
 }
 
 export function unifyNode(node: TypedNode, node2: TypedNode): void {
@@ -824,8 +1032,8 @@ export function unifyNode(node: TypedNode, node2: TypedNode): void {
   //     nodeId: true
   //   })} ${nodeToString(node2, { nodeId: true })}`
   // );
-  refineNode(node2, node.type);
-  refineNode(node, node2.type);
+  refineNode(node2, node);
+  refineNode(node, node2);
   // console.log(
   //   `After unification ${nodeToString(node, {
   //     nodeId: true
@@ -833,100 +1041,131 @@ export function unifyNode(node: TypedNode, node2: TypedNode): void {
   // );
 }
 
-export function exprToNode(exprs: Expr, closure: Closure): TypedNode {
-  function recurse(expr: Expr): TypedNode {
-    function mkExprNode(type: Type, application?: Application): TypedNode {
-      const newNode = {
-        type,
-        expr,
-        application,
-        reducible: Boolean(application),
-        nodeId: nodeIdCount++
-      };
-      closure.nodes.push(newNode);
-      return newNode;
+export function exprToNode(
+  graph: NodeGraph,
+  exprs: Expr,
+  closure: Closure,
+  deps: TypeRef[]
+): NodeRef {
+  function recurse(expr: Expr, deps: TypeRef[]): NodeRef {
+    function mkExprNode(
+      type: Type,
+      application?: (moreDeps: TypeRef[]) => Application
+    ): NodeRef {
+      const nn = newNode(graph, {}, type, deps);
+      deps.forEach(tr => {
+        const tn = graph.types[tr];
+        const newType = { ...tn, deps: [...tn.deps, nn.nodeId] };
+        graph.types[tr] = newType;
+      });
+      if (application) {
+        nn.application = application([...deps, nn.typeRef]);
+        nn.reducible = true;
+      }
+      return nn.nodeId;
     }
+
     switch (expr.tag) {
       case "apply":
-        return mkExprNode(untyped, {
-          func: recurse(expr.function),
-          args: recurse(expr.args)
-        });
+        return mkExprNode(untyped, deps => ({
+          func: recurse(expr.function, deps),
+          args: recurse(expr.args, deps)
+        }));
       case "prim":
         return mkExprNode(cnstType(expr.value));
       case "primType":
         return mkExprNode({ type: expr.name });
       case "object":
         const keyValues = expr.entries.map(kv => {
-          const key = recurse(kv.key);
-          const value = recurse(kv.value);
+          const key = recurse(kv.key, deps);
+          const value = recurse(kv.value, deps);
           return { key, value };
         });
-        const keyType = recurse(expr.keyExpr);
-        const valueType = recurse(expr.valueExpr);
+        const keyType = recurse(expr.keyExpr, deps);
+        const valueType = recurse(expr.valueExpr, deps);
         return mkExprNode({ type: "object", keyValues, keyType, valueType });
       case "symbol":
-        return findSymbol(expr.symbol, closure);
+        const symNode = graphNode(graph, findSymbol(expr.symbol, closure));
+        const newSymNode = existingType(
+          graph,
+          { symbol: expr.symbol },
+          symNode.typeRef
+        );
+        return newSymNode.nodeId;
       case "let":
-        const symbolic = recurse(expr.expr);
-        symbolic.symbol = expr.symbol;
+        const symbolic = recurse(expr.expr, deps);
         closure.symbols[expr.symbol] = symbolic;
-        return recurse(expr.in);
+        return recurse(expr.in, deps);
     }
   }
-  return recurse(exprs);
-}
-
-export function reduceClosure(
-  closure: Closure,
-  entry: TypedNode
-): TypedNodeT<FunctionType> {
-  return {
-    nodeId: nodeIdCount++,
-    type: {
-      type: "function",
-      name: "reduceClosure",
-      reduce(appNode) {
-        if (entry.application) {
-          reduce(entry);
-          while (closure.nodes.some(n => canReduce(n))) {
-            const n = closure.nodes.find(n => n.application && n.reducible);
-            if (n) {
-              // console.log(`Reducing ${nodeToString(n, { application: true })}`);
-              reduce(n);
-            }
-          }
-        }
-        refineNode(appNode, entry.type);
-      }
-    }
-  };
+  return recurse(exprs, deps);
 }
 
 export function defineFunction(
+  graph: NodeGraph,
   name: string,
   parent: Closure,
   expr: Expr
 ): TypedNode {
-  return {
-    nodeId: nodeIdCount++,
-    type: {
+  const node = newNode(
+    graph,
+    {},
+    {
       type: "function",
       name,
-      reduce(appNode) {
-        const { args } = appNode.application;
+      reduce(result, args) {
         const closure: Closure = {
           parent,
-          symbols: { args },
-          nodes: []
+          symbols: { args: args.ref }
         };
-        const entry = exprToNode(expr, closure);
-        appNode.application = {
-          func: reduceClosure(closure, entry),
-          args
-        };
-        appNode.reducible = true;
+        const resultNode = nodeData(result);
+        const entry = exprToNode(graph, expr, closure, [resultNode.typeRef]);
+        const entryNode = graphNode(graph, entry);
+        const app = entryNode.application;
+        if (app) {
+          resultNode.application = {
+            func: app.func,
+            args: app.args
+          };
+          resultNode.reducible = true;
+        }
       }
+    },
+    []
+  );
+  return { graph, ref: node.nodeId };
+}
+
+export function printGraph(graph: NodeGraph, flags?: PrintFlags) {
+  graph.nodes.forEach(g => {
+    console.log(refToString(graph, g.nodeId, flags));
+  });
+  graph.types.forEach(g => {
+    const refs = g.deps
+      .map(n =>
+        refToString(graph, n, {
+          application: true,
+          nodeId: true
+        })
+      )
+      .join(",\n   ");
+    console.log(refToString(graph, g.owner) + "-[" + refs + "]");
+  });
+}
+
+export function reduceGraph(graph: NodeGraph) {
+  printGraph(graph, { nodeId: true, application: true, reducible: true });
+  do {
+    var reducibleNodeCount = 0;
+    var current = 0;
+    while (current < graph.nodes.length) {
+      const g = graphNode(graph, current);
+      if (g.reducible && g.application) {
+        reducibleNodeCount++;
+        reduce(graph, current);
+      }
+      current++;
     }
-  };
+    console.log("REDUCED NODES=" + reducibleNodeCount);
+  } while (reducibleNodeCount > 0);
 }

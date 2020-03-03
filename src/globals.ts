@@ -20,25 +20,35 @@ import {
   Closure,
   reduceToObject,
   canReduceObject,
-  reduce,
+  reduceNode,
   reduceTo,
   isPrim,
-  boolType
+  boolType,
+  nodeRef,
+  refineToType,
+  nodeData,
+  nodeType,
+  refineRef,
+  refine,
+  NodeGraph,
+  reduce,
+  noDepNode
 } from "./types";
 
 const fieldRef: FunctionType = {
   type: "function",
   name: "fieldRef",
-  reduce(appNode) {
-    const { args } = appNode.application;
+  reduce(result, args) {
     reduceToObject(args);
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
-    refineNode(arg0, emptyObject);
+    refineToType(arg0, emptyObject(args));
     reduceToObject(arg0, { keys: true });
-    if (isPrim(arg1.type) && arg1.type.value !== undefined) {
-      const [, fieldNode] = findField(arg0, arg1.type.value);
-      unifyNode(fieldNode, appNode);
+    const arg1Type = nodeType(arg1);
+    if (isPrim(arg1Type) && arg1Type.value !== undefined) {
+      const [, fieldNode] = findField(arg0, arg1Type.value);
+      reduceNode(fieldNode);
+      unifyNode(fieldNode, result);
     } else {
       console.log(nodeToString(args));
       throw new Error("Fields must be prims");
@@ -49,44 +59,49 @@ const fieldRef: FunctionType = {
 const eqRef: FunctionType = {
   type: "function",
   name: "==",
-  reduce(appNode) {
-    const { args } = appNode.application;
+  reduce(result, args) {
     reduceToObject(args);
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
-    refineNode(appNode, boolType);
-    if (isPrim(arg0.type) && isPrim(arg1.type)) {
-      if (arg0.type.value !== undefined && arg1.type.value !== undefined) {
-        refineNode(appNode, cnstType(arg0.type.value === arg1.type.value));
+    refineToType(result, boolType);
+    const arg0Type = nodeType(arg0);
+    const arg1Type = nodeType(arg1);
+    if (isPrim(arg0Type) && isPrim(arg1Type)) {
+      if (arg0Type.value !== undefined && arg1Type.value !== undefined) {
+        refineToType(result, cnstType(arg0Type.value === arg1Type.value));
       }
     }
-    return appNode;
   }
 };
 
 const addFunc: FunctionType = {
   type: "function",
   name: "add",
-  reduce(appNode) {
-    const { args } = appNode.application;
+  reduce(result, args) {
     reduceToObject(args);
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
+    refineToType(arg0, numberType);
+    refineToType(arg1, numberType);
     const numValue = numberOp(arg0, arg1, (a, b) => a + b);
     const resultVal = numValue !== undefined ? cnstType(numValue) : numberType;
-    refineNode(arg0, numberType);
-    refineNode(arg1, numberType);
-    refineNode(appNode, resultVal);
+    console.log(
+      `0: ${nodeToString(arg0, { nodeId: true })} 1:${nodeToString(arg1, {
+        nodeId: true
+      })}`
+    );
+    refineToType(result, resultVal);
   }
 };
 
+export const globalGraph: NodeGraph = { nodes: [], types: [] };
+
 export const globals: Closure = {
   symbols: {
-    add: node(addFunc),
-    fieldRef: node(fieldRef),
-    "==": node(eqRef)
-  },
-  nodes: []
+    add: noDepNode(globalGraph, addFunc),
+    fieldRef: noDepNode(globalGraph, fieldRef),
+    "==": noDepNode(globalGraph, eqRef)
+  }
 };
 
 export function lookupArg(name: string | number | boolean): Expr {
