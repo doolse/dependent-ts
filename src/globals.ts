@@ -85,11 +85,11 @@ const addFunc: FunctionType = {
     refineToType(arg1, numberType);
     const numValue = numberOp(arg0, arg1, (a, b) => a + b);
     const resultVal = numValue !== undefined ? cnstType(numValue) : numberType;
-    console.log(
-      `0: ${nodeToString(arg0, { nodeId: true })} 1:${nodeToString(arg1, {
-        nodeId: true
-      })}`
-    );
+    // console.log(
+    //   `0: ${nodeToString(arg0, { nodeId: true })} 1:${nodeToString(arg1, {
+    //     nodeId: true
+    //   })}`
+    // );
     refineToType(result, resultVal);
   }
 };
