@@ -113,10 +113,4 @@ const appNode = applyFunction(
   noDepNode(globalGraph, arrayType(globalGraph))
 );
 reduceGraph(globalGraph);
-console.log(
-  refToString(globalGraph, appNode, {
-    application: true,
-    nodeId: true,
-    appFlags: { nodeId: true }
-  })
-);
+console.log(refToString(globalGraph, appNode, { application: true }));

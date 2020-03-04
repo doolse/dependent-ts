@@ -1202,8 +1202,8 @@ export function reduceGraph(graph: NodeGraph) {
     reducible: true,
     appFlags: { nodeId: true }
   };
-  printGraph(graph, flags);
-  printReducible(graph, flags);
+  // printGraph(graph, flags);
+  // printReducible(graph, flags);
   do {
     var reducedNodes: NodeRef[] = [];
     var current = 0;
@@ -1215,7 +1215,7 @@ export function reduceGraph(graph: NodeGraph) {
       }
       current++;
     }
-    console.log("REDUCED NODES=" + reducedNodes.length);
-    printReducible(graph, flags, reducedNodes);
+    // console.log("REDUCED NODES=" + reducedNodes.length);
+    // printReducible(graph, flags, reducedNodes);
   } while (reducedNodes.length > 0);
 }
