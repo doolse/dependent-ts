@@ -1,8 +1,7 @@
 import { JSExpr, JSFunctionDef, newArg, stmt2string } from "./javascript";
 import { inspect } from "util";
 import color from "cli-color";
-import { lookup } from "dns";
-
+import { shallowEqual } from "shallow-equal-object";
 export type Expr =
   | PrimitiveExpr
   | PrimitiveNameExpr
@@ -221,37 +220,41 @@ export type Type =
   | ObjectType
   | FunctionType;
 
-export interface AnyType {
+export interface BaseType {
+  refinements?: TypedNode[];
+}
+
+export interface AnyType extends BaseType {
   type: "any";
 }
 
-export interface UntypedType {
+export interface UntypedType extends BaseType {
   type: "untyped";
 }
 
-export interface NumberType {
+export interface NumberType extends BaseType {
   type: "number";
   value?: number;
 }
 
-export interface StringType {
+export interface StringType extends BaseType {
   type: "string";
   value?: string;
 }
 
-export interface BoolType {
+export interface BoolType extends BaseType {
   type: "boolean";
   value?: boolean;
 }
 
-export interface ObjectType {
+export interface ObjectType extends BaseType {
   type: "object";
   keyType: NodeRef;
   valueType: NodeRef;
   keyValues: NodeTuple[];
 }
 
-export interface FunctionType {
+export interface FunctionType extends BaseType {
   type: "function";
   name: string;
   reduce(result: TypedNode, args: TypedNode): void;
@@ -539,6 +542,7 @@ export type PrintFlags = {
   nodeId?: boolean;
   reducible?: boolean;
   application?: boolean;
+  refinements?: boolean;
   appFlags?: PrintFlags;
 };
 
@@ -552,7 +556,7 @@ export function refToString(
 
 export function nodeToString(node: TypedNode, flags?: PrintFlags): string {
   const type = nodeType(node);
-  var typeOnly = typeToString(node.graph, type, flags);
+  var typeOnly = typeAndRefinementsToString(node.graph, type, flags);
   const expr = nodeExpr(node);
   if (flags?.expr && expr) {
     typeOnly = typeOnly + color.magenta("~" + exprToString(expr));
@@ -578,6 +582,22 @@ export function nodeToString(node: TypedNode, flags?: PrintFlags): string {
     // }
   }
   return typeOnly;
+}
+
+export function typeAndRefinementsToString(
+  graph: NodeGraph,
+  type: Type,
+  flags?: PrintFlags
+): string {
+  const baseStr = typeToString(graph, type, flags);
+  if (!type.refinements || !flags?.refinements) {
+    return baseStr;
+  } else {
+    const plusRef = type.refinements
+      .map(r => nodeToString(r, { application: true }))
+      .join(" && ");
+    return baseStr + "#" + plusRef;
+  }
 }
 
 export function typeToString(
@@ -684,6 +704,19 @@ export function isRefinementOfRef(
   );
 }
 
+export function missingRefinements(
+  source: TypedNode[] | undefined,
+  refinements: TypedNode[] | undefined
+) {
+  if (!source) {
+    return refinements && refinements.length > 0;
+  } else
+    return (
+      refinements &&
+      refinements.some(r => !source.find(sr => shallowEqual(sr, r)))
+    );
+}
+
 export function isRefinementOf(
   graph: NodeGraph,
   source: Type,
@@ -691,6 +724,9 @@ export function isRefinementOf(
 ): boolean {
   if (source === refinement) {
     return true;
+  }
+  if (missingRefinements(source.refinements, refinement.refinements)) {
+    return false;
   }
   if (isUntyped(refinement)) {
     return true;
@@ -727,6 +763,29 @@ export function isRefinementOf(
   throw new Error("Don't know how to check if already refine yet");
 }
 
+export function withRefinements(source: Type, refinement: Type) {
+  const refinements = refinement.refinements;
+  if (!refinements || refinements.length == 0) {
+    return source;
+  } else if (!source.refinements) {
+    return { ...source, refinements };
+  } else {
+    const extraRefine = refinements.filter(
+      r => !source.refinements!.find(sr => shallowEqual(sr, r))
+    );
+    extraRefine.forEach(n =>
+      console.log(nodeToString(n, { application: true, nodeId: true }))
+    );
+    if (extraRefine.length == 0) {
+      return source;
+    }
+    return {
+      ...source,
+      refinements: [...source.refinements, ...extraRefine]
+    };
+  }
+}
+
 export function refineType(
   graph: NodeGraph,
   source: Type,
@@ -736,10 +795,7 @@ export function refineType(
     return source;
   }
   if (isUntyped(refinement)) {
-    if (!isUntyped(source)) {
-      throw new Error("Can't refine back to untyped");
-    }
-    return source;
+    return withRefinements(source, refinement);
   }
   if (isUntyped(source)) {
     return refinement;
@@ -752,14 +808,17 @@ export function refineType(
     }
     if (source.value !== refinement.value) {
       if (source.value === undefined) {
-        return cnstType(refinement.value!);
+        return withRefinements(
+          { ...source!, value: refinement.value! } as PrimType,
+          refinement
+        );
       } else {
         throw new Error(
           "Can't refine value from " + source.value + " to " + refinement.value
         );
       }
     }
-    return source;
+    return withRefinements(source, refinement);
   }
   if (isObjectType(source) && isObjectType(refinement)) {
     // console.log(
@@ -767,7 +826,7 @@ export function refineType(
     // );
     const result = refineObjects(graph, source, refinement);
     // console.log(`Resulting in ${result === source} ${typeToString(result)}`);
-    return result;
+    return withRefinements(result, refinement);
   }
   debugger;
   throw new Error(
@@ -1250,4 +1309,11 @@ export function reduceGraph(graph: NodeGraph) {
     // console.log("REDUCED NODES=" + reducedNodes.length);
     // printReducible(graph, flags, reducedNodes);
   } while (reducedNodes.length > 0);
+}
+
+export function addRefinement(t: Type, appNode: TypedNode): Type {
+  if (!t.refinements) {
+    return { ...t, refinements: [appNode] };
+  }
+  return { ...t, refinements: [...t.refinements, appNode] };
 }

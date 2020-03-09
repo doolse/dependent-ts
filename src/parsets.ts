@@ -32,12 +32,16 @@ import { globals, globalGraph } from "./globals";
 const source = `
 function another()
 {
-    args.a == args.b
+    let poo = 3 + 2;
+    let anything = refine(args.a == args.b, true);
+    let what = refine(args.a == args.a, false);
+    args.a
 }
 
 function main()
 {
-    main({a: 12, b:12});
+    let crap = refine(args.a == 13, false);
+    another({a: args.a, b: 18})
 }
 `;
 
@@ -108,12 +112,19 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
         valueExpr: primTypeExpr("untyped"),
         entries
       };
+    } else if (ts.isConditionalExpression(n)) {
+      return applyRef(
+        "ifThenElse",
+        parseExpr(n.condition),
+        parseExpr(n.whenTrue),
+        parseExpr(n.whenFalse)
+      );
     } else {
       switch (n.kind) {
         case ts.SyntaxKind.TrueKeyword:
           return cnst(true);
         case ts.SyntaxKind.FalseKeyword:
-          return cnst(true);
+          return cnst(false);
         default:
           console.log(n.kind);
           throw new Error("Unknown expr node");
@@ -168,5 +179,5 @@ const appNode = exprToNode(globalGraph, applyObj("main"), ourFuncs);
 const args = globalGraph.nodes[appNode].application!.args;
 reduceGraph(globalGraph);
 // console.log(refToString(globalGraph, argsNode));
-console.log(refToString(globalGraph, args));
+console.log(refToString(globalGraph, args, { refinements: true }));
 console.log(refToString(globalGraph, appNode, { application: true }));

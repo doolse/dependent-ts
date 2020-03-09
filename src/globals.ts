@@ -32,7 +32,11 @@ import {
   refine,
   NodeGraph,
   reduce,
-  noDepNode
+  noDepNode,
+  newNode,
+  untyped,
+  isBoolType,
+  addRefinement
 } from "./types";
 
 const fieldRef: FunctionType = {
@@ -64,12 +68,23 @@ const eqRef: FunctionType = {
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
     refineToType(result, boolType);
+    const resType = nodeType(result);
+    const expectedValue = isBoolType(resType) ? resType.value : undefined;
+    if (expectedValue === true) {
+      unifyNode(arg0, arg1);
+    }
     const arg0Type = nodeType(arg0);
     const arg1Type = nodeType(arg1);
-    if (isPrim(arg0Type) && isPrim(arg1Type)) {
-      if (arg0Type.value !== undefined && arg1Type.value !== undefined) {
-        refineToType(result, cnstType(arg0Type.value === arg1Type.value));
-      }
+    if (
+      isPrim(arg0Type) &&
+      isPrim(arg1Type) &&
+      arg0Type.value !== undefined &&
+      arg1Type.value !== undefined
+    ) {
+      refineToType(result, cnstType(arg0Type.value === arg1Type.value));
+    } else {
+      refineToType(arg0, addRefinement(arg0Type, result));
+      refineToType(arg1, addRefinement(arg1Type, result));
     }
   }
 };
@@ -94,13 +109,38 @@ const addFunc: FunctionType = {
   }
 };
 
+const ifThenElseFunc: FunctionType = {
+  type: "function",
+  name: "ifThenElse",
+  reduce(result, args) {
+    reduceToObject(args);
+    const [, condition] = findField(args, 0);
+    const [, whenTrue] = findField(args, 1);
+    const [, whenFalse] = findField(args, 1);
+    refineToType(condition, boolType);
+  }
+};
+
+const refineFunc: FunctionType = {
+  type: "function",
+  name: "refine",
+  reduce(result, args) {
+    reduceToObject(args);
+    const [, application] = findField(args, 0);
+    const [, expectedResult] = findField(args, 1);
+    refineNode(application, expectedResult);
+  }
+};
+
 export const globalGraph: NodeGraph = { nodes: [], types: [] };
 
 export const globals: Closure = {
   symbols: {
     add: noDepNode(globalGraph, addFunc),
     fieldRef: noDepNode(globalGraph, fieldRef),
-    "==": noDepNode(globalGraph, eqRef)
+    "==": noDepNode(globalGraph, eqRef),
+    ifThenElse: noDepNode(globalGraph, ifThenElseFunc),
+    refine: noDepNode(globalGraph, refineFunc)
   }
 };
 
