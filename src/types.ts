@@ -91,6 +91,21 @@ export function arrayType(graph: NodeGraph, ...entries: Type[]): ObjectType {
   };
 }
 
+export function objType(
+  graph: NodeGraph,
+  ...entries: [Type, Type][]
+): ObjectType {
+  return {
+    type: "object",
+    keyType: noDepNode(graph, untyped),
+    valueType: noDepNode(graph, untyped),
+    keyValues: entries.map(([k, value], i) => ({
+      key: noDepNode(graph, k),
+      value: noDepNode(graph, value)
+    }))
+  };
+}
+
 export function arrayExpr(...entries: Expr[]): ObjectExpr {
   return {
     tag: "object",
@@ -609,8 +624,6 @@ export function applyFunction(func: TypedNode, args: NodeRef): NodeRef {
       },
       untyped
     );
-    const appRef = nodeRef(func.graph, appNode.nodeId);
-    reduceNode(appRef);
     return appNode.nodeId;
   }
   throw new Error("Trying to apply not a function");
@@ -853,12 +866,20 @@ function markReducible(
   seenNodes.push(nodeRef);
   const data = graph.nodes[nodeRef];
   if (data.application) {
+    // console.log(
+    //   refToString(graph, nodeRef, {
+    //     application: true,
+    //     nodeId: true,
+    //     appFlags: { nodeId: true }
+    //   })
+    // );
     graph.nodes[nodeRef] = { ...data, reducible: true };
   }
   const typeData = graph.types[data.typeRef];
-  typeData.deps.forEach(nRef => {
-    markReducible(graph, nRef, seenNodes);
-  });
+  // typeData.deps.forEach(nRef => {
+  //   markReducible(graph, nRef, seenNodes);
+  // });
+  markReducible(graph, typeData.owner, seenNodes);
   if (data.parent) {
     markReducible(graph, data.parent, seenNodes);
   }
@@ -895,6 +916,14 @@ export function refine(
   if (type !== sourceType) {
     const tNode = graph.types[typeRef];
     graph.types[typeRef] = { ...tNode, type };
+    // console.log(
+    //   "Mark reducible for " +
+    //     refToString(graph, source, {
+    //       application: true,
+    //       nodeId: true,
+    //       appFlags: { nodeId: true }
+    //     })
+    // );
     markReducible(graph, source, []);
     return true;
   }
@@ -909,7 +938,7 @@ function findSymbol(name: string, closure?: Closure): NodeRef {
     }
     closure = closure.parent;
   }
-  throw new Error("No symbol for" + name);
+  throw new Error(`No symbol for: '${name}'`);
 }
 
 export function reduceToObject(node: TypedNode, flags?: ReduceFlags): void {
@@ -1112,6 +1141,7 @@ export function exprToNode(
         return pare;
       case "symbol":
         const symNode = graphNode(graph, findSymbol(expr.symbol, closure));
+        // console.log(symNode.nodeId, expr.symbol, symNode.typeRef);
         const newSymNode = existingType(
           graph,
           { symbol: expr.symbol },
@@ -1158,6 +1188,8 @@ export function defineFunction(
             args: app.args
           };
           resultNode.reducible = true;
+        } else {
+          refineRef(result.graph, result.ref, entry);
         }
       }
     }

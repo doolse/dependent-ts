@@ -108,9 +108,11 @@ const appSymbols = defineFunction(
   // )
 );
 
+const argsNode = noDepNode(globalGraph, arrayType(globalGraph));
 const appNode = applyFunction(
-  callMain,
-  noDepNode(globalGraph, arrayType(globalGraph))
+  { graph: globalGraph, ref: exprToNode(globalGraph, ref("main"), withMain) },
+  argsNode
 );
 reduceGraph(globalGraph);
+console.log(refToString(globalGraph, argsNode));
 console.log(refToString(globalGraph, appNode, { application: true }));
