@@ -15,33 +15,34 @@ import {
   arrayType,
   applyFunction,
   exprToString,
-  exprToNode,
   reduceGraph,
   refToString,
   objType,
   node,
   nodeToString,
-  printGraph,
-  printReducible,
   arrayExpr,
   KeyValueExpr,
-  primTypeExpr
+  primTypeExpr,
+  newExprNode,
+  reduce,
+  printGraph
 } from "./types";
 import { globals, globalGraph } from "./globals";
 
 const source = `
-function another()
-{
-    let poo = 3 + 2;
-    let anything = refine(args.a == args.b, true);
-    let what = refine(args.a == args.a, false);
-    args.a
-}
+// function another()
+// {
+//     // let r = refine(args.a == args.b, false)
+//     args.a + args.b;
+// }
 
 function main()
 {
-    let crap = refine(args.a == 13, false);
-    another({a: args.a, b: 18})
+    // let crap = refine(args.a == 13, false);
+    // another({a: args.a, b: 18})
+    // refine(args.a == args.a, false);
+    // another({a:21, b: 23});
+    12 + 21
 }
 `;
 
@@ -58,6 +59,17 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
       name,
       expr: applyRef("fieldRef", ref("args"), cnst(name))
     };
+  }
+
+  function identifierExpr(name: string): Expr {
+    switch (name) {
+      case "string":
+      case "number":
+      case "boolean":
+        return primTypeExpr(name);
+      default:
+        return ref(name);
+    }
   }
 
   function parseElem(n: ts.ObjectLiteralElementLike): KeyValueExpr {
@@ -86,7 +98,7 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
           throw new Error("Can only use plus");
       }
     } else if (ts.isIdentifier(n)) {
-      return ref(n.text);
+      return identifierExpr(n.text);
     } else if (ts.isNumericLiteral(n)) {
       return cnst(parseInt(n.text));
     } else if (ts.isParenthesizedExpression(n)) {
@@ -175,7 +187,9 @@ const ourFuncs: Closure = { parent: globals, symbols: {} };
 
 parseFunctions(globalGraph, ourFuncs, sf);
 
-const appNode = exprToNode(globalGraph, applyObj("main"), ourFuncs);
+const appNode = newExprNode(globalGraph, ourFuncs, applyObj("main"));
+
+reduce(globalGraph, appNode);
 const args = globalGraph.nodes[appNode].application!.args;
 reduceGraph(globalGraph);
 // console.log(refToString(globalGraph, argsNode));
