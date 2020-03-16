@@ -1133,8 +1133,20 @@ export function updateNodePart(
 ): NodeData {
   return updateNode(graph, ref, n => ({ ...n, ...upd }));
 }
-
 export function expand(graph: NodeGraph, node: ExpressionNode) {
+  console.log(
+    "EXPAND: " +
+      refToString(graph, node.nodeId, {
+        nodeId: true,
+        expr: true
+      })
+  );
+  expand2(graph, node);
+  markReducible(graph, [node.nodeId]);
+  markReducible(graph, node.references);
+}
+
+export function expand2(graph: NodeGraph, node: ExpressionNode) {
   const { expr, closure } = node.expression;
   const nodeId = node.nodeId;
   updateNodePart(graph, nodeId, {
@@ -1150,7 +1162,6 @@ export function expand(graph: NodeGraph, node: ExpressionNode) {
           args
         }
       });
-      markReducible(graph, [nodeId]);
       break;
     case "prim":
       refine(graph, nodeId, cnstType(expr.value));
@@ -1182,7 +1193,7 @@ export function expand(graph: NodeGraph, node: ExpressionNode) {
       // if (isExpandableExpression(graphNode(graph, sym))) {
       //   reduce(graph, sym);
       // }
-      markReducible(graph, graphNode(graph, nodeId).references);
+      // markReducible(graph, graphNode(graph, nodeId).references);
       break;
   }
 }
@@ -1234,15 +1245,21 @@ export function printGraph(graph: NodeGraph, flags?: PrintFlags) {
 }
 
 export function reduceGraph(graph: NodeGraph) {
+  printGraph(graph, { nodeId: true, expr: true });
   do {
-    printGraph(graph, { nodeId: true, expr: true });
     const currentReduce = graph.reducible;
-    graph.reducible = [];
-    graph.onReducible = {};
-    var currentNode = currentReduce.pop();
+    var currentNode = currentReduce.shift();
     while (currentNode !== undefined) {
+      delete graph.onReducible[currentNode];
+      console.log(
+        "REDUCE: " +
+          refToString(graph, currentNode, {
+            nodeId: true,
+            application: true
+          })
+      );
       reduce(graph, currentNode);
-      currentNode = currentReduce.pop();
+      currentNode = currentReduce.shift();
     }
   } while (graph.reducible.length > 0);
 
