@@ -44,11 +44,16 @@ const fieldRef: FunctionType = {
   type: "function",
   name: "fieldRef",
   reduce(result, args) {
-    reduceToObject(args);
+    if (!reduceToObject(args)) {
+      return;
+    }
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
+    if (!reduceToObject(arg0, { keys: true })) {
+      return;
+    }
     refineToType(arg0, emptyObject(args));
-    reduceToObject(arg0, { keys: true });
+
     const arg1Type = nodeType(arg1);
     if (isPrim(arg1Type) && arg1Type.value !== undefined) {
       const [, fieldNode] = findField(arg0, arg1Type.value);
@@ -65,7 +70,9 @@ const eqRef: FunctionType = {
   type: "function",
   name: "==",
   reduce(result, args) {
-    reduceToObject(args);
+    if (!reduceToObject(args)) {
+      return;
+    }
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
     refineToType(result, boolType);
@@ -94,7 +101,9 @@ const addFunc: FunctionType = {
   type: "function",
   name: "add",
   reduce(result, args) {
-    reduceToObject(args);
+    if (!reduceToObject(args)) {
+      return;
+    }
     console.log("ADD ARGS:" + nodeToString(args, { expr: true }));
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
@@ -137,21 +146,6 @@ const refineFunc: FunctionType = {
   }
 };
 
-const lookupSymbolFunc: FunctionType = {
-  type: "function",
-  name: "lookupSymbol",
-  reduce(result, args) {
-    if (result.ref === args.ref) {
-      const data = nodeData(args);
-      const { closure, expr } = data.expression!;
-      const { symbol } = expr as SymbolExpr;
-      args.ref = findSymbol(symbol, closure);
-      data.application = { ...data.application!, args: args.ref };
-    }
-    refineNode(result, args);
-  }
-};
-
 export const globalGraph: NodeGraph = {
   nodes: [],
   reducible: [],
@@ -164,8 +158,7 @@ export const globals: Closure = {
     fieldRef: noDepNode(globalGraph, fieldRef),
     "==": noDepNode(globalGraph, eqRef),
     ifThenElse: noDepNode(globalGraph, ifThenElseFunc),
-    refine: noDepNode(globalGraph, refineFunc),
-    lookupSymbol: noDepNode(globalGraph, lookupSymbolFunc)
+    refine: noDepNode(globalGraph, refineFunc)
   }
 };
 

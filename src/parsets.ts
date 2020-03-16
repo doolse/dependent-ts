@@ -30,19 +30,22 @@ import {
 import { globals, globalGraph } from "./globals";
 
 const source = `
-// function another()
-// {
-//     // let r = refine(args.a == args.b, false)
-//     args.a + args.b;
-// }
+function another()
+{
+    // let r = refine(args.a == args.b, false)
+    args.a + args.b;
+}
 
 function main()
 {
     // let crap = refine(args.a == 13, false);
     // another({a: args.a, b: 18})
     // refine(args.a == args.a, false);
-    // another({a:21, b: 23});
-    12 + 21
+    another({a:21, b: 23});
+    // 12 + 21
+    // let a = 12;
+    // let b = 13;
+    // a + b
 }
 `;
 

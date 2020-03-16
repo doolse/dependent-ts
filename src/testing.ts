@@ -12,7 +12,6 @@ import {
   reduceNode,
   unifyNode,
   objectExpr,
-  exprToNode,
   primTypeExpr,
   letExpr,
   ref,
@@ -108,11 +107,11 @@ const appSymbols = defineFunction(
   // )
 );
 
-const argsNode = noDepNode(globalGraph, arrayType(globalGraph));
-const appNode = applyFunction(
-  { graph: globalGraph, ref: exprToNode(globalGraph, ref("main"), withMain) },
-  argsNode
-);
-reduceGraph(globalGraph);
-console.log(refToString(globalGraph, argsNode));
-console.log(refToString(globalGraph, appNode, { application: true }));
+// const argsNode = noDepNode(globalGraph, arrayType(globalGraph));
+// const appNode = applyFunction(
+//   { graph: globalGraph, ref: exprToNode(globalGraph, ref("main"), withMain) },
+//   argsNode
+// );
+// reduceGraph(globalGraph);
+// console.log(refToString(globalGraph, argsNode));
+// console.log(refToString(globalGraph, appNode, { application: true }));

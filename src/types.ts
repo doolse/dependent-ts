@@ -3,6 +3,7 @@ import { inspect } from "util";
 import color from "cli-color";
 import { shallowEqual } from "shallow-equal-object";
 import { Expression, getSourceMapRange } from "typescript";
+import { lookup } from "dns";
 export type Expr =
   | PrimitiveExpr
   | PrimitiveNameExpr
@@ -195,11 +196,12 @@ export type ExpressionNode = NodeData & {
 
 export interface NodeData {
   type: Type;
+  typeRef?: NodeRef;
   nodeId: NodeRef;
   references: NodeRef[];
   expression?: NodeExpression;
   application?: Application;
-  unify?: NodeRef;
+  reduce?(): void;
 }
 
 export type ReduceFlags = {
@@ -354,7 +356,11 @@ export function nodeData(node: TypedNode): NodeData {
 }
 
 export function lookupType(graph: NodeGraph, ref: NodeRef): Type {
-  return graphNode(graph, ref).type;
+  const n = graphNode(graph, ref);
+  if (n.typeRef !== undefined) {
+    return lookupType(graph, n.typeRef);
+  }
+  return n.type;
 }
 
 export function nodeRef(graph: NodeGraph, ref: NodeRef): TypedNode {
@@ -529,7 +535,7 @@ export function exprToString(expr: Expr): string {
 export type PrintFlags = {
   expr?: boolean;
   nodeId?: boolean;
-  reducible?: boolean;
+  deps?: boolean;
   application?: boolean;
   refinements?: boolean;
   appFlags?: PrintFlags;
@@ -545,6 +551,7 @@ export function refToString(
 
 export function nodeToString(node: TypedNode, flags?: PrintFlags): string {
   const type = nodeType(node);
+  const data = nodeData(node);
   var typeOnly = typeAndRefinementsToString(node.graph, type, flags);
   const expr = nodeExpr(node);
   if (flags?.expr && expr) {
@@ -564,8 +571,11 @@ export function nodeToString(node: TypedNode, flags?: PrintFlags): string {
   }
   if (flags?.nodeId) {
     // if ((!isPrim(type) || type.value === undefined) && !isFunctionType(type)) {
-    typeOnly = nodeData(node).nodeId + "@" + typeOnly;
+    typeOnly = data.nodeId + "@" + typeOnly;
     // }
+  }
+  if (flags?.deps) {
+    typeOnly = typeOnly + " [" + color.bold(data.references.join(", ")) + "]";
   }
   return typeOnly;
 }
@@ -887,9 +897,15 @@ export function refineSymbols(
   return Object.assign({}, symbols, symbols2);
 }
 
-export function addDependency(node: TypedNode, dependency: NodeRef) {
-  const data = nodeData(node);
-  data.references.push(dependency);
+export function addDependency(
+  graph: NodeGraph,
+  ref: NodeRef,
+  dependency: NodeRef
+) {
+  updateNode(graph, ref, n => ({
+    ...n,
+    references: [...n.references, dependency]
+  }));
 }
 
 function markReducible(graph: NodeGraph, nodes: NodeRef[]) {
@@ -922,14 +938,20 @@ export function refine(
   source: NodeRef,
   refinement: Type
 ): boolean {
-  const node = graphNode(graph, source);
-  const sourceType = node.type;
+  var node = graphNode(graph, source);
+  if (node.typeRef) {
+    return refine(graph, node.typeRef, refinement);
+  }
+  if (node.expression?.expanded === false) {
+    throw new Error("Can't refine an unexpanded expression @" + source);
+  }
+  const sourceType = lookupType(graph, source);
   if (isRefinementOf(graph, sourceType, refinement)) {
     return false;
   }
   const type = refineType(graph, sourceType, refinement);
   if (type !== sourceType) {
-    graph.nodes[node.nodeId] = { ...node, type };
+    node = updateNodePart(graph, source, { type });
     // console.log(
     //   "Mark reducible for " +
     //     refToString(graph, source, {
@@ -955,13 +977,26 @@ export function findSymbol(name: string, closure?: Closure): NodeRef {
   throw new Error(`No symbol for: '${name}'`);
 }
 
-export function reduceToObject(node: TypedNode, flags?: ReduceFlags): void {
-  const data = nodeData(node);
-  if (isObjectType(data.type)) {
-    expandObjectType(node.graph, data.type, flags);
+export function expandIfNecessary(graph: NodeGraph, ref: NodeRef): boolean {
+  var n = graphNode(graph, ref);
+  var noExanpsion = true;
+  if (isExpandableExpression(n)) {
+    expand(graph, n);
+    noExanpsion = false;
+  }
+  n = graphNode(graph, ref);
+  if (n.typeRef !== undefined) {
+    return expandIfNecessary(graph, n.typeRef) && noExanpsion;
+  }
+  return noExanpsion;
+}
+
+export function reduceToObject(node: TypedNode, flags?: ReduceFlags): boolean {
+  const type = nodeType(node);
+  if (isObjectType(type)) {
+    return expandObjectType(node.graph, type, flags);
   } else {
-    reduceNode(node);
-    reduceToObject(node, flags);
+    return expandIfNecessary(node.graph, node.ref);
   }
 }
 
@@ -971,11 +1006,14 @@ export function reduceNode(node: TypedNode): void {
 
 export function reduce(graph: NodeGraph, ref: NodeRef): void {
   const data = graphNode(graph, ref);
+  if (data.reduce) {
+    data.reduce();
+    return;
+  }
   if (isNodeApp(data)) {
     const app = data.application;
-    const func = nodeRef(graph, app.func);
-    const funcData = nodeData(func);
-    const funcType = funcData.type;
+    const funcData = graphNode(graph, app.func);
+    const funcType = lookupType(graph, app.func);
     if (isFunctionType(funcType)) {
       funcType.reduce({ graph, ref }, { graph, ref: app.args });
     } else if (isExpandableExpression(funcData)) reduce(graph, app.func);
@@ -983,21 +1021,9 @@ export function reduce(graph: NodeGraph, ref: NodeRef): void {
       throw new Error("Can't apply to non function");
     }
   } else if (isExpandableExpression(data)) {
-    const symbolLookup = findSymbol("lookupSymbol", data.expression.closure);
-    expand(graph, data, symbolLookup);
+    expand(graph, data);
   } else {
     markReducible(graph, data.references);
-  }
-}
-
-export function expandAndReduce(graph: NodeGraph, ref: NodeRef) {
-  const data = graphNode(graph, ref);
-  if (isExpandableExpression(data)) {
-    const symbolLookup = findSymbol("lookupSymbol", data.expression.closure);
-    expand(graph, data, symbolLookup);
-    if (isNodeApp(data)) {
-      reduce(graph, ref);
-    }
   }
 }
 
@@ -1005,13 +1031,18 @@ export function expandObjectType(
   graph: NodeGraph,
   obj: ObjectType,
   flags?: ReduceFlags
-): void {
-  expandAndReduce(graph, obj.keyType);
-  expandAndReduce(graph, obj.valueType);
+): boolean {
+  var noExpansion = true;
+  function expandMaybe(ref: NodeRef) {
+    noExpansion = expandIfNecessary(graph, ref) && noExpansion;
+  }
+  expandMaybe(obj.keyType);
+  expandMaybe(obj.valueType);
   obj.keyValues.forEach(kv => {
-    if (!flags || flags.keys) expandAndReduce(graph, kv.key);
-    if (!flags || flags.values) expandAndReduce(graph, kv.value);
+    if (!flags || flags.keys) expandMaybe(kv.key);
+    if (!flags || flags.values) expandMaybe(kv.value);
   });
+  return noExpansion;
 }
 
 export function findField(
@@ -1019,7 +1050,6 @@ export function findField(
   named: string | number | boolean
 ): [TypedNode, TypedNode] {
   const graph = obj.graph;
-  const data = nodeData(obj);
   const type = nodeType(obj);
   assertType(type, objectTypeName);
   var kv = type.keyValues.find(({ key, value }) =>
@@ -1037,19 +1067,13 @@ export function findField(
   return [nodeRef(graph, kv.key), nodeRef(graph, kv.value)];
 }
 
+export function unify(graph: NodeGraph, node: NodeRef, node2: NodeRef): void {
+  refine(graph, node, lookupType(graph, node2));
+  refine(graph, node2, lookupType(graph, node));
+}
+
 export function unifyNode(node: TypedNode, node2: TypedNode): void {
-  // console.log(
-  //   `Before unification ${nodeToString(node, {
-  //     nodeId: true
-  //   })} ${nodeToString(node2, { nodeId: true })}`
-  // );
-  refineNode(node2, node);
-  refineNode(node, node2);
-  // console.log(
-  //   `After unification ${nodeToString(node, {
-  //     nodeId: true
-  //   })} ${nodeToString(node2, { nodeId: true })}`
-  // );
+  unify(node.graph, node.ref, node2.ref);
 }
 
 export function newExprNode(
@@ -1068,7 +1092,8 @@ export function newExprNode(
 export function exprToClosure(
   graph: NodeGraph,
   expr: Expr,
-  parent: Closure
+  parent: Closure,
+  unifyWith: NodeRef
 ): [Closure, NodeRef] {
   const symbols: SymbolTable = {};
   const closure: Closure = {
@@ -1077,28 +1102,54 @@ export function exprToClosure(
   };
   var current = expr;
   while (current.tag === "let") {
-    symbols[current.symbol] = newExprNode(graph, closure, current.expr);
+    const newNode = newExprNode(graph, closure, current.expr);
+    symbols[current.symbol] = newNode;
+    markReducible(graph, [newNode]);
     current = current.in;
   }
-  return [closure, newExprNode(graph, closure, current)];
+  const result = newExprNode(graph, closure, current);
+  addDependency(graph, unifyWith, result);
+  addDependency(graph, result, unifyWith);
+  updateNodePart(graph, unifyWith, {
+    typeRef: result
+  });
+  return [closure, result];
 }
 
-export function expand(
+export function updateNode(
   graph: NodeGraph,
-  node: ExpressionNode,
-  symbolFunc: NodeRef
-) {
+  ref: NodeRef,
+  f: (d: NodeData) => NodeData
+): NodeData {
+  const res = f(graph.nodes[ref]);
+  graph.nodes[ref] = res;
+  return res;
+}
+
+export function updateNodePart(
+  graph: NodeGraph,
+  ref: NodeRef,
+  upd: Partial<NodeData>
+): NodeData {
+  return updateNode(graph, ref, n => ({ ...n, ...upd }));
+}
+
+export function expand(graph: NodeGraph, node: ExpressionNode) {
   const { expr, closure } = node.expression;
-  node.expression.expanded = true;
   const nodeId = node.nodeId;
+  updateNodePart(graph, nodeId, {
+    expression: { ...node.expression, expanded: true }
+  });
   switch (expr.tag) {
     case "apply":
       const func = newExprNode(graph, closure, expr.function, nodeId);
       const args = newExprNode(graph, closure, expr.args, nodeId);
-      node.application = {
-        func,
-        args
-      };
+      updateNodePart(graph, nodeId, {
+        application: {
+          func,
+          args
+        }
+      });
       markReducible(graph, [nodeId]);
       break;
     case "prim":
@@ -1117,12 +1168,21 @@ export function expand(
       const valueType = newExprNode(graph, closure, expr.valueExpr, nodeId);
       refine(graph, nodeId, { type: "object", keyValues, keyType, valueType });
       break;
+    case "let":
+      throw new Error("No let's yet");
     case "symbol":
-      node.application = {
-        func: symbolFunc,
-        args: nodeId
-      };
-      markReducible(graph, [nodeId]);
+      const sym = findSymbol(expr.symbol, closure);
+      addDependency(graph, sym, nodeId);
+      updateNodePart(graph, nodeId, {
+        typeRef: sym,
+        reduce() {
+          console.log("I have been told to reduce " + expr.symbol);
+        }
+      });
+      // if (isExpandableExpression(graphNode(graph, sym))) {
+      //   reduce(graph, sym);
+      // }
+      markReducible(graph, graphNode(graph, nodeId).references);
       break;
   }
 }
@@ -1137,36 +1197,45 @@ export function defineFunction(
     type: "function",
     name,
     reduce(result, args) {
-      const data = nodeData(result);
       const graph = result.graph;
-      if (!data.unify) {
-        const [closure, funcNode] = exprToClosure(graph, funcExpr, parent);
-        closure.symbols["args"] = args.ref;
-        markReducible(graph, [funcNode]);
-        data.unify = funcNode;
-        addDependency(nodeRef(graph, funcNode), result.ref);
-      }
-      reduce(graph, data.unify!);
-      unifyNode(result, nodeRef(graph, data.unify));
-      console.log("Calling");
+      const [closure, funcNode] = exprToClosure(
+        graph,
+        funcExpr,
+        parent,
+        result.ref
+      );
+      closure.symbols["args"] = args.ref;
+      markReducible(graph, [funcNode]);
+      updateNodePart(graph, result.ref, { reduce() {} });
     }
   });
   return { graph, ref: node.nodeId };
 }
 
 export function printGraph(graph: NodeGraph, flags?: PrintFlags) {
-  // graph.nodes.forEach(g => {
-  //   console.log(refToString(graph, g.nodeId, flags));
-  // });
+  graph.nodes.forEach(g => {
+    var deps = graph.nodes
+      .filter(n => n.references.includes(g.nodeId))
+      .map(d => d.nodeId)
+      .join(", ");
+    const reduceList = graph.onReducible[g.nodeId] ? " *" : "";
+    const typeRef = g.typeRef ? " !" + g.typeRef : "";
+    console.log(
+      refToString(graph, g.nodeId, flags) +
+        color.bold(" [" + deps + "]" + reduceList + typeRef)
+    );
+  });
+  console.log("==========================");
   console.log("Reducible");
   graph.reducible.forEach(g => {
     console.log(refToString(graph, g, flags));
   });
+  console.log("==========================");
 }
 
 export function reduceGraph(graph: NodeGraph) {
   do {
-    printGraph(graph, { nodeId: true, expr: true, application: true });
+    printGraph(graph, { nodeId: true, expr: true });
     const currentReduce = graph.reducible;
     graph.reducible = [];
     graph.onReducible = {};
