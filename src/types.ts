@@ -1,9 +1,7 @@
-import { JSExpr, JSFunctionDef, newArg, stmt2string } from "./javascript";
 import { inspect } from "util";
 import color from "cli-color";
 import { shallowEqual } from "shallow-equal-object";
-import { Expression, getSourceMapRange } from "typescript";
-import { lookup } from "dns";
+
 export type Expr =
   | PrimitiveExpr
   | PrimitiveNameExpr
@@ -100,7 +98,7 @@ export function objType(
     type: "object",
     keyType: noDepNode(graph, untyped),
     valueType: noDepNode(graph, untyped),
-    keyValues: entries.map(([k, value], i) => ({
+    keyValues: entries.map(([k, value]) => ({
       key: noDepNode(graph, k),
       value: noDepNode(graph, value)
     }))
@@ -178,7 +176,6 @@ export type Application = {
 export type NodeExpression = {
   expr: Expr;
   closure: Closure;
-  expanded: boolean;
 };
 
 export type TypedNode = {
@@ -194,8 +191,14 @@ export type ExpressionNode = NodeData & {
   expression: NodeExpression;
 };
 
+export enum NodeFlags {
+  Expandable = 1,
+  Reducible = 2
+}
+
 export interface NodeData {
   type: Type;
+  flags: NodeFlags;
   typeRef?: NodeRef;
   nodeId: NodeRef;
   references: NodeRef[];
@@ -300,6 +303,9 @@ export function newNode(
   const nodeId = graph.nodes.length;
   const newNode: NodeData = {
     nodeId,
+    flags:
+      (expression ? NodeFlags.Expandable : 0) |
+      (application ? NodeFlags.Reducible : 0),
     type,
     application,
     expression,
@@ -388,7 +394,7 @@ export function isNodeExpression(node: NodeData): node is ExpressionNode {
 }
 
 export function isExpandableExpression(node: NodeData): node is ExpressionNode {
-  return Boolean(node.expression && !node.expression.expanded);
+  return Boolean(node.expression && node.flags & NodeFlags.Expandable);
 }
 
 export function isObjectNode(t: TypedNode): boolean {
@@ -942,7 +948,7 @@ export function refine(
   if (node.typeRef) {
     return refine(graph, node.typeRef, refinement);
   }
-  if (node.expression?.expanded === false) {
+  if (node.flags & NodeFlags.Expandable) {
     throw new Error("Can't refine an unexpanded expression @" + source);
   }
   const sourceType = lookupType(graph, source);
@@ -1052,7 +1058,7 @@ export function findField(
   const graph = obj.graph;
   const type = nodeType(obj);
   assertType(type, objectTypeName);
-  var kv = type.keyValues.find(({ key, value }) =>
+  var kv = type.keyValues.find(({ key }) =>
     primEquals(lookupType(graph, key), named)
   );
   if (!kv) {
@@ -1084,8 +1090,7 @@ export function newExprNode(
 ) {
   return newNode(graph, untyped, parent, undefined, {
     closure,
-    expr,
-    expanded: false
+    expr
   }).nodeId;
 }
 
@@ -1150,7 +1155,7 @@ export function expand2(graph: NodeGraph, node: ExpressionNode) {
   const { expr, closure } = node.expression;
   const nodeId = node.nodeId;
   updateNodePart(graph, nodeId, {
-    expression: { ...node.expression, expanded: true }
+    flags: node.flags & ~NodeFlags.Expandable
   });
   switch (expr.tag) {
     case "apply":
