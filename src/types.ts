@@ -919,6 +919,8 @@ function markReducible(graph: NodeGraph, nodes: NodeRef[]) {
       ...nd,
       flags: nd.flags | NodeFlags.Reducible
     }));
+    const nd = graphNode(graph, n);
+    markReducible(graph, nd.references);
   });
 }
 
@@ -965,7 +967,7 @@ export function refine(
     //       appFlags: { nodeId: true }
     //     })
     // );
-    markReducible(graph, node.references);
+    markReducible(graph, [node.nodeId]);
     return true;
   }
   return false;
@@ -996,28 +998,28 @@ export function reduceNode(node: TypedNode): void {
 
 let reduceCount = 0;
 export function reduce(graph: NodeGraph, ref: NodeRef): void {
-  let num = reduceCount++;
-  console.log(
-    num +
-      " Reducing: " +
-      refToString(graph, ref, {
-        nodeId: true,
-        application: true,
-        expr: true
-      })
-  );
+  // let num = reduceCount++;
+  // console.log(
+  //   num +
+  //     " Reducing: " +
+  //     refToString(graph, ref, {
+  //       nodeId: true,
+  //       application: true,
+  //       expr: true
+  //     })
+  // );
   while (true) {
     const data = graphNode(graph, ref);
     if (!(data.flags & (NodeFlags.Expandable | NodeFlags.Reducible))) {
-      console.log(
-        num +
-          " Finished: " +
-          refToString(graph, ref, {
-            nodeId: true,
-            application: true,
-            expr: true
-          })
-      );
+      // console.log(
+      //   num +
+      //     " Finished: " +
+      //     refToString(graph, ref, {
+      //       nodeId: true,
+      //       application: true,
+      //       expr: true
+      //     })
+      // );
       return;
     }
     updateFlags(
@@ -1196,7 +1198,7 @@ export function expand(graph: NodeGraph, node: ExpressionNode) {
         typeRef: sym,
         reduce() {
           reduce(graph, sym);
-          console.log("I have been told to reduce " + expr.symbol);
+          // console.log("I have been told to reduce " + expr.symbol);
         }
       });
       markReducible(graph, [nodeId]);
@@ -1240,8 +1242,12 @@ export function defineFunction(
   return { graph, ref: node.nodeId };
 }
 
-export function printGraph(graph: NodeGraph, flags?: PrintFlags) {
-  graph.nodes.forEach(g => {
+export function printGraph(
+  graph: NodeGraph,
+  f: (nd: NodeData) => boolean,
+  flags?: PrintFlags
+) {
+  graph.nodes.filter(f).forEach(g => {
     var deps = graph.nodes
       .filter(n => n.references.includes(g.nodeId))
       .map(d => d.nodeId)

@@ -37,7 +37,9 @@ import {
   isBoolType,
   addRefinement,
   refToString,
-  SymbolExpr
+  SymbolExpr,
+  updateFlags,
+  NodeFlags
 } from "./types";
 
 const fieldRef: FunctionType = {
@@ -77,9 +79,6 @@ function refBoolFunc(
       refineToType(result, boolType);
       const resType = nodeType(result);
       const expectedValue = isBoolType(resType) ? resType.value : undefined;
-      if (unifyEq && expectedValue === true) {
-        unifyNode(arg0, arg1);
-      }
       const arg0Type = nodeType(arg0);
       const arg1Type = nodeType(arg1);
       if (
@@ -89,9 +88,8 @@ function refBoolFunc(
         arg1Type.value !== undefined
       ) {
         refineToType(result, cnstType(c(arg0Type.value, arg1Type.value)));
-      } else {
-        refineToType(arg0, addRefinement(arg0Type, result));
-        refineToType(arg1, addRefinement(arg1Type, result));
+      } else if (expectedValue !== undefined) {
+        updateFlags(result.graph, result.ref, fl => fl | NodeFlags.Unproven);
       }
     }
   };

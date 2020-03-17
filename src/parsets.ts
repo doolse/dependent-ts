@@ -1,6 +1,5 @@
 import * as ts from "typescript";
 import {
-  boolType,
   NodeGraph,
   Closure,
   Expr,
@@ -8,47 +7,32 @@ import {
   ref,
   cnst,
   applyObj,
-  cnstType,
   letExpr,
   defineFunction,
-  noDepNode,
-  arrayType,
-  applyFunction,
   exprToString,
   refToString,
-  objType,
-  node,
-  nodeToString,
   arrayExpr,
   KeyValueExpr,
   primTypeExpr,
   newExprNode,
   reduce,
-  printGraph
+  printGraph,
+  NodeFlags
 } from "./types";
 import { globals, globalGraph } from "./globals";
 
 const source = `
 function another()
 {
-    let r = refine(args.a == args.b, false)
+    let r = refine(args.a < args.b, true)
     args.a + args.b;
 }
 
 function main()
 {
-    // let crap = refine(args.a == 13, false);
-    // another({a: args.a, b: 18})
-    // refine(args.a == args.a, false);
-    let a = args.a
-    let r = refine(a < 10, true);
-    let ok = another({a, b: 12});
-    let r2 = refine(ok < 12, true);
-    ok
-    // 12 + 21
-    // let a = 12;
-    // let b = 13;
-    // a + b
+    let a = args.a + args.a
+    let b = args.b
+    another({a, b: 13});
 }
 `;
 
@@ -198,7 +182,24 @@ parseFunctions(globalGraph, ourFuncs, sf);
 const appNode = newExprNode(globalGraph, ourFuncs, applyObj("main"));
 
 reduce(globalGraph, appNode);
+console.log("\nUnproven\n");
+printGraph(globalGraph, nd => Boolean(nd.flags & NodeFlags.Unproven), {
+  application: true
+});
+console.log("\nReducible\n");
+printGraph(globalGraph, nd => Boolean(nd.flags & NodeFlags.Reducible), {
+  application: true,
+  nodeId: true
+});
+// console.log("\nAll\n");
+// printGraph(globalGraph, nd => true, {
+//   application: true,
+//   nodeId: true
+// });
+
 const args = globalGraph.nodes[appNode].application!.args;
 // console.log(refToString(globalGraph, argsNode));
-console.log(refToString(globalGraph, args, { refinements: true }));
-console.log(refToString(globalGraph, appNode, { application: true }));
+console.log("args:" + refToString(globalGraph, args, { refinements: true }));
+console.log(
+  "result:" + refToString(globalGraph, appNode, { application: true })
+);
