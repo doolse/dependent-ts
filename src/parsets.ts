@@ -15,7 +15,6 @@ import {
   arrayType,
   applyFunction,
   exprToString,
-  reduceGraph,
   refToString,
   objType,
   node,
@@ -32,7 +31,7 @@ import { globals, globalGraph } from "./globals";
 const source = `
 function another()
 {
-    // let r = refine(args.a == args.b, false)
+    let r = refine(args.a == args.b, false)
     args.a + args.b;
 }
 
@@ -41,7 +40,11 @@ function main()
     // let crap = refine(args.a == 13, false);
     // another({a: args.a, b: 18})
     // refine(args.a == args.a, false);
-    another({a:21, b: 23});
+    let a = args.a
+    let r = refine(a < 10, true);
+    let ok = another({a, b: 12});
+    let r2 = refine(ok < 12, true);
+    ok
     // 12 + 21
     // let a = 12;
     // let b = 13;
@@ -95,6 +98,8 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
       switch (n.operatorToken.kind) {
         case ts.SyntaxKind.EqualsEqualsToken:
           return applyRef("==", l, r);
+        case ts.SyntaxKind.LessThanToken:
+          return applyRef("<", l, r);
         case ts.SyntaxKind.PlusToken:
           return applyRef("add", l, r);
         default:
@@ -194,7 +199,6 @@ const appNode = newExprNode(globalGraph, ourFuncs, applyObj("main"));
 
 reduce(globalGraph, appNode);
 const args = globalGraph.nodes[appNode].application!.args;
-reduceGraph(globalGraph);
 // console.log(refToString(globalGraph, argsNode));
 console.log(refToString(globalGraph, args, { refinements: true }));
 console.log(refToString(globalGraph, appNode, { application: true }));

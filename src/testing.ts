@@ -19,7 +19,6 @@ import {
   applyObj,
   nodeRef,
   refToString,
-  reduceGraph,
   noDepNode
 } from "./types";
 import { globals, lookupArg, globalGraph } from "./globals";

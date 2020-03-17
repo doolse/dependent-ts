@@ -44,14 +44,10 @@ const fieldRef: FunctionType = {
   type: "function",
   name: "fieldRef",
   reduce(result, args) {
-    if (!reduceToObject(args)) {
-      return;
-    }
+    reduceToObject(args);
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
-    if (!reduceToObject(arg0, { keys: true })) {
-      return;
-    }
+    reduceToObject(arg0, { keys: true });
     refineToType(arg0, emptyObject(args));
 
     const arg1Type = nodeType(arg1);
@@ -66,45 +62,49 @@ const fieldRef: FunctionType = {
   }
 };
 
-const eqRef: FunctionType = {
-  type: "function",
-  name: "==",
-  reduce(result, args) {
-    if (!reduceToObject(args)) {
-      return;
+function refBoolFunc(
+  name: string,
+  c: (v1: string | number | boolean, v2: string | number | boolean) => boolean,
+  unifyEq: boolean
+): FunctionType {
+  return {
+    type: "function",
+    name,
+    reduce(result, args) {
+      reduceToObject(args);
+      const [, arg0] = findField(args, 0);
+      const [, arg1] = findField(args, 1);
+      refineToType(result, boolType);
+      const resType = nodeType(result);
+      const expectedValue = isBoolType(resType) ? resType.value : undefined;
+      if (unifyEq && expectedValue === true) {
+        unifyNode(arg0, arg1);
+      }
+      const arg0Type = nodeType(arg0);
+      const arg1Type = nodeType(arg1);
+      if (
+        isPrim(arg0Type) &&
+        isPrim(arg1Type) &&
+        arg0Type.value !== undefined &&
+        arg1Type.value !== undefined
+      ) {
+        refineToType(result, cnstType(c(arg0Type.value, arg1Type.value)));
+      } else {
+        refineToType(arg0, addRefinement(arg0Type, result));
+        refineToType(arg1, addRefinement(arg1Type, result));
+      }
     }
-    const [, arg0] = findField(args, 0);
-    const [, arg1] = findField(args, 1);
-    refineToType(result, boolType);
-    const resType = nodeType(result);
-    const expectedValue = isBoolType(resType) ? resType.value : undefined;
-    if (expectedValue === true) {
-      unifyNode(arg0, arg1);
-    }
-    const arg0Type = nodeType(arg0);
-    const arg1Type = nodeType(arg1);
-    if (
-      isPrim(arg0Type) &&
-      isPrim(arg1Type) &&
-      arg0Type.value !== undefined &&
-      arg1Type.value !== undefined
-    ) {
-      refineToType(result, cnstType(arg0Type.value === arg1Type.value));
-    } else {
-      refineToType(arg0, addRefinement(arg0Type, result));
-      refineToType(arg1, addRefinement(arg1Type, result));
-    }
-  }
-};
+  };
+}
+
+const eqRef: FunctionType = refBoolFunc("==", (v1, v2) => v1 === v2, true);
+const ltRef: FunctionType = refBoolFunc("<", (v1, v2) => v1 < v2, false);
 
 const addFunc: FunctionType = {
   type: "function",
   name: "add",
   reduce(result, args) {
-    if (!reduceToObject(args)) {
-      return;
-    }
-    console.log("ADD ARGS:" + nodeToString(args, { expr: true }));
+    reduceToObject(args);
     const [, arg0] = findField(args, 0);
     const [, arg1] = findField(args, 1);
     refineToType(arg0, numberType);
@@ -147,9 +147,7 @@ const refineFunc: FunctionType = {
 };
 
 export const globalGraph: NodeGraph = {
-  nodes: [],
-  reducible: [],
-  onReducible: {}
+  nodes: []
 };
 
 export const globals: Closure = {
@@ -157,6 +155,7 @@ export const globals: Closure = {
     add: noDepNode(globalGraph, addFunc),
     fieldRef: noDepNode(globalGraph, fieldRef),
     "==": noDepNode(globalGraph, eqRef),
+    "<": noDepNode(globalGraph, ltRef),
     ifThenElse: noDepNode(globalGraph, ifThenElseFunc),
     refine: noDepNode(globalGraph, refineFunc)
   }
