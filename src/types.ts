@@ -1,6 +1,7 @@
 import { inspect } from "util";
 import color from "cli-color";
 import { shallowEqual } from "shallow-equal-object";
+import { type } from "os";
 
 export type Expr =
   | PrimitiveExpr
@@ -162,6 +163,7 @@ export type NodeRef = number;
 export type SymbolTable = { [symbol: string]: NodeRef };
 
 export type Closure = {
+  closureId: number;
   parent?: Closure;
   symbols: SymbolTable;
 };
@@ -237,7 +239,7 @@ export interface UntypedType extends BaseType {
   type: "untyped";
 }
 
-export interface NumberType extends BaseType {
+export interface NumberType extends BaseType, PrimValue<number> {
   type: "number";
   value?: number;
 }
@@ -247,7 +249,7 @@ export interface StringType extends BaseType {
   value?: string;
 }
 
-export interface BoolType extends BaseType {
+export interface BoolType extends BaseType, PrimValue<boolean> {
   type: "boolean";
   value?: boolean;
 }
@@ -273,7 +275,11 @@ export interface FunctionType extends BaseType {
 
 export type TypeNameOnly<T extends Type> = Pick<T, "type">;
 
-export type PrimType = StringType | NumberType | BoolType;
+export type PrimType = BoolType | NumberType | StringType;
+
+export interface PrimValue<T> {
+  value?: T;
+}
 
 export const anyType: AnyType = { type: "any" };
 export const untyped: UntypedType = { type: "untyped" };
@@ -413,6 +419,10 @@ export function assertApplication(node: TypedNode): Application {
   return assertDefined(nodeData(node).application);
 }
 
+export function assertExpression(node: TypedNode): NodeExpression {
+  return assertDefined(nodeData(node).expression);
+}
+
 export function assertAppNode(node: NodeData): asserts node is ApplicationNode {
   if (!node.application) {
     throw new Error("Not an app node");
@@ -442,12 +452,25 @@ export function isBoolType(t: Type): t is BoolType {
   return t.type === "boolean";
 }
 
-export function cnstType(val: string | number | boolean): PrimType {
-  return { type: typeof val, value: val } as PrimType;
+export function cnstType<V extends string | number | boolean>(
+  value: V
+): PrimType & PrimValue<V> {
+  return <PrimType & PrimValue<V>>{ type: typeof value, value };
 }
 
 export function isNumber(t: Type): t is NumberType {
   return t.type === "number";
+}
+
+export function nodePrimValue<V>(
+  node: TypedNode,
+  prim: PrimType & PrimValue<V>
+): V | undefined {
+  const t = nodeType(node);
+  assertType(t, prim);
+  if (isPrim(t)) {
+    return <V | undefined>t.value;
+  }
 }
 
 export function getNumberValue(node: TypedNode): number | undefined {
@@ -619,7 +642,7 @@ export function typeToString(
       if (type.value !== undefined) {
         return color.green(`"${type.value}"`);
       }
-      return "string";
+      return color.blue("string");
     case "function":
       return color.cyan(type.name + "()");
     case "object":
@@ -913,7 +936,7 @@ export function addDependency(
   }));
 }
 
-function markReducible(graph: NodeGraph, nodes: NodeRef[]) {
+export function markReducible(graph: NodeGraph, nodes: NodeRef[]) {
   nodes.forEach(n => {
     updateNode(graph, n, nd => ({
       ...nd,
@@ -1082,13 +1105,24 @@ export function findField(
   return [nodeRef(graph, kv.key), nodeRef(graph, kv.value)];
 }
 
-export function unify(graph: NodeGraph, node: NodeRef, node2: NodeRef): void {
-  refine(graph, node, lookupType(graph, node2));
-  refine(graph, node2, lookupType(graph, node));
+export function unify(
+  graph: NodeGraph,
+  node: NodeRef,
+  node2: NodeRef,
+  includeValues: boolean = true
+): void {
+  const n2Value = lookupType(graph, node2);
+  const nValue = lookupType(graph, node);
+  refine(graph, node, includeValues ? n2Value : withoutValue(graph, n2Value));
+  refine(graph, node2, includeValues ? nValue : withoutValue(graph, nValue));
 }
 
-export function unifyNode(node: TypedNode, node2: TypedNode): void {
-  unify(node.graph, node.ref, node2.ref);
+export function unifyNode(
+  node: TypedNode,
+  node2: TypedNode,
+  includeValues: boolean = true
+): void {
+  unify(node.graph, node.ref, node2.ref, includeValues);
 }
 
 export function newExprNode(
@@ -1103,17 +1137,22 @@ export function newExprNode(
   }).nodeId;
 }
 
-export function exprToClosure(
-  graph: NodeGraph,
-  expr: Expr,
-  parent: Closure,
-  unifyWith: NodeRef
-): [Closure, NodeRef] {
-  const symbols: SymbolTable = {};
-  const closure: Closure = {
+var closureCount = 1;
+export function newClosure(symbols: SymbolTable, parent?: Closure): Closure {
+  return {
+    closureId: closureCount++,
     parent,
     symbols
   };
+}
+
+export function exprToClosure(
+  graph: NodeGraph,
+  expr: Expr,
+  parent: Closure
+): [Closure, NodeRef] {
+  const symbols: SymbolTable = {};
+  const closure = newClosure(symbols, parent);
   var current = expr;
   while (current.tag === "let") {
     const newNode = newExprNode(graph, closure, current.expr);
@@ -1121,11 +1160,6 @@ export function exprToClosure(
     current = current.in;
   }
   const result = newExprNode(graph, closure, current);
-  // addDependency(graph, unifyWith, result);
-  // addDependency(graph, result, unifyWith);
-  // updateNodePart(graph, unifyWith, {
-  //   typeRef: result
-  // });
   return [closure, result];
 }
 
@@ -1155,16 +1189,28 @@ export function updateNodePart(
   return updateNode(graph, ref, n => ({ ...n, ...upd }));
 }
 
-export function expand(graph: NodeGraph, node: ExpressionNode) {
+export function expand(
+  graph: NodeGraph,
+  node: ExpressionNode,
+  mkChild?: (
+    graph: NodeGraph,
+    closure: Closure,
+    expr: Expr,
+    parent: NodeRef
+  ) => NodeRef
+) {
   const { expr, closure } = node.expression;
   const nodeId = node.nodeId;
   updateNodePart(graph, nodeId, {
     flags: node.flags & ~NodeFlags.Expandable
   });
+  if (!mkChild) {
+    mkChild = newExprNode;
+  }
   switch (expr.tag) {
     case "apply":
-      const func = newExprNode(graph, closure, expr.function, nodeId);
-      const args = newExprNode(graph, closure, expr.args, nodeId);
+      const func = mkChild(graph, closure, expr.function, nodeId);
+      const args = mkChild(graph, closure, expr.args, nodeId);
       updateNodePart(graph, nodeId, {
         application: {
           func,
@@ -1181,12 +1227,12 @@ export function expand(graph: NodeGraph, node: ExpressionNode) {
       break;
     case "object":
       const keyValues = expr.entries.map(kv => {
-        const key = newExprNode(graph, closure, kv.key, nodeId);
-        const value = newExprNode(graph, closure, kv.value, nodeId);
+        const key = mkChild!(graph, closure, kv.key, nodeId);
+        const value = mkChild!(graph, closure, kv.value, nodeId);
         return { key, value };
       });
-      const keyType = newExprNode(graph, closure, expr.keyExpr, nodeId);
-      const valueType = newExprNode(graph, closure, expr.valueExpr, nodeId);
+      const keyType = mkChild(graph, closure, expr.keyExpr, nodeId);
+      const valueType = mkChild(graph, closure, expr.valueExpr, nodeId);
       refine(graph, nodeId, { type: "object", keyValues, keyType, valueType });
       break;
     case "let":
@@ -1221,12 +1267,7 @@ export function defineFunction(
     name,
     reduce(result, args) {
       const graph = result.graph;
-      const [closure, funcNode] = exprToClosure(
-        graph,
-        funcExpr,
-        parent,
-        result.ref
-      );
+      const [closure, funcNode] = exprToClosure(graph, funcExpr, parent);
       var allNodes = Object.values(closure.symbols);
       closure.symbols["args"] = args.ref;
       updateNodePart(graph, result.ref, {
@@ -1265,4 +1306,61 @@ export function addRefinement(t: Type, appNode: TypedNode): Type {
     return { ...t, refinements: [appNode] };
   }
   return { ...t, refinements: [...t.refinements, appNode] };
+}
+
+export function copyNewNode(
+  graph: NodeGraph,
+  typeRef: NodeRef,
+  parent?: NodeRef
+): NodeRef {
+  const nd = newNode(graph, untyped, parent);
+  const type = copyType(graph, lookupType(graph, typeRef), nd.nodeId);
+  nd.type = type;
+  return nd.nodeId;
+}
+
+export function withObjectType(
+  type: ObjectType,
+  f: (n: NodeRef) => NodeRef
+): ObjectType {
+  const keyType = f(type.keyType);
+  const valueType = f(type.valueType);
+  const keyValues = type.keyValues.map(kv => {
+    const key = f(kv.key);
+    const value = f(kv.value);
+    return { key, value };
+  });
+  return { type: "object", keyType, valueType, keyValues };
+}
+
+export function copyType(graph: NodeGraph, type: Type, parent?: NodeRef): Type {
+  switch (type.type) {
+    case "object":
+      return withObjectType(type, t => copyNewNode(graph, t, parent));
+    default:
+      return type;
+  }
+}
+
+export function withoutValue(
+  graph: NodeGraph,
+  type: Type,
+  parent?: NodeRef
+): Type {
+  switch (type.type) {
+    case "string":
+    case "number":
+    case "boolean":
+      return { ...type, value: undefined };
+    case "object":
+      return withObjectType(type, n => {
+        const nn = newNode(
+          graph,
+          withoutValue(graph, lookupType(graph, n), parent)
+        );
+        return nn.nodeId;
+      });
+    default:
+      return type;
+  }
 }

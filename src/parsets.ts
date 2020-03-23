@@ -17,22 +17,23 @@ import {
   newExprNode,
   reduce,
   printGraph,
-  NodeFlags
+  NodeFlags,
+  newClosure
 } from "./types";
 import { globals, globalGraph } from "./globals";
 
 const source = `
 function another()
 {
-    let r = refine(args.a < args.b, true)
+    let r = refine(args.a < args.b, false)
     args.a + args.b;
 }
 
 function main()
 {
-    let a = args.a + args.a
-    let b = args.b
-    another({a, b: 13});
+    // ifThenElse(args.a + 1 == 12, "a", 3);
+    // let o = another({a: args.a, b: 4});
+    args.a == args.b ? args.a : args.b == "b" ? args.a : 0;
 }
 `;
 
@@ -89,6 +90,8 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
         default:
           throw new Error("Can only use plus");
       }
+    } else if (ts.isStringLiteralLike(n)) {
+      return cnst(n.text);
     } else if (ts.isIdentifier(n)) {
       return identifierExpr(n.text);
     } else if (ts.isNumericLiteral(n)) {
@@ -156,7 +159,7 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
       bodyExpr = letExpr(d.name, d.expr, bodyExpr);
     }
     const funcName = n.name?.text ?? "main";
-    console.log(exprToString(bodyExpr));
+    // console.log(exprToString(bodyExpr));
     closure.symbols[funcName] = defineFunction(
       graph,
       funcName,
@@ -175,7 +178,7 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
   topLevel(n);
 }
 
-const ourFuncs: Closure = { parent: globals, symbols: {} };
+const ourFuncs: Closure = newClosure({}, globals);
 
 parseFunctions(globalGraph, ourFuncs, sf);
 
