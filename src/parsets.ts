@@ -23,17 +23,19 @@ import {
 import { globals, globalGraph } from "./globals";
 
 const source = `
-function another()
+function int8(a)
 {
-    let r = refine(args.a < args.b, false)
-    args.a + args.b;
+    refine(a < 128 && a > -129, true)
 }
 
-function main()
+function main(a)
 {
     // ifThenElse(args.a + 1 == 12, "a", 3);
     // let o = another({a: args.a, b: 4});
-    args.a == args.b ? args.a : args.b == "b" ? args.a : 0;
+    let o = int8({a});
+    // let p = 200 < a;
+    // a < 300 || a > 500 ? "valid" : "invalid";    
+    o;
 }
 `;
 
@@ -77,7 +79,16 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
   }
 
   function parseExpr(n: ts.Expression): Expr {
-    if (ts.isBinaryExpression(n)) {
+    if (ts.isPrefixUnaryExpression(n)) {
+      const minus = parseExpr(n.operand);
+      switch (n.operator) {
+        case ts.SyntaxKind.MinusToken:
+          if (minus.tag == "prim" && typeof minus.value === "number") {
+            return { ...minus, value: -minus.value };
+          }
+      }
+      throw new Error("Can't handle unary - apart from negative numbers, ATM");
+    } else if (ts.isBinaryExpression(n)) {
       const l = parseExpr(n.left);
       const r = parseExpr(n.right);
       switch (n.operatorToken.kind) {
@@ -85,10 +96,16 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
           return applyRef("==", l, r);
         case ts.SyntaxKind.LessThanToken:
           return applyRef("<", l, r);
+        case ts.SyntaxKind.GreaterThanToken:
+          return applyRef(">", l, r);
+        case ts.SyntaxKind.AmpersandAmpersandToken:
+          return applyRef("&&", l, r);
+        case ts.SyntaxKind.BarBarToken:
+          return applyRef("||", l, r);
         case ts.SyntaxKind.PlusToken:
           return applyRef("add", l, r);
         default:
-          throw new Error("Can only use plus");
+          throw new Error("Can't use binary func " + n.operatorToken.kind);
       }
     } else if (ts.isStringLiteralLike(n)) {
       return cnst(n.text);
@@ -186,8 +203,10 @@ const appNode = newExprNode(globalGraph, ourFuncs, applyObj("main"));
 
 reduce(globalGraph, appNode);
 console.log("\nUnproven\n");
-printGraph(globalGraph, nd => Boolean(nd.flags & NodeFlags.Unproven), {
-  application: true
+printGraph(globalGraph, nd => Boolean(nd.type.refinements), {
+  application: true,
+  nodeId: true,
+  refinements: true
 });
 console.log("\nReducible\n");
 printGraph(globalGraph, nd => Boolean(nd.flags & NodeFlags.Reducible), {

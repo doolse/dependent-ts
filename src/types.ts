@@ -1,7 +1,6 @@
 import { inspect } from "util";
 import color from "cli-color";
 import { shallowEqual } from "shallow-equal-object";
-import { type } from "os";
 
 export type Expr =
   | PrimitiveExpr
@@ -157,6 +156,7 @@ export function primTypeExpr(
 
 export type NodeGraph = {
   nodes: NodeData[];
+  overrides: [NodeRef, NodeRef][];
 };
 
 export type NodeRef = number;
@@ -218,6 +218,11 @@ export interface NodeTuple {
   value: NodeRef;
 }
 
+export interface Refinement {
+  original: NodeRef;
+  application: NodeRef;
+}
+
 export type Type =
   | AnyType
   | UntypedType
@@ -228,7 +233,7 @@ export type Type =
   | FunctionType;
 
 export interface BaseType {
-  refinements?: TypedNode[];
+  refinements?: Refinement[];
 }
 
 export interface AnyType extends BaseType {
@@ -359,6 +364,10 @@ export function isObjectType(t: Type): t is ObjectType {
 }
 
 export function graphNode(graph: NodeGraph, ref: NodeRef): NodeData {
+  const maybe = graph.overrides.find(o => o[0] === ref);
+  if (maybe !== undefined) {
+    ref = maybe[1];
+  }
   return graph.nodes[ref];
 }
 
@@ -599,7 +608,7 @@ export function nodeToString(node: TypedNode, flags?: PrintFlags): string {
   }
   if (flags?.nodeId) {
     // if ((!isPrim(type) || type.value === undefined) && !isFunctionType(type)) {
-    typeOnly = data.nodeId + "@" + typeOnly;
+    typeOnly = color.magenta(data.nodeId) + "@" + typeOnly;
     // }
   }
   if (flags?.deps) {
@@ -618,7 +627,15 @@ export function typeAndRefinementsToString(
     return baseStr;
   } else {
     const plusRef = type.refinements
-      .map(r => nodeToString(r, { application: true }))
+      .map(
+        r =>
+          color.magenta(r.original) +
+          ":" +
+          refToString(graph, r.application, {
+            application: true,
+            appFlags: { nodeId: true }
+          })
+      )
       .join(" && ");
     return baseStr + "#" + plusRef;
   }
@@ -725,15 +742,17 @@ export function isRefinementOfRef(
 }
 
 export function missingRefinements(
-  source: TypedNode[] | undefined,
-  refinements: TypedNode[] | undefined
+  source: Refinement[] | undefined,
+  refinements: Refinement[] | undefined
 ) {
   if (!source) {
     return refinements && refinements.length > 0;
   } else
     return (
       refinements &&
-      refinements.some(r => !source.find(sr => shallowEqual(sr, r)))
+      refinements.some(
+        r => !source.find(sr => sr.application === r.application)
+      )
     );
 }
 
@@ -791,11 +810,11 @@ export function withRefinements(source: Type, refinement: Type) {
     return { ...source, refinements };
   } else {
     const extraRefine = refinements.filter(
-      r => !source.refinements!.find(sr => shallowEqual(sr, r))
+      r => !source.refinements!.find(sr => sr.application === r.application)
     );
-    extraRefine.forEach(n =>
-      console.log(nodeToString(n, { application: true, nodeId: true }))
-    );
+    // extraRefine.forEach(n =>
+    //   console.log(nodeToString(n, { application: true, nodeId: true }))
+    // );
     if (extraRefine.length == 0) {
       return source;
     }
@@ -810,7 +829,7 @@ export function refineType(
   graph: NodeGraph,
   source: Type,
   refinement: Type
-): Type {
+): Type | undefined {
   if (source === refinement) {
     return source;
   }
@@ -827,15 +846,16 @@ export function refineType(
       );
     }
     if (source.value !== refinement.value) {
+      if (refinement.value === undefined) {
+        return withRefinements(source, refinement);
+      }
       if (source.value === undefined) {
         return withRefinements(
           { ...source!, value: refinement.value! } as PrimType,
           refinement
         );
       } else {
-        throw new Error(
-          "Can't refine value from " + source.value + " to " + refinement.value
-        );
+        return undefined;
       }
     }
     return withRefinements(source, refinement);
@@ -980,8 +1000,18 @@ export function refine(
     return false;
   }
   const type = refineType(graph, sourceType, refinement);
+  if (type === undefined) {
+    console.log(
+      "Failed to refine node: " +
+        refToString(graph, source, { application: true }) +
+        " to " +
+        typeToString(graph, refinement)
+    );
+    throw new Error("What happened here");
+  }
   if (type !== sourceType) {
     node = updateNodePart(graph, source, { type });
+    checkRefinements(graph, source, type);
     // console.log(
     //   "Mark reducible for " +
     //     refToString(graph, source, {
@@ -1050,20 +1080,24 @@ export function reduce(graph: NodeGraph, ref: NodeRef): void {
       ref,
       fl => fl & ~(NodeFlags.Expandable | NodeFlags.Reducible)
     );
-    if (data.reduce) {
-      data.reduce();
-    } else if (isNodeApp(data)) {
-      const app = data.application;
-      reduce(graph, app.func);
-      const funcType = lookupType(graph, app.func);
-      if (isFunctionType(funcType)) {
-        funcType.reduce({ graph, ref }, { graph, ref: app.args });
-      } else {
-        throw new Error("Can't apply to non function");
-      }
-    } else if (isExpandableExpression(data)) {
-      expand(graph, data);
+    doReduce(graph, data, ref);
+  }
+}
+
+export function doReduce(graph: NodeGraph, data: NodeData, ref: NodeRef) {
+  if (data.reduce) {
+    data.reduce();
+  } else if (isNodeApp(data)) {
+    const app = data.application;
+    reduce(graph, app.func);
+    const funcType = lookupType(graph, app.func);
+    if (isFunctionType(funcType)) {
+      funcType.reduce({ graph, ref }, { graph, ref: app.args });
+    } else {
+      throw new Error("Can't apply to non function");
     }
+  } else if (isExpandableExpression(data)) {
+    expand(graph, data);
   }
 }
 
@@ -1176,8 +1210,8 @@ export function updateNode(
   ref: NodeRef,
   f: (d: NodeData) => NodeData
 ): NodeData {
-  const res = f(graph.nodes[ref]);
-  graph.nodes[ref] = res;
+  const res = f(graphNode(graph, ref));
+  graph.nodes[res.nodeId] = res;
   return res;
 }
 
@@ -1301,7 +1335,11 @@ export function printGraph(
   });
 }
 
-export function addRefinement(t: Type, appNode: TypedNode): Type {
+export function addRefinementNode(n: TypedNode, refinement: Refinement): void {
+  refineToType(n, addRefinement(nodeType(n), refinement));
+}
+
+export function addRefinement(t: Type, appNode: Refinement): Type {
   if (!t.refinements) {
     return { ...t, refinements: [appNode] };
   }
@@ -1362,5 +1400,42 @@ export function withoutValue(
       });
     default:
       return type;
+  }
+}
+
+export function checkRefinements(g: NodeGraph, ref: NodeRef, type: Type) {
+  console.log(g.overrides);
+  if (type.refinements) {
+    type.refinements.forEach(({ application, original }) => {
+      if (original !== ref) {
+        console.log(
+          "APP:" +
+            refToString(g, application, {
+              nodeId: true,
+              application: true,
+              appFlags: { nodeId: true }
+            })
+        );
+        console.log(
+          "OLD:" +
+            refToString(g, original, {
+              nodeId: true,
+              application: true,
+              appFlags: { nodeId: true }
+            })
+        );
+        console.log(
+          "NEW:" +
+            refToString(g, ref, {
+              nodeId: true,
+              application: true,
+              appFlags: { nodeId: true }
+            })
+        );
+        console.log(application, original, ref);
+        const data = graphNode(g, application);
+        doReduce({ ...g, overrides: [[original, ref]] }, data, application);
+      }
+    });
   }
 }

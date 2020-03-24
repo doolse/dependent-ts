@@ -58,7 +58,8 @@ import {
   printSymbols,
   printClosure,
   copyType,
-  withoutValue
+  withoutValue,
+  addRefinementNode
 } from "./types";
 
 const fieldRef: FunctionType = {
@@ -112,7 +113,85 @@ function refBoolFunc(
         if (unifyEq && expectedValue === true) {
           unifyNode(arg0, arg1);
         } else {
-          updateFlags(result.graph, result.ref, fl => fl | NodeFlags.Unproven);
+          addRefinementNode(arg0, {
+            application: result.ref,
+            original: arg0.ref
+          });
+          addRefinementNode(arg1, {
+            application: result.ref,
+            original: arg1.ref
+          });
+        }
+      }
+    }
+  };
+}
+
+// OR
+// x 0 0 - x must be false
+// x 1 0 - error
+// x 1 1 - no knowledge
+// x 0 1 - x must be true
+
+// AND
+// x 0 0 - x must be false
+// x 1 0 - x must be false
+// x 1 1 - x must be true
+// x 0 1 - x must be true
+
+function refBinaryBoolFunc(
+  name: string,
+  bothKnown: (v1: boolean, v2: boolean) => boolean,
+  oneAndResult: (result: boolean, v: boolean) => boolean | undefined,
+  resultFromOne: (v1: boolean) => boolean | undefined,
+  argsFromResult: (result: boolean) => boolean | undefined
+): FunctionType {
+  return {
+    type: "function",
+    name,
+    reduce(result, args) {
+      reduceToObject(args);
+      const [, arg0] = findField(args, 0);
+      const [, arg1] = findField(args, 1);
+      refineToType(result, boolType);
+      refineToType(arg0, boolType);
+      refineToType(arg1, boolType);
+      const expectedValue = nodePrimValue(result, boolType);
+      const arg0B = nodePrimValue(arg0, boolType);
+      const arg1B = nodePrimValue(arg1, boolType);
+      console.log("&&" + expectedValue, "v1:" + arg0B + " v2:" + arg1B);
+
+      if (arg0B !== undefined && arg1B !== undefined) {
+        refineToType(result, cnstType(bothKnown(arg0B, arg1B)));
+      } else if (expectedValue !== undefined) {
+        if (arg0B !== undefined) {
+          const arg1R = oneAndResult(expectedValue, arg0B);
+          if (arg1R !== undefined) {
+            refineToType(arg1, cnstType(arg1R));
+          }
+        } else if (arg1B !== undefined) {
+          const arg0R = oneAndResult(expectedValue, arg1B);
+          if (arg0R !== undefined) {
+            refineToType(arg0, cnstType(arg0R));
+          }
+        } else {
+          const argR = argsFromResult(expectedValue);
+          if (argR !== undefined) {
+            refineToType(arg0, cnstType(argR));
+            refineToType(arg1, cnstType(argR));
+          }
+        }
+      } else {
+        if (arg0B !== undefined) {
+          const res = resultFromOne(arg0B);
+          if (res !== undefined) {
+            refineToType(result, cnstType(res));
+          }
+        } else if (arg1B !== undefined) {
+          const res = resultFromOne(arg1B);
+          if (res !== undefined) {
+            refineToType(arg0, cnstType(res));
+          }
         }
       }
     }
@@ -121,6 +200,26 @@ function refBoolFunc(
 
 const eqRef: FunctionType = refBoolFunc("==", (v1, v2) => v1 === v2, true);
 const ltRef: FunctionType = refBoolFunc("<", (v1, v2) => v1 < v2, false);
+const gtRef: FunctionType = refBoolFunc(">", (v1, v2) => v1 > v2, false);
+const andRef: FunctionType = refBinaryBoolFunc(
+  "&&",
+  (v1, v2) => v1 && v2,
+  (rv, v1) => {
+    if (!rv && v1)
+      throw new Error("Expected OR to be false but one side was true");
+    return !v1 ? rv : undefined;
+  },
+  one => (!one ? false : undefined),
+  r => (r ? true : undefined)
+);
+
+const orRef: FunctionType = refBinaryBoolFunc(
+  "||",
+  (v1, v2) => v1 || v2,
+  (rv, v1) => rv,
+  one => (one ? true : undefined),
+  r => (r ? undefined : false)
+);
 
 const addFunc: FunctionType = {
   type: "function",
@@ -252,14 +351,18 @@ const refineFunc: FunctionType = {
 };
 
 export const globalGraph: NodeGraph = {
-  nodes: []
+  nodes: [],
+  overrides: []
 };
 
 export const globals: Closure = newClosure({
   add: noDepNode(globalGraph, addFunc),
   fieldRef: noDepNode(globalGraph, fieldRef),
   "==": noDepNode(globalGraph, eqRef),
+  "&&": noDepNode(globalGraph, andRef),
+  "||": noDepNode(globalGraph, orRef),
   "<": noDepNode(globalGraph, ltRef),
+  ">": noDepNode(globalGraph, gtRef),
   ifThenElse: noDepNode(globalGraph, ifThenElseFunc),
   refine: noDepNode(globalGraph, refineFunc)
 });
