@@ -28,14 +28,19 @@ function int8(a)
     refine(a < 128 && a > -129, true)
 }
 
+function uint8(a)
+{
+    refine(a > -1 && a < 256, true)
+}
+
 function main(a)
 {
     // ifThenElse(args.a + 1 == 12, "a", 3);
     // let o = another({a: args.a, b: 4});
-    let o = int8({a});
-    // let p = 200 < a;
-    // a < 300 || a > 500 ? "valid" : "invalid";    
-    o;
+    let o = uint8({a});
+    // let p = 256 < a;
+    a < 12 || a > 34 ? a : a + 255;    
+    // o;
 }
 `;
 

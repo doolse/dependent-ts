@@ -35,7 +35,6 @@ import {
   newNode,
   untyped,
   isBoolType,
-  addRefinement,
   refToString,
   SymbolExpr,
   updateFlags,
@@ -112,12 +111,12 @@ function refBoolFunc(
       } else if (expectedValue !== undefined) {
         if (unifyEq && expectedValue === true) {
           unifyNode(arg0, arg1);
-        } else {
-          addRefinementNode(arg0, {
+        } else if (!(nodeData(result).flags & NodeFlags.Refinement)) {
+          addRefinementNode(arg0.graph, arg0.ref, {
             application: result.ref,
             original: arg0.ref
           });
-          addRefinementNode(arg1, {
+          addRefinementNode(arg1.graph, arg1.ref, {
             application: result.ref,
             original: arg1.ref
           });
@@ -139,6 +138,26 @@ function refBoolFunc(
 // x 1 1 - x must be true
 // x 0 1 - x must be true
 
+const andRef: FunctionType = refBinaryBoolFunc(
+  "&&",
+  (v1, v2) => v1 && v2,
+  (rv, v1) => rv,
+  one => (one ? undefined : false),
+  r => (r ? true : undefined)
+);
+
+const orRef: FunctionType = refBinaryBoolFunc(
+  "||",
+  (v1, v2) => v1 || v2,
+  (rv, v1) => {
+    if (!rv && v1)
+      throw new Error("Expected OR to be false but one side was true");
+    return !v1 ? rv : undefined;
+  },
+  one => (one ? true : undefined),
+  r => undefined
+);
+
 function refBinaryBoolFunc(
   name: string,
   bothKnown: (v1: boolean, v2: boolean) => boolean,
@@ -159,7 +178,6 @@ function refBinaryBoolFunc(
       const expectedValue = nodePrimValue(result, boolType);
       const arg0B = nodePrimValue(arg0, boolType);
       const arg1B = nodePrimValue(arg1, boolType);
-      console.log("&&" + expectedValue, "v1:" + arg0B + " v2:" + arg1B);
 
       if (arg0B !== undefined && arg1B !== undefined) {
         refineToType(result, cnstType(bothKnown(arg0B, arg1B)));
@@ -182,16 +200,14 @@ function refBinaryBoolFunc(
           }
         }
       } else {
-        if (arg0B !== undefined) {
-          const res = resultFromOne(arg0B);
-          if (res !== undefined) {
-            refineToType(result, cnstType(res));
-          }
-        } else if (arg1B !== undefined) {
-          const res = resultFromOne(arg1B);
-          if (res !== undefined) {
-            refineToType(arg0, cnstType(res));
-          }
+        const res =
+          arg0B !== undefined
+            ? resultFromOne(arg0B)
+            : arg1B !== undefined
+            ? resultFromOne(arg1B)
+            : undefined;
+        if (res !== undefined) {
+          refineToType(result, cnstType(res));
         }
       }
     }
@@ -201,25 +217,6 @@ function refBinaryBoolFunc(
 const eqRef: FunctionType = refBoolFunc("==", (v1, v2) => v1 === v2, true);
 const ltRef: FunctionType = refBoolFunc("<", (v1, v2) => v1 < v2, false);
 const gtRef: FunctionType = refBoolFunc(">", (v1, v2) => v1 > v2, false);
-const andRef: FunctionType = refBinaryBoolFunc(
-  "&&",
-  (v1, v2) => v1 && v2,
-  (rv, v1) => {
-    if (!rv && v1)
-      throw new Error("Expected OR to be false but one side was true");
-    return !v1 ? rv : undefined;
-  },
-  one => (!one ? false : undefined),
-  r => (r ? true : undefined)
-);
-
-const orRef: FunctionType = refBinaryBoolFunc(
-  "||",
-  (v1, v2) => v1 || v2,
-  (rv, v1) => rv,
-  one => (one ? true : undefined),
-  r => (r ? undefined : false)
-);
 
 const addFunc: FunctionType = {
   type: "function",
@@ -230,6 +227,7 @@ const addFunc: FunctionType = {
     const [, arg1] = findField(args, 1);
     refineToType(arg0, numberType);
     refineToType(arg1, numberType);
+    unifyNode(arg0, arg1, false);
     const numValue = numberOp(arg0, arg1, (a, b) => a + b);
     const resultVal = numValue !== undefined ? cnstType(numValue) : numberType;
     // console.log(
@@ -316,7 +314,10 @@ const ifThenElseFunc: FunctionType = {
         const cv = nodePrimValue(condition, boolType);
         if (cv === undefined) {
           console.log("TRUESIDE:" + printClosure(graph, trueClosures[3]));
-          console.log("FALSESIDE:" + printClosure(graph, falseClosures[3]));
+          console.log(
+            "FALSESIDE:" +
+              printClosure(graph, falseClosures[3], { refinements: true })
+          );
           refine(graph, trueCond, cnstType(true));
           refine(graph, falseCond, cnstType(false));
           reduce(graph, trueCond);
@@ -351,8 +352,7 @@ const refineFunc: FunctionType = {
 };
 
 export const globalGraph: NodeGraph = {
-  nodes: [],
-  overrides: []
+  nodes: []
 };
 
 export const globals: Closure = newClosure({
