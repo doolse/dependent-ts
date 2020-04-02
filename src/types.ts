@@ -81,8 +81,6 @@ export function applyObj(
 export function arrayType(graph: NodeGraph, ...entries: Type[]): ObjectType {
   return {
     type: "object",
-    keyType: noDepNode(graph, untyped),
-    valueType: noDepNode(graph, untyped),
     keyValues: entries.map((value, i) => ({
       key: noDepNode(graph, cnstType(i)),
       value: noDepNode(graph, value)
@@ -96,8 +94,6 @@ export function objType(
 ): ObjectType {
   return {
     type: "object",
-    keyType: noDepNode(graph, untyped),
-    valueType: noDepNode(graph, untyped),
     keyValues: entries.map(([k, value]) => ({
       key: noDepNode(graph, k),
       value: noDepNode(graph, value)
@@ -262,8 +258,6 @@ export interface BoolType extends BaseType, PrimValue<boolean> {
 
 export interface ObjectType extends BaseType {
   type: "object";
-  keyType: NodeRef;
-  valueType: NodeRef;
   keyValues: NodeTuple[];
 }
 
@@ -298,9 +292,7 @@ export const objectTypeName: TypeNameOnly<ObjectType> = { type: "object" };
 export function emptyObject(depsFrom: TypedNode): ObjectType {
   return {
     type: "object",
-    keyValues: [],
-    keyType: node(depsFrom, untyped),
-    valueType: node(depsFrom, untyped)
+    keyValues: []
   };
 }
 
@@ -773,23 +765,16 @@ export function isRefinementOf(
     return refinement.value === undefined || source.value === refinement.value;
   }
   if (isObjectType(source) && isObjectType(refinement)) {
-    return (
-      isRefinementOfRef(graph, source.keyType, refinement.keyType) &&
-      isRefinementOfRef(graph, source.valueType, refinement.valueType) &&
-      refinement.keyValues.every(({ key, value }) => {
-        const ind = source.keyValues.findIndex(kv =>
-          valueEqualsRef(graph, key, kv.key)
-        );
-        if (ind >= 0) {
-          return isRefinementOfRef(graph, source.keyValues[ind].value, value);
-        } else {
-          return (
-            isRefinementOfRef(graph, source.keyType, key) &&
-            isRefinementOfRef(graph, source.valueType, value)
-          );
-        }
-      })
-    );
+    return refinement.keyValues.every(({ key, value }) => {
+      const ind = source.keyValues.findIndex(kv =>
+        valueEqualsRef(graph, key, kv.key)
+      );
+      if (ind >= 0) {
+        return isRefinementOfRef(graph, source.keyValues[ind].value, value);
+      } else {
+        return false;
+      }
+    });
   }
   if (isPrim(source)) {
     return false;
@@ -910,13 +895,9 @@ function refineObjects(
       changed = refineRef(graph, exKV.value, value) || changed;
       changed = refineRef(graph, exKV.key, key) || changed;
     } else {
-      refineRef(graph, key, source.keyType);
-      refineRef(graph, value, source.valueType);
       newFields.push({ key, value });
     }
   });
-  changed = refineRef(graph, source.keyType, refinement.keyType) || changed;
-  changed = refineRef(graph, source.valueType, refinement.valueType) || changed;
   if (newFields.length) {
     return {
       ...source,
@@ -1124,8 +1105,6 @@ export function reduceObjectType(
   function reduceRef(ref: NodeRef) {
     reduce(graph, ref);
   }
-  reduceRef(obj.keyType);
-  reduceRef(obj.valueType);
   obj.keyValues.forEach(kv => {
     if (!flags || flags.keys) reduceRef(kv.key);
     if (!flags || flags.values) reduceRef(kv.value);
@@ -1282,7 +1261,7 @@ export function expand(
       });
       const keyType = mkChild(graph, closure, expr.keyExpr, nodeId);
       const valueType = mkChild(graph, closure, expr.valueExpr, nodeId);
-      refine(graph, nodeId, { type: "object", keyValues, keyType, valueType });
+      refine(graph, nodeId, { type: "object", keyValues });
       break;
     case "let":
       throw new Error("No let's yet");
@@ -1389,14 +1368,12 @@ export function withObjectType(
   type: ObjectType,
   f: (n: NodeRef) => NodeRef
 ): ObjectType {
-  const keyType = f(type.keyType);
-  const valueType = f(type.valueType);
   const keyValues = type.keyValues.map(kv => {
     const key = f(kv.key);
     const value = f(kv.value);
     return { key, value };
   });
-  return { type: "object", keyType, valueType, keyValues };
+  return { type: "object", keyValues };
 }
 
 export function copyType(graph: NodeGraph, type: Type, parent?: NodeRef): Type {
