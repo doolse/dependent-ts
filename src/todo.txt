@@ -53,3 +53,18 @@ Type equality -
 Same primitive type - (int == int)
 && value equality of refinements 
 
+
+types can be marked as a value. Which means they can never have a value attached, 
+and cant be refined further.
+All values have a type. Once a value has been set, it is an error to have 
+it be calculated as something else.
+expressions have a type - if they have a value they have been reduced?
+
+If function argument keys don't get reduced to values, mark the function as un-reducible.
+
+A refinement is equal if the values of function and all args except the target arg are equal.
+
+Refinements are checked when a value is set or a refinement is added to the type of a value.
+
+Because keys are being used for refinement, when a key becomes a value it must be checked 
+for duplicates and blow up if the values dont unify.
