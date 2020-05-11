@@ -2,24 +2,26 @@ import * as ts from "typescript";
 import {
   NodeGraph,
   Closure,
+  defineFunction,
+  exprToString,
+  refToString,
+  newExprNode,
+  reduce,
+  printGraph,
+  NodeFlags,
+  newClosure,
+} from "./types";
+import {
   Expr,
   applyRef,
   ref,
   cnst,
   applyObj,
   letExpr,
-  defineFunction,
-  exprToString,
-  refToString,
   arrayExpr,
   KeyValueExpr,
   primTypeExpr,
-  newExprNode,
-  reduce,
-  printGraph,
-  NodeFlags,
-  newClosure
-} from "./types";
+} from "./expr";
 import { globals, globalGraph } from "./globals";
 
 const source = `
@@ -55,7 +57,7 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
     const name = p.name.getText();
     return {
       name,
-      expr: applyRef("fieldRef", ref("args"), cnst(name))
+      expr: applyRef("fieldRef", ref("args"), cnst(name)),
     };
   }
 
@@ -131,7 +133,7 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
       return {
         tag: "apply",
         function: parseExpr(n.expression),
-        args
+        args,
       };
     } else if (ts.isObjectLiteralExpression(n)) {
       const entries = n.properties.map(parseElem);
@@ -139,7 +141,7 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
         tag: "object",
         keyExpr: primTypeExpr("untyped"),
         valueExpr: primTypeExpr("untyped"),
-        entries
+        entries,
       };
     } else if (ts.isConditionalExpression(n)) {
       return applyRef(
@@ -208,15 +210,15 @@ const appNode = newExprNode(globalGraph, ourFuncs, applyObj("main"));
 
 reduce(globalGraph, appNode);
 console.log("\nUnproven\n");
-printGraph(globalGraph, nd => Boolean(nd.type.refinements), {
+printGraph(globalGraph, (nd) => Boolean(nd.type.refinements), {
   application: true,
   nodeId: true,
-  refinements: true
+  refinements: true,
 });
 console.log("\nReducible\n");
-printGraph(globalGraph, nd => Boolean(nd.flags & NodeFlags.Reducible), {
+printGraph(globalGraph, (nd) => Boolean(nd.flags & NodeFlags.Reducible), {
   application: true,
-  nodeId: true
+  nodeId: true,
 });
 // console.log("\nAll\n");
 // printGraph(globalGraph, nd => true, {

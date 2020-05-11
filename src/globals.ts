@@ -1,10 +1,6 @@
 import {
   numberType,
   cnstType,
-  applyRef,
-  ref,
-  Expr,
-  cnst,
   FunctionType,
   SymbolTable,
   getStringValue,
@@ -36,7 +32,6 @@ import {
   untyped,
   isBoolType,
   refToString,
-  SymbolExpr,
   updateFlags,
   NodeFlags,
   expand,
@@ -58,8 +53,9 @@ import {
   printClosure,
   copyType,
   withoutValue,
-  addRefinementNode
+  addRefinementNode,
 } from "./types";
+import { Expr, applyRef, ref, cnst } from "./expr";
 
 const fieldRef: FunctionType = {
   type: "function",
@@ -80,7 +76,7 @@ const fieldRef: FunctionType = {
       console.log(nodeToString(args));
       throw new Error("Fields must be prims");
     }
-  }
+  },
 };
 
 function refBoolFunc(
@@ -114,15 +110,15 @@ function refBoolFunc(
         } else if (!(nodeData(result).flags & NodeFlags.Refinement)) {
           addRefinementNode(arg0.graph, arg0.ref, {
             application: result.ref,
-            original: arg0.ref
+            original: arg0.ref,
           });
           addRefinementNode(arg1.graph, arg1.ref, {
             application: result.ref,
-            original: arg1.ref
+            original: arg1.ref,
           });
         }
       }
-    }
+    },
   };
 }
 
@@ -142,8 +138,8 @@ const andRef: FunctionType = refBinaryBoolFunc(
   "&&",
   (v1, v2) => v1 && v2,
   (rv, v1) => rv,
-  one => (one ? undefined : false),
-  r => (r ? true : undefined)
+  (one) => (one ? undefined : false),
+  (r) => (r ? true : undefined)
 );
 
 const orRef: FunctionType = refBinaryBoolFunc(
@@ -154,8 +150,8 @@ const orRef: FunctionType = refBinaryBoolFunc(
       throw new Error("Expected OR to be false but one side was true");
     return !v1 ? rv : undefined;
   },
-  one => (one ? true : undefined),
-  r => undefined
+  (one) => (one ? true : undefined),
+  (r) => undefined
 );
 
 function refBinaryBoolFunc(
@@ -210,7 +206,7 @@ function refBinaryBoolFunc(
           refineToType(result, cnstType(res));
         }
       }
-    }
+    },
   };
 }
 
@@ -239,7 +235,7 @@ const addFunc: FunctionType = {
     //   )}`
     // );
     refineToType(result, resultVal);
-  }
+  },
 };
 
 const ifThenElseFunc: FunctionType = {
@@ -274,7 +270,7 @@ const ifThenElseFunc: FunctionType = {
           expand(graph, oNode, recurseWithCopy);
         }
       } else {
-        updateFlags(graph, newNode, flags => flags & ~NodeFlags.Expandable);
+        updateFlags(graph, newNode, (flags) => flags & ~NodeFlags.Expandable);
         var remapped = closureMap[closure.closureId];
         if (!remapped) {
           remapped = newClosure({});
@@ -283,12 +279,12 @@ const ifThenElseFunc: FunctionType = {
         const redirSymbol = remapped.symbols[expr.symbol];
         if (redirSymbol !== undefined) {
           updateNodePart(graph, newNode, {
-            typeRef: redirSymbol
+            typeRef: redirSymbol,
           });
         } else {
           const sym = findSymbol(expr.symbol, closure);
           updateNodePart(graph, newNode, {
-            type: copyType(graph, lookupType(graph, sym), newNode)
+            type: copyType(graph, lookupType(graph, sym), newNode),
           });
           remapped.symbols[expr.symbol] = newNode;
         }
@@ -335,9 +331,9 @@ const ifThenElseFunc: FunctionType = {
           reduce(graph, falseResult);
           unify(graph, result.ref, falseResult);
         }
-      }
+      },
     });
-  }
+  },
 };
 
 const refineFunc: FunctionType = {
@@ -348,11 +344,11 @@ const refineFunc: FunctionType = {
     const [, application] = findField(args, 0);
     const [, expectedResult] = findField(args, 1);
     refineNode(application, expectedResult);
-  }
+  },
 };
 
 export const globalGraph: NodeGraph = {
-  nodes: []
+  nodes: [],
 };
 
 export const globals: Closure = newClosure({
@@ -364,7 +360,7 @@ export const globals: Closure = newClosure({
   "<": noDepNode(globalGraph, ltRef),
   ">": noDepNode(globalGraph, gtRef),
   ifThenElse: noDepNode(globalGraph, ifThenElseFunc),
-  refine: noDepNode(globalGraph, refineFunc)
+  refine: noDepNode(globalGraph, refineFunc),
 });
 
 export function lookupArg(name: string | number | boolean): Expr {
