@@ -139,8 +139,6 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
       const entries = n.properties.map(parseElem);
       return {
         tag: "object",
-        keyExpr: primTypeExpr("untyped"),
-        valueExpr: primTypeExpr("untyped"),
         entries,
       };
     } else if (ts.isConditionalExpression(n)) {

@@ -1136,8 +1136,6 @@ export function expand(
         const value = mkChild!(graph, closure, kv.value, nodeId);
         return { key, value };
       });
-      const keyType = mkChild(graph, closure, expr.keyExpr, nodeId);
-      const valueType = mkChild(graph, closure, expr.valueExpr, nodeId);
       refine(graph, nodeId, { type: "object", keyValues });
       break;
     case "let":

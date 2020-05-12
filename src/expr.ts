@@ -36,8 +36,6 @@ export interface ApplicationExpr {
 
 export interface ObjectExpr {
   tag: "object";
-  keyExpr: Expr;
-  valueExpr: Expr;
   entries: KeyValueExpr[];
 }
 
@@ -62,8 +60,6 @@ export function applyObj(
     tag: "apply",
     args: {
       tag: "object",
-      keyExpr: primTypeExpr("untyped"),
-      valueExpr: primTypeExpr("untyped"),
       entries: args.map(([key, value]) => ({
         tag: "keyvalue",
         key,
@@ -77,8 +73,6 @@ export function applyObj(
 export function arrayExpr(...entries: Expr[]): ObjectExpr {
   return {
     tag: "object",
-    keyExpr: primTypeExpr("untyped"),
-    valueExpr: primTypeExpr("untyped"),
     entries: entries.map((value, i) => ({
       tag: "keyvalue",
       key: cnst(i),
@@ -90,8 +84,6 @@ export function arrayExpr(...entries: Expr[]): ObjectExpr {
 export function objectExpr(entries: { [key: string]: Expr }): ObjectExpr {
   return {
     tag: "object",
-    keyExpr: primTypeExpr("untyped"),
-    valueExpr: primTypeExpr("untyped"),
     entries: Object.entries(entries).map(([key, value]) => ({
       tag: "keyvalue",
       key: cnst(key),
