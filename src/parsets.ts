@@ -1,58 +1,22 @@
 import * as ts from "typescript";
 import {
-  NodeGraph,
-  Closure,
-  defineFunction,
-  exprToString,
-  refToString,
-  newExprNode,
-  reduce,
-  printGraph,
-  NodeFlags,
-  newClosure,
-} from "./types";
-import {
   Expr,
   applyRef,
   ref,
   cnst,
-  applyObj,
   letExpr,
   arrayExpr,
   KeyValueExpr,
   primTypeExpr,
 } from "./expr";
-import { globals, globalGraph } from "./globals";
 
-const source = `
-function int8(a)
-{
-    refine(a < 128 && a > -129, true)
-}
-
-function uint8(a)
-{
-    refine(a > -1 && a < 256, true)
-}
-
-function main(a)
-{
-    // ifThenElse(args.a + 1 == 12, "a", 3);
-    // let o = another({a: args.a, b: 4});
-    let o = uint8({a});
-    // let p = 256 < a;
-    a < 12 || a > 34 ? a : a + 255;    
-    // o;
-}
-`;
-
-const sf = ts.createSourceFile("test.ts", source, ts.ScriptTarget.ES2015, true);
-
-interface LetDeclaration {
+export interface LetDeclaration {
   name: string;
   expr: Expr;
 }
-function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
+
+export function parseFunctions(n: ts.Node): LetDeclaration[] {
+  const topLevelDecl: LetDeclaration[] = [];
   function paramDef(p: ts.ParameterDeclaration): LetDeclaration {
     const name = p.name.getText();
     return {
@@ -181,13 +145,7 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
       bodyExpr = letExpr(d.name, d.expr, bodyExpr);
     }
     const funcName = n.name?.text ?? "main";
-    // console.log(exprToString(bodyExpr));
-    closure.symbols[funcName] = defineFunction(
-      graph,
-      funcName,
-      closure,
-      bodyExpr
-    ).ref;
+    topLevelDecl.push({ name: funcName, expr: bodyExpr });
   }
 
   function topLevel(n: ts.Node) {
@@ -198,35 +156,5 @@ function parseFunctions(graph: NodeGraph, closure: Closure, n: ts.Node) {
   }
 
   topLevel(n);
+  return topLevelDecl;
 }
-
-const ourFuncs: Closure = newClosure({}, globals);
-
-parseFunctions(globalGraph, ourFuncs, sf);
-
-const appNode = newExprNode(globalGraph, ourFuncs, applyObj("main"));
-
-reduce(globalGraph, appNode);
-console.log("\nUnproven\n");
-printGraph(globalGraph, (nd) => Boolean(nd.type.refinements), {
-  application: true,
-  nodeId: true,
-  refinements: true,
-});
-console.log("\nReducible\n");
-printGraph(globalGraph, (nd) => Boolean(nd.flags & NodeFlags.Reducible), {
-  application: true,
-  nodeId: true,
-});
-// console.log("\nAll\n");
-// printGraph(globalGraph, nd => true, {
-//   application: true,
-//   nodeId: true
-// });
-
-const args = globalGraph.nodes[appNode].application!.args;
-// console.log(refToString(globalGraph, argsNode));
-console.log("args:" + refToString(globalGraph, args, { refinements: true }));
-console.log(
-  "result:" + refToString(globalGraph, appNode, { application: true })
-);
