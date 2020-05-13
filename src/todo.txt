@@ -68,3 +68,13 @@ Refinements are checked when a value is set or a refinement is added to the type
 
 Because keys are being used for refinement, when a key becomes a value it must be checked 
 for duplicates and blow up if the values dont unify.
+
+---------------------
+Proofs have to be easily comparable, so checking if a type has a proof or not is real quick.
+Proofs should be an expression and a list of all closure references used.
+proof(\a -> a < 10)
+Unifying types is a matter of making sure all proofs are on both types.
+
+Change everything to use proofs.
+Change to using arrays and field proofs.
+Functions are applied to a node which represents an expression list.
