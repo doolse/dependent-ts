@@ -66,6 +66,19 @@ export interface TypeVariable {
   name?: string;  // for error messages: "T", "U", etc.
 }
 
+/**
+ * Type scheme - a polymorphic type with quantified type variables.
+ * Example: ∀T. (T) => T  (the identity function)
+ *
+ * The `quantified` array contains the IDs of type variables that are
+ * universally quantified. When the scheme is instantiated, these get
+ * replaced with fresh type variables.
+ */
+export interface TypeScheme {
+  quantified: number[];  // IDs of quantified type variables
+  type: TypeValue;
+}
+
 // Type constructors
 export const numberType: PrimitiveType = { tag: "primitive", name: "number" };
 export const stringType: PrimitiveType = { tag: "primitive", name: "string" };
@@ -97,6 +110,31 @@ export function typeVar(name?: string): TypeVariable {
 
 export function resetTypeVarCounter(): void {
   nextTypeVarId = 0;
+}
+
+/**
+ * Create a monomorphic type scheme (no quantified variables).
+ */
+export function monoScheme(type: TypeValue): TypeScheme {
+  return { quantified: [], type };
+}
+
+/**
+ * Create a polymorphic type scheme.
+ */
+export function polyScheme(quantified: number[], type: TypeValue): TypeScheme {
+  return { quantified, type };
+}
+
+/**
+ * Convert a type scheme to string for display.
+ */
+export function schemeToString(scheme: TypeScheme): string {
+  if (scheme.quantified.length === 0) {
+    return typeToString(scheme.type);
+  }
+  const vars = scheme.quantified.map(id => `?${id}`).join(", ");
+  return `∀${vars}. ${typeToString(scheme.type)}`;
 }
 
 /**

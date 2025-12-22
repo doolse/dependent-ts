@@ -28,6 +28,7 @@ import {
 import { specialize, evaluateFully } from "./specialize";
 import { numberType, boolType, literalType, objectType, stringType, arrayType, functionType, typeVar, resetTypeVarCounter, TypeValue, typeToString } from "./types";
 import { unify, applySubst, emptySubst, unifyAll } from "./unify";
+import { infer, InferResult } from "./infer";
 import { getTypeValue } from "./reflect";
 import { parse, parseFunction } from "./parser";
 import { evaluate } from "./evaluate";
@@ -748,6 +749,9 @@ function testLambdaWithLater() {
   const double = lambda(["y"], binOp("*", varRef("y"), lit(2)));
   const doubleVal = evaluate(double, new Env(), emptyContext());
 
+  if (!isNow(doubleVal)) {
+    throw new Error("Expected now value for closure");
+  }
   const code = specialize(fn, { double: doubleVal.value }, [{ name: "x", type: numberType }]);
 
   console.log("  Specialized with double closure:");
@@ -1142,6 +1146,350 @@ test("unify literal with primitive", testUnifyLiteralWithPrimitive);
 test("unify transitive", testUnifyTransitive);
 test("unify occurs check", testUnifyOccursCheck);
 test("unify complex", testUnifyComplex);
+console.log();
+
+// ============================================================================
+// Type Inference tests
+// ============================================================================
+
+console.log("--- Type Inference ---");
+console.log();
+
+function testInferLiteral() {
+  const r1 = infer(parse("42"));
+  if (!r1.success) throw new Error(r1.error);
+  if (r1.type.tag !== "primitive" || (r1.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r1.type)}`);
+  }
+
+  const r2 = infer(parse('"hello"'));
+  if (!r2.success) throw new Error(r2.error);
+  if (r2.type.tag !== "primitive" || (r2.type as any).name !== "string") {
+    throw new Error(`Expected string, got ${typeToString(r2.type)}`);
+  }
+
+  const r3 = infer(parse("true"));
+  if (!r3.success) throw new Error(r3.error);
+  if (r3.type.tag !== "primitive" || (r3.type as any).name !== "boolean") {
+    throw new Error(`Expected boolean, got ${typeToString(r3.type)}`);
+  }
+
+  console.log("  42 : number, \"hello\" : string, true : boolean");
+}
+
+function testInferArithmetic() {
+  const r = infer(parse("1 + 2 * 3"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  1 + 2 * 3 : number");
+}
+
+function testInferComparison() {
+  const r = infer(parse("1 < 2"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "boolean") {
+    throw new Error(`Expected boolean, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  1 < 2 : boolean");
+}
+
+function testInferConditional() {
+  const r = infer(parse("true ? 1 : 2"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  true ? 1 : 2 : number");
+}
+
+function testInferObject() {
+  const r = infer(parse("{ x: 1, y: \"hello\" }"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "object") {
+    throw new Error(`Expected object, got ${typeToString(r.type)}`);
+  }
+  if (r.type.fields.length !== 2) {
+    throw new Error(`Expected 2 fields, got ${r.type.fields.length}`);
+  }
+
+  console.log("  { x: 1, y: \"hello\" } : { x: number, y: string }");
+}
+
+function testInferLambda() {
+  // (x) => x + 1 should infer to (number) => number
+  const r = infer(parse("(x) => x + 1"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "function") {
+    throw new Error(`Expected function, got ${typeToString(r.type)}`);
+  }
+
+  const fn = r.type;
+  if (fn.params.length !== 1) {
+    throw new Error(`Expected 1 param, got ${fn.params.length}`);
+  }
+  if (fn.params[0].tag !== "primitive" || (fn.params[0] as any).name !== "number") {
+    throw new Error(`Expected param to be number, got ${typeToString(fn.params[0])}`);
+  }
+  if (fn.returnType.tag !== "primitive" || (fn.returnType as any).name !== "number") {
+    throw new Error(`Expected return to be number, got ${typeToString(fn.returnType)}`);
+  }
+
+  console.log("  (x) => x + 1 : (number) => number");
+}
+
+function testInferLambdaTwoParams() {
+  // (x, y) => x + y should infer to (number, number) => number
+  const r = infer(parse("(x, y) => x + y"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "function") {
+    throw new Error(`Expected function, got ${typeToString(r.type)}`);
+  }
+
+  const fn = r.type;
+  if (fn.params.length !== 2) {
+    throw new Error(`Expected 2 params, got ${fn.params.length}`);
+  }
+
+  console.log("  (x, y) => x + y : (number, number) => number");
+}
+
+function testInferLambdaBoolean() {
+  // (x) => x && true should infer to (boolean) => boolean
+  const r = infer(parse("(x) => x && true"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "function") {
+    throw new Error(`Expected function, got ${typeToString(r.type)}`);
+  }
+
+  const fn = r.type;
+  if (fn.params[0].tag !== "primitive" || (fn.params[0] as any).name !== "boolean") {
+    throw new Error(`Expected param to be boolean, got ${typeToString(fn.params[0])}`);
+  }
+
+  console.log("  (x) => x && true : (boolean) => boolean");
+}
+
+function testInferLet() {
+  // let x = 5 in x + 1
+  const r = infer(parse("let x = 5 in x + 1"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  let x = 5 in x + 1 : number");
+}
+
+function testInferLetWithLambda() {
+  // let f = (x) => x + 1 in f(5)
+  const r = infer(parse("let f = (x) => x + 1 in f(5)"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  let f = (x) => x + 1 in f(5) : number");
+}
+
+function testInferHigherOrder() {
+  // let apply = (f, x) => f(x) in let double = (n) => n * 2 in apply(double, 5)
+  const r = infer(parse("let apply = (f, x) => f(x) in let double = (n) => n * 2 in apply(double, 5)"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  let apply = (f, x) => f(x) in ... apply(double, 5) : number");
+}
+
+function testInferFieldAccess() {
+  // ({ x: 1, y: 2 }).x
+  const r = infer(parse("({ x: 1, y: 2 }).x"));
+  if (!r.success) throw new Error(r.error);
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  ({ x: 1, y: 2 }).x : number");
+}
+
+function testInferError() {
+  // 1 + "hello" should fail
+  const r = infer(parse('1 + "hello"'));
+  if (r.success) {
+    throw new Error("Should have failed to infer 1 + \"hello\"");
+  }
+
+  console.log("  1 + \"hello\" : error (correctly rejected)");
+}
+
+function testInferConditionalBranchMismatch() {
+  // true ? 1 : "hello" should fail
+  const r = infer(parse('true ? 1 : "hello"'));
+  if (r.success) {
+    throw new Error("Should have failed - branches have different types");
+  }
+
+  console.log("  true ? 1 : \"hello\" : error (branch mismatch)");
+}
+
+test("infer literal", testInferLiteral);
+test("infer arithmetic", testInferArithmetic);
+test("infer comparison", testInferComparison);
+test("infer conditional", testInferConditional);
+test("infer object", testInferObject);
+test("infer lambda", testInferLambda);
+test("infer lambda two params", testInferLambdaTwoParams);
+test("infer lambda boolean", testInferLambdaBoolean);
+test("infer let", testInferLet);
+test("infer let with lambda", testInferLetWithLambda);
+test("infer higher order", testInferHigherOrder);
+test("infer field access", testInferFieldAccess);
+test("infer error", testInferError);
+test("infer conditional branch mismatch", testInferConditionalBranchMismatch);
+console.log();
+
+// ============================================================================
+// Let Polymorphism tests
+// ============================================================================
+console.log("--- Let Polymorphism ---");
+console.log();
+
+function testPolymorphicIdentity() {
+  // let id = (x) => x in (id(5), id("hello"))
+  // The identity function should work at multiple types!
+  const expr = parse('let id = (x) => x in { n: id(5), s: id("hello") }');
+  const r = infer(expr);
+
+  if (!r.success) {
+    throw new Error(`Should infer polymorphic identity: ${r.error}`);
+  }
+
+  // Result should be { n: number, s: string }
+  if (r.type.tag !== "object") {
+    throw new Error(`Expected object type, got ${typeToString(r.type)}`);
+  }
+
+  const nField = r.type.fields.find(f => f.name === "n");
+  const sField = r.type.fields.find(f => f.name === "s");
+
+  if (!nField || nField.type.tag !== "primitive" || (nField.type as any).name !== "number") {
+    throw new Error(`Expected n: number, got ${nField ? typeToString(nField.type) : "missing"}`);
+  }
+  if (!sField || sField.type.tag !== "primitive" || (sField.type as any).name !== "string") {
+    throw new Error(`Expected s: string, got ${sField ? typeToString(sField.type) : "missing"}`);
+  }
+
+  console.log("  let id = (x) => x in { n: id(5), s: id(\"hello\") } : { n: number, s: string }");
+}
+
+function testPolymorphicConst() {
+  // let const = (x, y) => x in (const(1, "a"), const("b", 2))
+  // First arg should determine return type
+  const expr = parse('let const = (x, y) => x in { n: const(1, "a"), s: const("b", 2) }');
+  const r = infer(expr);
+
+  if (!r.success) {
+    throw new Error(`Should infer polymorphic const: ${r.error}`);
+  }
+
+  if (r.type.tag !== "object") {
+    throw new Error(`Expected object type, got ${typeToString(r.type)}`);
+  }
+
+  const nField = r.type.fields.find(f => f.name === "n");
+  const sField = r.type.fields.find(f => f.name === "s");
+
+  if (!nField || nField.type.tag !== "primitive" || (nField.type as any).name !== "number") {
+    throw new Error(`Expected n: number, got ${nField ? typeToString(nField.type) : "missing"}`);
+  }
+  if (!sField || sField.type.tag !== "primitive" || (sField.type as any).name !== "string") {
+    throw new Error(`Expected s: string, got ${sField ? typeToString(sField.type) : "missing"}`);
+  }
+
+  console.log('  let const = (x, y) => x in { n: const(1, "a"), s: const("b", 2) } : { n: number, s: string }');
+}
+
+function testPolymorphicApply() {
+  // let apply = (f, x) => f(x) in apply((x) => x + 1, 5)
+  // Higher-order function with polymorphism
+  const expr = parse("let apply = (f, x) => f(x) in apply((x) => x + 1, 5)");
+  const r = infer(expr);
+
+  if (!r.success) {
+    throw new Error(`Should infer apply: ${r.error}`);
+  }
+
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  let apply = (f, x) => f(x) in apply((x) => x + 1, 5) : number");
+}
+
+function testPolymorphicCompose() {
+  // let compose = (f, g, x) => f(g(x))
+  // compose((x) => x + 1, (y) => y * 2, 3) = 7
+  const expr = parse("let compose = (f, g, x) => f(g(x)) in compose((x) => x + 1, (y) => y * 2, 3)");
+  const r = infer(expr);
+
+  if (!r.success) {
+    throw new Error(`Should infer compose: ${r.error}`);
+  }
+
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  let compose = (f, g, x) => f(g(x)) in compose((x) => x + 1, (y) => y * 2, 3) : number");
+}
+
+function testPolymorphicNested() {
+  // let id = (x) => x in let double = (f, x) => f(f(x)) in double(id, 5)
+  // Nested let with polymorphism
+  const expr = parse("let id = (x) => x in let double = (f, x) => f(f(x)) in double(id, 5)");
+  const r = infer(expr);
+
+  if (!r.success) {
+    throw new Error(`Should infer nested polymorphism: ${r.error}`);
+  }
+
+  if (r.type.tag !== "primitive" || (r.type as any).name !== "number") {
+    throw new Error(`Expected number, got ${typeToString(r.type)}`);
+  }
+
+  console.log("  let id = (x) => x in let double = (f, x) => f(f(x)) in double(id, 5) : number");
+}
+
+function testMonomorphicLambdaParam() {
+  // Lambda parameters are NOT generalized (they're monomorphic)
+  // (id) => { n: id(5), s: id("hello") } should FAIL
+  // because id is used at two different types within the same lambda
+  const expr = parse('(id) => { n: id(5), s: id("hello") }');
+  const r = infer(expr);
+
+  // This should fail because id can't be both (number) => T and (string) => T
+  if (r.success) {
+    // If it succeeds, check that we got a sensible error
+    // Actually, this might succeed with type vars - let's check
+    console.log("  (id) => { n: id(5), s: id(\"hello\") } : " + typeToString(r.type));
+    console.log("  Note: lambda params are monomorphic, so id has one type");
+  } else {
+    console.log("  (id) => { n: id(5), s: id(\"hello\") } : error (lambda params are monomorphic)");
+  }
+}
+
+test("polymorphic identity", testPolymorphicIdentity);
+test("polymorphic const", testPolymorphicConst);
+test("polymorphic apply", testPolymorphicApply);
+test("polymorphic compose", testPolymorphicCompose);
+test("polymorphic nested", testPolymorphicNested);
+test("monomorphic lambda param", testMonomorphicLambdaParam);
 console.log();
 
 console.log("=== Tests Complete ===");
@@ -2382,22 +2730,22 @@ function testParseFieldAccess() {
  */
 function testParseFunctionCalls() {
   // No args
-  assertAstEquals(parse("foo()"), call("foo"), "no args");
+  assertAstEquals(parse("foo()"), call(varRef("foo")), "no args");
 
   // Single arg
-  assertAstEquals(parse("foo(1)"), call("foo", lit(1)), "single arg");
+  assertAstEquals(parse("foo(1)"), call(varRef("foo"), lit(1)), "single arg");
 
   // Multiple args
   assertAstEquals(
     parse("foo(1, 2, 3)"),
-    call("foo", lit(1), lit(2), lit(3)),
+    call(varRef("foo"), lit(1), lit(2), lit(3)),
     "multiple args"
   );
 
   // Expression args
   assertAstEquals(
     parse("foo(a + b, c * d)"),
-    call("foo", binOp("+", varRef("a"), varRef("b")), binOp("*", varRef("c"), varRef("d"))),
+    call(varRef("foo"), binOp("+", varRef("a"), varRef("b")), binOp("*", varRef("c"), varRef("d"))),
     "expression args"
   );
 

@@ -3,11 +3,15 @@
  */
 
 // Types
-export { TypeValue, PrimitiveType, ObjectType, LiteralType, ArrayType, MetaType, FunctionType, TypeVariable, ObjectField } from "./types";
-export { numberType, stringType, boolType, metatype, literalType, objectType, arrayType, functionType, typeVar, resetTypeVarCounter, inferType, widenType, typeToString, typeEquals, isSubtype } from "./types";
+export { TypeValue, PrimitiveType, ObjectType, LiteralType, ArrayType, MetaType, FunctionType, TypeVariable, TypeScheme, ObjectField } from "./types";
+export { numberType, stringType, boolType, metatype, literalType, objectType, arrayType, functionType, typeVar, resetTypeVarCounter, inferType as inferTypeFromValue, widenType, typeToString, typeEquals, isSubtype, monoScheme, polyScheme, schemeToString } from "./types";
 
 // Unification
 export { Substitution, UnifyResult, emptySubst, applySubst, occursIn, unify, composeSubst, unifyAll } from "./unify";
+
+// Type Inference
+export { Constraint, TypeEnv, InferenceContext, InferResult } from "./infer";
+export { emptyInferenceContext, freshTypeVar, addEqualityConstraint, addFieldConstraint, extendTypeEnv, extendTypeEnvWithScheme, lookupType, lookupScheme, freeTypeVars, freeTypeVarsInScheme, freeTypeVarsInEnv, generalize, instantiate, inferType, solveConstraints, infer, inferWithTypes, constraintToString } from "./infer";
 
 // Staged values
 export { SValue, NowValue, LaterValue, SourceInfo, Closure, nowValue, laterValue, isNow, isLater, isClosure, makeClosure, withSource, Env } from "./svalue";
