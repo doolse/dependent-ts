@@ -26,7 +26,8 @@ import {
   Expr,
 } from "./expr";
 import { specialize, evaluateFully } from "./specialize";
-import { numberType, boolType, literalType, objectType, stringType, arrayType, TypeValue } from "./types";
+import { numberType, boolType, literalType, objectType, stringType, arrayType, functionType, typeVar, resetTypeVarCounter, TypeValue, typeToString } from "./types";
+import { unify, applySubst, emptySubst, unifyAll } from "./unify";
 import { getTypeValue } from "./reflect";
 import { parse, parseFunction } from "./parser";
 import { evaluate } from "./evaluate";
@@ -928,6 +929,219 @@ test("let nested parsing", testLetNestedParsing);
 test("let with function", testLetWithFunction);
 test("let complex", testLetComplex);
 test("let in conditional", testLetInConditional);
+console.log();
+
+// ============================================================================
+// Unification tests
+// ============================================================================
+
+console.log("--- Unification ---");
+console.log();
+
+function testUnifyPrimitives() {
+  // Same primitives unify
+  const r1 = unify(numberType, numberType);
+  if (!r1.success) throw new Error("number should unify with number");
+
+  // Different primitives don't unify
+  const r2 = unify(numberType, stringType);
+  if (r2.success) throw new Error("number should not unify with string");
+
+  console.log("  number ~ number ✓, number ~ string ✗");
+}
+
+function testUnifyTypeVar() {
+  resetTypeVarCounter();
+  const t = typeVar("T");
+
+  // Type var unifies with anything
+  const r1 = unify(t, numberType);
+  if (!r1.success) throw new Error("T should unify with number");
+  if (r1.subst.get(t.id)?.tag !== "primitive") {
+    throw new Error("T should be bound to number");
+  }
+
+  console.log("  T ~ number => T = number");
+}
+
+function testUnifyTwoTypeVars() {
+  resetTypeVarCounter();
+  const t1 = typeVar("T");
+  const t2 = typeVar("U");
+
+  // Two type vars unify with each other
+  const r = unify(t1, t2);
+  if (!r.success) throw new Error("T should unify with U");
+
+  // One should be bound to the other
+  const bound = r.subst.get(t1.id) || r.subst.get(t2.id);
+  if (!bound) throw new Error("One type var should be bound");
+
+  console.log("  T ~ U => T = U (or U = T)");
+}
+
+function testUnifyFunction() {
+  resetTypeVarCounter();
+  const t = typeVar("T");
+  const u = typeVar("U");
+
+  // (T) => U  ~  (number) => string
+  const fn1 = functionType([t], u);
+  const fn2 = functionType([numberType], stringType);
+
+  const r = unify(fn1, fn2);
+  if (!r.success) throw new Error("Functions should unify");
+
+  const resolvedT = applySubst(t, r.subst);
+  const resolvedU = applySubst(u, r.subst);
+
+  if (resolvedT.tag !== "primitive" || (resolvedT as any).name !== "number") {
+    throw new Error(`T should be number, got ${typeToString(resolvedT)}`);
+  }
+  if (resolvedU.tag !== "primitive" || (resolvedU as any).name !== "string") {
+    throw new Error(`U should be string, got ${typeToString(resolvedU)}`);
+  }
+
+  console.log("  (T) => U ~ (number) => string => T = number, U = string");
+}
+
+function testUnifyObject() {
+  resetTypeVarCounter();
+  const t = typeVar("T");
+
+  // { x: T, y: number }  ~  { x: string, y: number }
+  const obj1 = objectType([
+    { name: "x", type: t },
+    { name: "y", type: numberType },
+  ]);
+  const obj2 = objectType([
+    { name: "x", type: stringType },
+    { name: "y", type: numberType },
+  ]);
+
+  const r = unify(obj1, obj2);
+  if (!r.success) throw new Error("Objects should unify");
+
+  const resolvedT = applySubst(t, r.subst);
+  if (resolvedT.tag !== "primitive" || (resolvedT as any).name !== "string") {
+    throw new Error(`T should be string, got ${typeToString(resolvedT)}`);
+  }
+
+  console.log("  { x: T, y: number } ~ { x: string, y: number } => T = string");
+}
+
+function testUnifyArray() {
+  resetTypeVarCounter();
+  const t = typeVar("T");
+
+  // T[]  ~  number[]
+  const arr1 = arrayType(t);
+  const arr2 = arrayType(numberType);
+
+  const r = unify(arr1, arr2);
+  if (!r.success) throw new Error("Arrays should unify");
+
+  const resolvedT = applySubst(t, r.subst);
+  if (resolvedT.tag !== "primitive" || (resolvedT as any).name !== "number") {
+    throw new Error(`T should be number, got ${typeToString(resolvedT)}`);
+  }
+
+  console.log("  T[] ~ number[] => T = number");
+}
+
+function testUnifyLiteralWithPrimitive() {
+  // Literal 5 should unify with number
+  const r1 = unify(literalType(5), numberType);
+  if (!r1.success) throw new Error("5 should unify with number");
+
+  // Literal "hello" should unify with string
+  const r2 = unify(literalType("hello"), stringType);
+  if (!r2.success) throw new Error("'hello' should unify with string");
+
+  // Literal 5 should NOT unify with string
+  const r3 = unify(literalType(5), stringType);
+  if (r3.success) throw new Error("5 should not unify with string");
+
+  console.log("  5 ~ number ✓, 'hello' ~ string ✓, 5 ~ string ✗");
+}
+
+function testUnifyTransitive() {
+  resetTypeVarCounter();
+  const t = typeVar("T");
+  const u = typeVar("U");
+
+  // T ~ U, then U ~ number => T = number
+  const pairs: Array<[TypeValue, TypeValue]> = [
+    [t, u],
+    [u, numberType],
+  ];
+
+  const r = unifyAll(pairs);
+  if (!r.success) throw new Error("Transitive unification should succeed");
+
+  const resolvedT = applySubst(t, r.subst);
+  if (resolvedT.tag !== "primitive" || (resolvedT as any).name !== "number") {
+    throw new Error(`T should be number, got ${typeToString(resolvedT)}`);
+  }
+
+  console.log("  T ~ U, U ~ number => T = number");
+}
+
+function testUnifyOccursCheck() {
+  resetTypeVarCounter();
+  const t = typeVar("T");
+
+  // T  ~  T[]  should fail (infinite type)
+  const arr = arrayType(t);
+  const r = unify(t, arr);
+
+  if (r.success) throw new Error("Occurs check should prevent infinite type");
+
+  console.log("  T ~ T[] fails (infinite type)");
+}
+
+function testUnifyComplex() {
+  resetTypeVarCounter();
+  const t = typeVar("T");
+  const u = typeVar("U");
+
+  // ((T) => U, T)  ~  ((number) => string, number)
+  const fn = functionType([t], u);
+  const pair1 = objectType([
+    { name: "f", type: fn },
+    { name: "x", type: t },
+  ]);
+  const pair2 = objectType([
+    { name: "f", type: functionType([numberType], stringType) },
+    { name: "x", type: numberType },
+  ]);
+
+  const r = unify(pair1, pair2);
+  if (!r.success) throw new Error("Complex unification should succeed");
+
+  const resolvedT = applySubst(t, r.subst);
+  const resolvedU = applySubst(u, r.subst);
+
+  if (resolvedT.tag !== "primitive" || (resolvedT as any).name !== "number") {
+    throw new Error(`T should be number`);
+  }
+  if (resolvedU.tag !== "primitive" || (resolvedU as any).name !== "string") {
+    throw new Error(`U should be string`);
+  }
+
+  console.log("  { f: (T) => U, x: T } ~ { f: (number) => string, x: number } => T = number, U = string");
+}
+
+test("unify primitives", testUnifyPrimitives);
+test("unify type var", testUnifyTypeVar);
+test("unify two type vars", testUnifyTwoTypeVars);
+test("unify function", testUnifyFunction);
+test("unify object", testUnifyObject);
+test("unify array", testUnifyArray);
+test("unify literal with primitive", testUnifyLiteralWithPrimitive);
+test("unify transitive", testUnifyTransitive);
+test("unify occurs check", testUnifyOccursCheck);
+test("unify complex", testUnifyComplex);
 console.log();
 
 console.log("=== Tests Complete ===");

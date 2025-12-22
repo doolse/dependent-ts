@@ -9,7 +9,8 @@ export type TypeValue =
   | LiteralType
   | ArrayType
   | MetaType
-  | FunctionType;
+  | FunctionType
+  | TypeVariable;
 
 export interface PrimitiveType {
   tag: "primitive";
@@ -55,6 +56,16 @@ export interface FunctionType {
   returnType: TypeValue;
 }
 
+/**
+ * Type variable - placeholder for an unknown type during inference.
+ * Gets resolved to a concrete type through unification.
+ */
+export interface TypeVariable {
+  tag: "typevar";
+  id: number;
+  name?: string;  // for error messages: "T", "U", etc.
+}
+
 // Type constructors
 export const numberType: PrimitiveType = { tag: "primitive", name: "number" };
 export const stringType: PrimitiveType = { tag: "primitive", name: "string" };
@@ -75,6 +86,17 @@ export function arrayType(element: TypeValue): ArrayType {
 
 export function functionType(params: TypeValue[], returnType: TypeValue): FunctionType {
   return { tag: "function", params, returnType };
+}
+
+// Type variable ID counter
+let nextTypeVarId = 0;
+
+export function typeVar(name?: string): TypeVariable {
+  return { tag: "typevar", id: nextTypeVarId++, name };
+}
+
+export function resetTypeVarCounter(): void {
+  nextTypeVarId = 0;
 }
 
 /**
@@ -135,6 +157,8 @@ export function typeToString(t: TypeValue): string {
       const params = t.params.map(typeToString).join(", ");
       return `(${params}) => ${typeToString(t.returnType)}`;
     }
+    case "typevar":
+      return t.name ?? `?${t.id}`;
   }
 }
 
@@ -169,6 +193,8 @@ export function typeEquals(a: TypeValue, b: TypeValue): boolean {
         typeEquals(a.returnType, bFn.returnType)
       );
     }
+    case "typevar":
+      return a.id === (b as TypeVariable).id;
   }
 }
 
