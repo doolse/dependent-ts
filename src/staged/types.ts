@@ -138,12 +138,33 @@ export function schemeToString(scheme: TypeScheme): string {
 }
 
 /**
+ * Check if a value is a TypeValue (type as a value).
+ */
+export function isRuntimeTypeValue(value: unknown): value is TypeValue {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as any;
+  return (
+    v.tag === "primitive" ||
+    v.tag === "object" ||
+    v.tag === "literal" ||
+    v.tag === "array" ||
+    v.tag === "metatype" ||
+    v.tag === "function" ||
+    v.tag === "typevar"
+  );
+}
+
+/**
  * Infer type from a runtime value.
  */
 export function inferType(value: unknown): TypeValue {
   if (typeof value === "number") return numberType;
   if (typeof value === "string") return stringType;
   if (typeof value === "boolean") return boolType;
+  // Check if this is a TypeValue being passed as a value (metatype)
+  if (isRuntimeTypeValue(value)) {
+    return metatype;
+  }
   if (Array.isArray(value)) {
     if (value.length === 0) {
       return arrayType({ tag: "primitive", name: "string" }); // Default element type

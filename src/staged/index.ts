@@ -10,8 +10,8 @@ export { numberType, stringType, boolType, metatype, literalType, objectType, ar
 export { Substitution, UnifyResult, emptySubst, applySubst, occursIn, unify, composeSubst, unifyAll } from "./unify";
 
 // Type Inference
-export { Constraint, TypeEnv, InferenceContext, InferResult } from "./infer";
-export { emptyInferenceContext, freshTypeVar, addEqualityConstraint, addFieldConstraint, extendTypeEnv, extendTypeEnvWithScheme, lookupType, lookupScheme, freeTypeVars, freeTypeVarsInScheme, freeTypeVarsInEnv, generalize, instantiate, inferType, solveConstraints, infer, inferWithTypes, constraintToString } from "./infer";
+export { Constraint as InferConstraint, TypeEnv, InferenceContext, InferResult } from "./infer";
+export { emptyInferenceContext, freshTypeVar, addEqualityConstraint, addFieldConstraint, extendTypeEnv, extendTypeEnvWithScheme, lookupType, lookupScheme, freeTypeVars, freeTypeVarsInScheme, freeTypeVarsInEnv, generalize, instantiate, inferType, solveConstraints, infer, inferWithTypes, constraintToString as inferConstraintToString } from "./infer";
 
 // Staged values
 export { SValue, NowValue, LaterValue, SourceInfo, Closure, nowValue, laterValue, isNow, isLater, isClosure, makeClosure, withSource, Env } from "./svalue";

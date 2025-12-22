@@ -98,12 +98,19 @@ export function reflectHasField(target: SValue, fieldName: SValue): SValue {
     throw new Error("Field name must be known at specialization time");
   }
 
-  const type = target.type;
-  if (type.tag !== "object") {
+  // If target is a type value (metatype), check if the type has the field
+  let typeToCheck: TypeValue;
+  if (isTypeValue(target)) {
+    typeToCheck = getTypeValue(target);
+  } else {
+    typeToCheck = target.type;
+  }
+
+  if (typeToCheck.tag !== "object") {
     return nowValue(boolType, false);
   }
 
-  const has = type.fields.some((f) => f.name === fieldName.value);
+  const has = typeToCheck.fields.some((f) => f.name === fieldName.value);
   return nowValue(boolType, has);
 }
 
