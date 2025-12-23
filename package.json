@@ -6,20 +6,20 @@
   "scripts": {
     "tsc": "tsc",
     "dev": "parcel src/index.html",
-    "prod": "tsc && node ./build/app.js"
+    "prod": "tsc && node ./build/app.js",
+    "repl": "npx ts-node src/interpreter/repl.ts",
+    "test": "npx ts-node src/interpreter/test.ts && npx ts-node src/interpreter/staging-test.ts && npx ts-node src/interpreter/codegen-test.ts && npx ts-node src/interpreter/parser-test.ts"
   },
   "author": "",
   "license": "ISC",
   "dependencies": {
-    "@types/cli-color": "^2.0.0",
-    "@types/node": "^13.7.1",
     "cli-color": "^2.0.0",
-    "parcel": "^1.12.4",
     "shallow-equal-object": "^1.1.1",
-    "ts-node-dev": "^1.0.0-pre.44",
-    "typescript": "^3.7.4",
-    "vis-data": "^6.5.1",
-    "vis-network": "^7.6.4",
-    "vis-util": "^4.0.0"
+    "typescript": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/cli-color": "^2.0.0",
+    "@types/node": "^20.0.0",
+    "ts-node": "^10.9.0"
   }
 }
