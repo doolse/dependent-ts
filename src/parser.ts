@@ -6,7 +6,7 @@
  * expr       = letExpr | ifExpr | fnExpr | orExpr
  * letExpr    = "let" IDENT "=" expr "in" expr
  * ifExpr     = "if" expr "then" expr "else" expr
- * fnExpr     = "fn" "(" params? ")" "=>" expr
+ * fnExpr     = "fn" IDENT? "(" params? ")" "=>" expr   // Named = recursive
  * orExpr     = andExpr ("||" andExpr)*
  * andExpr    = eqExpr ("&&" eqExpr)*
  * eqExpr     = cmpExpr (("==" | "!=") cmpExpr)*
@@ -36,6 +36,7 @@ import {
   ifExpr,
   letExpr,
   fn,
+  recfn,
   call,
   obj,
   field,
@@ -153,7 +154,14 @@ export class Parser {
 
   private parseFnExpr(): Expr {
     this.expect("FN", "Expected 'fn'");
-    this.expect("LPAREN", "Expected '(' after 'fn'");
+
+    // Check if this is a named function: fn name(params) => body
+    let name: string | undefined;
+    if (this.check("IDENT")) {
+      name = this.advance().value;
+    }
+
+    this.expect("LPAREN", `Expected '(' after 'fn'${name ? ` ${name}` : ""}`);
 
     const params: string[] = [];
     if (!this.check("RPAREN")) {
@@ -167,6 +175,10 @@ export class Parser {
     this.expect("ARROW", "Expected '=>' after parameters");
     const body = this.parseExpr();
 
+    // Named functions are recursive, anonymous functions are not
+    if (name) {
+      return recfn(name, params, body);
+    }
     return fn(params, body);
   }
 

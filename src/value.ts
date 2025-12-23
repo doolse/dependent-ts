@@ -51,6 +51,7 @@ export interface ArrayValue {
 
 export interface ClosureValue {
   tag: "closure";
+  name?: string;      // Optional name for recursive self-reference
   params: string[];
   body: Expr;
   env: Env;
@@ -80,8 +81,9 @@ export const arrayVal = (elems: Value[]): ArrayValue => ({
   elements: elems,
 });
 
-export const closureVal = (params: string[], body: Expr, env: Env): ClosureValue => ({
+export const closureVal = (params: string[], body: Expr, env: Env, name?: string): ClosureValue => ({
   tag: "closure",
+  name,
   params,
   body,
   env,
@@ -334,7 +336,9 @@ export function valueToString(value: Value): string {
       return `[${value.elements.map(valueToString).join(", ")}]`;
 
     case "closure":
-      return `<fn(${value.params.join(", ")})>`;
+      return value.name
+        ? `<fn ${value.name}(${value.params.join(", ")})>`
+        : `<fn(${value.params.join(", ")})>`;
 
     case "type":
       return `Type<${constraintToString(value.constraint)}>`;

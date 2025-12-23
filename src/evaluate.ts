@@ -5,7 +5,7 @@
  * Type errors are caught at evaluation time based on constraint requirements.
  */
 
-import { Expr, BinOp, UnaryOp } from "./expr";
+import { Expr, BinOp, UnaryOp, RecFnExpr } from "./expr";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, ClosureValue } from "./value";
 import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, constraintToString, unify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, fnType, instantiate, applySubstitution, solve } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
@@ -49,6 +49,9 @@ export function evaluate(expr: Expr, env: Env, ctx: RefinementContext = Refineme
 
     case "fn":
       return evalFn(expr.params, expr.body, env);
+
+    case "recfn":
+      return evalRecFn(expr.name, expr.params, expr.body, env);
 
     case "call":
       return evalCall(expr.func, expr.args, env, ctx);
@@ -256,6 +259,32 @@ function evalFn(params: string[], body: Expr, env: Env): EvalResult {
   return { value: closure, constraint: fnConstraint };
 }
 
+/**
+ * Evaluate a named recursive function.
+ * The function can call itself by name within its body.
+ */
+function evalRecFn(name: string, params: string[], body: Expr, env: Env): EvalResult {
+  // Create a closure with the name for self-reference
+  // The actual self-binding is added at call-time in evalCall
+  const closure = closureVal(params, body, env, name);
+
+  // For recursive type inference, we need to analyze the body
+  // with an assumed type for the function itself.
+  // Create an env with the function bound to a fresh function type
+  const selfEnv = env.set(name, {
+    value: closure,
+    constraint: isFunction,  // Placeholder - will be refined
+  });
+
+  // Infer constraints from body with self-reference available
+  const inferred = inferFunction(params, body, selfEnv);
+  inferredTypes.set(closure, inferred);
+
+  // Return function with proper fnType constraint
+  const fnConstraint = fnType(inferred.paramConstraints, inferred.resultConstraint);
+  return { value: closure, constraint: fnConstraint };
+}
+
 // Export for use in other modules
 export function getInferredType(closure: ClosureValue): InferredFunction | undefined {
   return inferredTypes.get(closure);
@@ -433,6 +462,15 @@ function evalCall(
 
   // Bind arguments to parameters in the closure's environment
   let callEnv = closure.env;
+
+  // Add self-binding for recursive functions
+  if (closure.name) {
+    callEnv = callEnv.set(closure.name, {
+      value: closure,
+      constraint: func.constraint,
+    });
+  }
+
   for (let i = 0; i < closure.params.length; i++) {
     callEnv = callEnv.set(closure.params[i], {
       value: args[i].value,

@@ -104,6 +104,9 @@ function genExpr(expr: Expr, opts: Required<CodeGenOptions>, depth: number): str
     case "fn":
       return genFunction(expr.params, expr.body, opts, depth);
 
+    case "recfn":
+      return genRecFunction(expr.name, expr.params, expr.body, opts, depth);
+
     case "call":
       return genCall(expr.func, expr.args, opts, depth);
 
@@ -338,6 +341,25 @@ function genFunction(
 
   // Use arrow function syntax
   return `(${safeParams}) => ${bodyCode}`;
+}
+
+/**
+ * Generate a named recursive function.
+ * Uses function declaration syntax for proper recursion.
+ */
+function genRecFunction(
+  name: string,
+  params: string[],
+  body: Expr,
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string {
+  const safeName = genIdentifier(name);
+  const safeParams = params.map(genIdentifier).join(", ");
+  const bodyCode = genExpr(body, opts, depth);
+
+  // Use named function expression for recursion
+  return `function ${safeName}(${safeParams}) { return ${bodyCode}; }`;
 }
 
 function genCall(
@@ -613,6 +635,13 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
       }
       case "fn": {
         const newBound = new Set(b);
+        for (const p of e.params) newBound.add(p);
+        visit(e.body, newBound);
+        break;
+      }
+      case "recfn": {
+        const newBound = new Set(b);
+        newBound.add(e.name);  // Name is bound for recursion
         for (const p of e.params) newBound.add(p);
         visit(e.body, newBound);
         break;

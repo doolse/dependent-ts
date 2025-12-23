@@ -147,38 +147,20 @@ console.log("Type:", constraintToString(result5.constraint));
 console.log();
 
 // ============================================================================
-// Example 6: Recursive-like Computation (Unrolled)
+// Example 6: Recursive Functions
 // ============================================================================
 
-console.log("=== Example 6: Simulated Recursion (Unrolled) ===\n");
+console.log("=== Example 6: Recursive Functions ===\n");
 
-// We can't do real recursion yet, but we can unroll a fixed number of steps
-const unrolledFactorial = `
-let fact5 =
-  let n5 = 5 in
-  let n4 = 4 in
-  let n3 = 3 in
-  let n2 = 2 in
-  let n1 = 1 in
-  n5 * n4 * n3 * n2 * n1
-in
+// Real recursion using named functions: fn name(params) => body
+const recursiveFunctions = `
+let factorial = fn fact(n) => if n == 0 then 1 else n * fact(n - 1) in
+let fibonacci = fn fib(n) => if n <= 1 then n else fib(n - 1) + fib(n - 2) in
 
-let fib7 =
-  let f0 = 0 in
-  let f1 = 1 in
-  let f2 = f0 + f1 in
-  let f3 = f1 + f2 in
-  let f4 = f2 + f3 in
-  let f5 = f3 + f4 in
-  let f6 = f4 + f5 in
-  let f7 = f5 + f6 in
-  f7
-in
-
-{ factorial5: fact5, fibonacci7: fib7 }
+{ factorial5: factorial(5), fibonacci10: fibonacci(10) }
 `;
 
-const result6 = parseAndRun(unrolledFactorial);
+const result6 = parseAndRun(recursiveFunctions);
 console.log("Factorial & Fibonacci:", valueToString(result6.value));
 console.log("Type:", constraintToString(result6.constraint));
 console.log();
@@ -309,6 +291,7 @@ console.log("=== Summary ===\n");
 console.log("This language currently supports:");
 console.log("  ✓ First-class functions with closures");
 console.log("  ✓ Higher-order functions (compose, twice, etc.)");
+console.log("  ✓ Recursive functions (fn name(params) => body)");
 console.log("  ✓ Objects and arrays with type inference");
 console.log("  ✓ Control flow with type refinement");
 console.log("  ✓ Compile-time (comptime) vs runtime staging");
@@ -320,7 +303,6 @@ console.log("  ✓ String concatenation");
 console.log();
 console.log("Missing for practical use:");
 console.log("  ✗ IO (print, input, files)");
-console.log("  ✗ Real recursion (only unrolled loops)");
 console.log("  ✗ Array operations (map, filter, reduce)");
 console.log("  ✗ Module system");
 console.log("  ✗ Error handling (try/catch)");

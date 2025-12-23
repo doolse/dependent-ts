@@ -15,6 +15,7 @@ export type Expr =
   | IfExpr
   | LetExpr
   | FnExpr
+  | RecFnExpr
   | CallExpr
   | ObjExpr
   | FieldExpr
@@ -86,6 +87,17 @@ export interface LetExpr {
 
 export interface FnExpr {
   tag: "fn";
+  params: string[];
+  body: Expr;
+}
+
+/**
+ * Named recursive function.
+ * The function can call itself by name within the body.
+ */
+export interface RecFnExpr {
+  tag: "recfn";
+  name: string;
   params: string[];
   body: Expr;
 }
@@ -228,6 +240,9 @@ export const letExpr = (name: string, value: Expr, body: Expr): LetExpr =>
 export const fn = (params: string[], body: Expr): FnExpr =>
   ({ tag: "fn", params, body });
 
+export const recfn = (name: string, params: string[], body: Expr): RecFnExpr =>
+  ({ tag: "recfn", name, params, body });
+
 export const call = (func: Expr, ...args: Expr[]): CallExpr =>
   ({ tag: "call", func, args });
 
@@ -289,6 +304,9 @@ export function exprToString(expr: Expr): string {
 
     case "fn":
       return `fn(${expr.params.join(", ")}) => ${exprToString(expr.body)}`;
+
+    case "recfn":
+      return `fn ${expr.name}(${expr.params.join(", ")}) => ${exprToString(expr.body)}`;
 
     case "call":
       return `${exprToString(expr.func)}(${expr.args.map(exprToString).join(", ")})`;

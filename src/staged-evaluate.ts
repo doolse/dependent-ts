@@ -12,7 +12,7 @@
  * - `runtime` marks a value as runtime-only (Later)
  */
 
-import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, assertExpr, assertCondExpr, trustExpr } from "./expr";
+import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr } from "./expr";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
 import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate } from "./constraint";
 import { inferFunction, InferredFunction } from "./inference";
@@ -77,6 +77,7 @@ export interface SClosure {
   params: string[];
   body: Expr;
   env: SEnv;
+  name?: string;  // Optional name for recursive self-reference
 }
 
 // ============================================================================
@@ -145,6 +146,9 @@ export function stagingEvaluate(
 
     case "fn":
       return evalFn(expr.params, expr.body, env);
+
+    case "recfn":
+      return evalRecFn(expr.name, expr.params, expr.body, env);
 
     case "call":
       return evalCall(expr.func, expr.args, env, ctx);
@@ -413,6 +417,33 @@ function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
 }
 
 /**
+ * Evaluate a named recursive function in staged context.
+ * The function can call itself by name within its body.
+ */
+function evalRecFn(name: string, params: string[], body: Expr, env: SEnv): SEvalResult {
+  // Create a closure with the name for self-reference
+  const closure = closureVal(params, body, Env.empty(), name); // Placeholder env
+
+  // For type inference, create env with function bound to itself
+  const regularEnv = stagedEnvToEnv(env);
+  const selfEnv = regularEnv.set(name, {
+    value: closure,
+    constraint: isFunction,  // Placeholder - will be refined
+  });
+
+  // Infer constraints from body with self-reference available
+  const inferred = inferFunction(params, body, selfEnv);
+  stagedInferredTypes.set(closure, inferred);
+
+  // Store the staged env in a side channel (with self-binding)
+  const fnConstraint = fnType(inferred.paramConstraints, inferred.resultConstraint);
+  const selfSEnv = env.set(name, { svalue: now(closure, fnConstraint) });
+  stagedClosures.set(closure, { params, body, env: selfSEnv, name });
+
+  return { svalue: now(closure, fnConstraint) };
+}
+
+/**
  * Convert a staged environment to a regular environment for inference.
  * Now values keep their value and constraint, Later values use placeholder with constraint.
  */
@@ -583,6 +614,12 @@ function evalCall(
 
   // Bind arguments to parameters in the closure's environment
   let callEnv = sclosure.env;
+
+  // Add self-binding for recursive functions
+  if (sclosure.name) {
+    callEnv = callEnv.set(sclosure.name, { svalue: func });
+  }
+
   for (let i = 0; i < sclosure.params.length; i++) {
     callEnv = callEnv.set(sclosure.params[i], { svalue: args[i] });
   }
@@ -985,6 +1022,13 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.body, newBound);
         break;
       }
+      case "recfn": {
+        const newBound = new Set(b);
+        newBound.add(e.name);  // Name is bound for recursion
+        for (const p of e.params) newBound.add(p);
+        visit(e.body, newBound);
+        break;
+      }
       case "call":
         visit(e.func, b);
         for (const a of e.args) visit(a, b);
@@ -1101,6 +1145,9 @@ function usesVar(expr: Expr, name: string): boolean {
       return usesVar(expr.value, name) || usesVar(expr.body, name);
     case "fn":
       if (expr.params.includes(name)) return false; // Shadowed
+      return usesVar(expr.body, name);
+    case "recfn":
+      if (expr.name === name || expr.params.includes(name)) return false; // Shadowed
       return usesVar(expr.body, name);
     case "call":
       return usesVar(expr.func, name) || expr.args.some(a => usesVar(a, name));
