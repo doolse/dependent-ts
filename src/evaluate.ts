@@ -6,11 +6,12 @@
  */
 
 import { Expr, BinOp, UnaryOp } from "./expr";
-import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, constraintToString, unify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint } from "./constraint";
+import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, ClosureValue } from "./value";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, constraintToString, unify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, fnType, instantiate, applySubstitution, solve } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, EvalResult } from "./builtins";
 import { extractAllRefinements, negateRefinement } from "./refinement";
+import { inferFunction, InferredFunction } from "./inference";
 
 // ============================================================================
 // Evaluation Result
@@ -77,6 +78,9 @@ export function evaluate(expr: Expr, env: Env, ctx: RefinementContext = Refineme
 
     case "assert":
       return evalAssert(expr.expr, expr.constraint, expr.message, env, ctx);
+
+    case "assertCond":
+      return evalAssertCond(expr.condition, expr.message, env, ctx);
 
     case "trust":
       return evalTrust(expr.expr, expr.constraint, env, ctx);
@@ -236,10 +240,25 @@ function evalLet(
   return evaluate(bodyExpr, newEnv, ctx);
 }
 
+// Cache for inferred function types
+const inferredTypes = new WeakMap<ClosureValue, InferredFunction>();
+
 function evalFn(params: string[], body: Expr, env: Env): EvalResult {
   // Create a closure capturing the current environment
   const closure = closureVal(params, body, env);
-  return { value: closure, constraint: isFunction };
+
+  // Infer constraints from body
+  const inferred = inferFunction(params, body, env);
+  inferredTypes.set(closure, inferred);
+
+  // Return function with proper fnType constraint
+  const fnConstraint = fnType(inferred.paramConstraints, inferred.resultConstraint);
+  return { value: closure, constraint: fnConstraint };
+}
+
+// Export for use in other modules
+export function getInferredType(closure: ClosureValue): InferredFunction | undefined {
+  return inferredTypes.get(closure);
 }
 
 // ============================================================================
@@ -343,6 +362,36 @@ function evalCall(
     throw new Error(
       `Expected ${closure.params.length} arguments, got ${args.length}`
     );
+  }
+
+  // Get inferred type and check arguments at call site
+  const inferred = inferredTypes.get(closure);
+  if (inferred) {
+    // Instantiate the scheme for this call (fresh variables for polymorphism)
+    const instantiated = instantiate(inferred.scheme);
+
+    // Extract param constraints from instantiated fnType
+    if (instantiated.tag === "fnType") {
+      const minLen = Math.min(args.length, instantiated.params.length);
+      for (let i = 0; i < minLen; i++) {
+        const paramConstraint = instantiated.params[i];
+        const arg = args[i];
+        if (!paramConstraint || !arg) continue;
+        // For constraint variables, unify - the variable will accept any type
+        // For concrete constraints, check implication
+        if (paramConstraint.tag === "var") {
+          // Polymorphic parameter - accepts any type
+          continue;
+        }
+        if (!implies(arg.constraint, paramConstraint)) {
+          throw new TypeError(
+            paramConstraint,
+            arg.constraint,
+            `argument ${i + 1} to ${closure.params[i]}`
+          );
+        }
+      }
+    }
   }
 
   // Bind arguments to parameters in the closure's environment
@@ -534,15 +583,54 @@ function evalAssert(
 }
 
 /**
- * Trust that a value satisfies a constraint without runtime checking.
- * The programmer takes responsibility for the correctness.
+ * Assert a boolean condition at runtime.
+ * Throws AssertionError if condition is false, returns true if it passes.
  */
-function evalTrust(
-  valueExpr: Expr,
-  constraintExpr: Expr,
+function evalAssertCond(
+  conditionExpr: Expr,
+  message: string | undefined,
   env: Env,
   ctx: RefinementContext
 ): EvalResult {
+  // Evaluate the condition
+  const condResult = evaluate(conditionExpr, env, ctx);
+
+  // Condition must be boolean
+  requireConstraint(condResult.constraint, isBool, "assert condition");
+
+  if (condResult.value.tag !== "bool") {
+    throw new Error("assert condition must be boolean");
+  }
+
+  // Check the condition
+  if (!condResult.value.value) {
+    const errorMsg = message ?? "Assertion failed: condition is false";
+    throw new AssertionError(errorMsg, condResult.value, isBool);
+  }
+
+  // Return true with boolean constraint
+  return { value: boolVal(true), constraint: isBool };
+}
+
+/**
+ * Trust that a value satisfies a constraint without runtime checking.
+ * The programmer takes responsibility for the correctness.
+ * If no constraint is provided, the value is returned unchanged.
+ */
+function evalTrust(
+  valueExpr: Expr,
+  constraintExpr: Expr | undefined,
+  env: Env,
+  ctx: RefinementContext
+): EvalResult {
+  // Evaluate the expression being trusted
+  const valueResult = evaluate(valueExpr, env, ctx);
+
+  // If no constraint specified, just return the value unchanged
+  if (!constraintExpr) {
+    return valueResult;
+  }
+
   // Evaluate the constraint expression - should be a Type value
   const constraintResult = evaluate(constraintExpr, env, ctx);
   if (constraintResult.value.tag !== "type") {
@@ -550,9 +638,6 @@ function evalTrust(
   }
 
   const targetConstraint = constraintResult.value.constraint;
-
-  // Evaluate the expression being trusted
-  const valueResult = evaluate(valueExpr, env, ctx);
 
   // No runtime check - just refine the constraint based on trust
   const refinedConstraint = unify(valueResult.constraint, targetConstraint);

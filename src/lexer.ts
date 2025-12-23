@@ -24,6 +24,8 @@ export type TokenType =
   | "FN"
   | "COMPTIME"
   | "RUNTIME"
+  | "ASSERT"
+  | "TRUST"
   // Operators
   | "PLUS"
   | "MINUS"
@@ -79,6 +81,8 @@ const KEYWORDS: Record<string, TokenType> = {
   null: "NULL",
   comptime: "COMPTIME",
   runtime: "RUNTIME",
+  assert: "ASSERT",
+  trust: "TRUST",
 };
 
 // ============================================================================

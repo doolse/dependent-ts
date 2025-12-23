@@ -137,6 +137,9 @@ function genExpr(expr: Expr, opts: Required<CodeGenOptions>, depth: number): str
     case "assert":
       return genAssert(expr.expr, expr.constraint, expr.message, opts, depth);
 
+    case "assertCond":
+      return genAssertCond(expr.condition, expr.message, opts, depth);
+
     case "trust":
       // trust is purely a type-level operation - just generate the inner expression
       return genExpr(expr.expr, opts, depth);
@@ -519,6 +522,32 @@ ${innerIndent}return __value;
 ${indent}})()`;
 }
 
+/**
+ * Generate code for condition-based assert.
+ */
+function genAssertCond(
+  conditionExpr: Expr,
+  message: string | undefined,
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string {
+  const indent = opts.indent.repeat(depth);
+  const innerIndent = opts.indent.repeat(depth + 1);
+  const condCode = genExpr(conditionExpr, opts, depth + 1);
+
+  const errorMessage = message
+    ? JSON.stringify(message)
+    : `"Assertion failed: condition is false"`;
+
+  // Generate an IIFE that checks condition and returns true
+  return `(() => {
+${innerIndent}if (!(${condCode})) {
+${innerIndent}${opts.indent}throw new Error(${errorMessage});
+${innerIndent}}
+${innerIndent}return true;
+${indent}})()`;
+}
+
 // ============================================================================
 // Compilation Pipeline
 // ============================================================================
@@ -612,9 +641,12 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.expr, b);
         visit(e.constraint, b);
         break;
+      case "assertCond":
+        visit(e.condition, b);
+        break;
       case "trust":
         visit(e.expr, b);
-        visit(e.constraint, b);
+        if (e.constraint) visit(e.constraint, b);
         break;
     }
   }

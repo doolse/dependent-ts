@@ -24,6 +24,7 @@ export type Expr =
   | ComptimeExpr
   | RuntimeExpr
   | AssertExpr
+  | AssertCondExpr
   | TrustExpr;
 
 export interface LitExpr {
@@ -157,11 +158,23 @@ export interface AssertExpr {
  * Trust that a value satisfies a constraint without runtime checking.
  * Escape hatch for when the programmer knows better than the type system.
  * Use with caution - no runtime check is inserted.
+ * If constraint is omitted, the value is trusted without any specific constraint.
  */
 export interface TrustExpr {
   tag: "trust";
   expr: Expr;           // The value to trust
-  constraint: Expr;     // The constraint to trust (evaluates to a Type value)
+  constraint?: Expr;    // Optional: The constraint to trust (evaluates to a Type value)
+}
+
+/**
+ * Assert a boolean condition at runtime.
+ * Throws AssertionError if condition is false.
+ * Returns true if the condition passes.
+ */
+export interface AssertCondExpr {
+  tag: "assertCond";
+  condition: Expr;      // The condition to check (must be boolean)
+  message?: string;     // Optional error message
 }
 
 // ============================================================================
@@ -244,7 +257,10 @@ export const runtime = (expr: Expr, name?: string): RuntimeExpr =>
 export const assertExpr = (expr: Expr, constraint: Expr, message?: string): AssertExpr =>
   ({ tag: "assert", expr, constraint, message });
 
-export const trustExpr = (expr: Expr, constraint: Expr): TrustExpr =>
+export const assertCondExpr = (condition: Expr, message?: string): AssertCondExpr =>
+  ({ tag: "assertCond", condition, message });
+
+export const trustExpr = (expr: Expr, constraint?: Expr): TrustExpr =>
   ({ tag: "trust", expr, constraint });
 
 // ============================================================================
@@ -307,7 +323,14 @@ export function exprToString(expr: Expr): string {
         ? `assert(${exprToString(expr.expr)}, ${exprToString(expr.constraint)}, "${expr.message}")`
         : `assert(${exprToString(expr.expr)}, ${exprToString(expr.constraint)})`;
 
+    case "assertCond":
+      return expr.message
+        ? `assert(${exprToString(expr.condition)}, "${expr.message}")`
+        : `assert(${exprToString(expr.condition)})`;
+
     case "trust":
-      return `trust(${exprToString(expr.expr)}, ${exprToString(expr.constraint)})`;
+      return expr.constraint
+        ? `trust(${exprToString(expr.expr)}, ${exprToString(expr.constraint)})`
+        : `trust(${exprToString(expr.expr)})`;
   }
 }

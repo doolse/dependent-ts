@@ -49,7 +49,10 @@ export type Constraint =
 
   // Recursive types (μ types)
   | { tag: "rec", var: string, body: Constraint }    // μX. body (recursive type binder)
-  | { tag: "recVar", var: string };                   // X (reference to recursive binder)
+  | { tag: "recVar", var: string }                   // X (reference to recursive binder)
+
+  // Function type constraint (for type inference)
+  | { tag: "fnType", params: Constraint[], result: Constraint };
 
 // ============================================================================
 // Constructors
@@ -114,6 +117,10 @@ export const rec = (varName: string, body: Constraint): Constraint =>
 
 export const recVar = (varName: string): Constraint =>
   ({ tag: "recVar", var: varName });
+
+// Function type constraint
+export const fnType = (params: Constraint[], result: Constraint): Constraint =>
+  ({ tag: "fnType", params, result });
 
 // ============================================================================
 // Classification Helpers
@@ -256,6 +263,13 @@ export function constraintEquals(a: Constraint, b: Constraint): boolean {
 
     case "recVar":
       return a.var === (b as typeof a).var;
+
+    case "fnType": {
+      const bFn = b as typeof a;
+      if (a.params.length !== bFn.params.length) return false;
+      return a.params.every((p, i) => constraintEquals(p, bFn.params[i])) &&
+             constraintEquals(a.result, bFn.result);
+    }
   }
 }
 
@@ -295,6 +309,12 @@ function hasContradiction(constraints: Constraint[]): boolean {
       for (const existing of classifications) {
         if (areDisjoint(existing, c.tag)) {
           return true;
+        }
+      }
+      // Also check: if we see a classification, check against existing equals values
+      for (const existingVal of equalsValues) {
+        if (!valueMatchesClassification(existingVal, c.tag)) {
+          return true;  // isString after seeing equals(5) is contradiction
         }
       }
       classifications.push(c.tag);
@@ -478,6 +498,9 @@ export function simplify(c: Constraint): Constraint {
       if (flat.length === 1) return flat[0];
       return { tag: "or", constraints: flat };
     }
+
+    case "fnType":
+      return fnType(c.params.map(simplify), simplify(c.result));
   }
 }
 
@@ -509,6 +532,10 @@ export function implies(a: Constraint, b: Constraint): boolean {
   // Same constraint
   if (constraintEquals(sa, sb)) return true;
 
+  // JS hierarchy: arrays and functions are objects
+  if (sa.tag === "isArray" && sb.tag === "isObject") return true;
+  if (sa.tag === "isFunction" && sb.tag === "isObject") return true;
+
   // equals(v) implies classification if v matches
   if (sa.tag === "equals" && isClassification(sb)) {
     return valueMatchesClassification(sa.value, sb.tag);
@@ -529,11 +556,28 @@ export function implies(a: Constraint, b: Constraint): boolean {
   if (sa.tag === "lt" && sb.tag === "lt") return sa.bound <= sb.bound;
   if (sa.tag === "lt" && sb.tag === "lte") return sa.bound <= sb.bound;
   if (sa.tag === "lte" && sb.tag === "lte") return sa.bound <= sb.bound;
+  // gte(n) implies gt(m) if n > m (x >= 10 means x > 5)
+  if (sa.tag === "gte" && sb.tag === "gt") return sa.bound > sb.bound;
+  // lte(n) implies lt(m) if n < m (x <= 5 means x < 10)
+  if (sa.tag === "lte" && sb.tag === "lt") return sa.bound < sb.bound;
 
   // and(A, B) implies A, and(A, B) implies B
   if (sa.tag === "and") {
     // If any conjunct implies b, then a implies b
     if (sa.constraints.some(c => implies(c, sb))) return true;
+
+    // Check if AND contains gte(n) and lte(n) which implies equals(n)
+    if (sb.tag === "equals" && typeof sb.value === "number") {
+      let hasGte: number | null = null;
+      let hasLte: number | null = null;
+      for (const c of sa.constraints) {
+        if (c.tag === "gte") hasGte = c.bound;
+        if (c.tag === "lte") hasLte = c.bound;
+      }
+      if (hasGte !== null && hasLte !== null && hasGte === hasLte && hasGte === sb.value) {
+        return true;  // gte(5) AND lte(5) implies equals(5)
+      }
+    }
   }
 
   // A implies or(A, B)
@@ -579,6 +623,21 @@ export function implies(a: Constraint, b: Constraint): boolean {
     // Check with assumption: use structural equality up to variable renaming
     // For a simple approach, we check if they are alpha-equivalent
     return impliesRec(sa, sb, new Set());
+  }
+
+  // fnType implication: contravariant params, covariant result
+  // fnType(A, R) implies fnType(A', R') if A' implies A and R implies R'
+  if (sa.tag === "fnType" && sb.tag === "fnType") {
+    if (sa.params.length !== sb.params.length) return false;
+    // Check contravariant params: sb.params[i] implies sa.params[i]
+    const paramsOk = sa.params.every((_, i) => implies(sb.params[i], sa.params[i]));
+    // Check covariant result: sa.result implies sb.result
+    return paramsOk && implies(sa.result, sb.result);
+  }
+
+  // fnType implies isFunction
+  if (sa.tag === "fnType" && sb.tag === "isFunction") {
+    return true;
   }
 
   // recVar only implies itself (handled by constraintEquals above)
@@ -687,6 +746,16 @@ export function unify(a: Constraint, b: Constraint): Constraint {
  * Same as unify but semantically for control flow refinement.
  */
 export function narrow(base: Constraint, refinement: Constraint): Constraint {
+  // Handle NOT refinement specially
+  if (refinement.tag === "not") {
+    const negated = refinement.constraint;
+    // If base implies the negated constraint, it's a contradiction
+    if (implies(base, negated)) {
+      return neverC;
+    }
+    // Otherwise, keep base (we can't prove contradiction)
+    return base;
+  }
   return unify(base, refinement);
 }
 
@@ -784,6 +853,11 @@ export function constraintToString(c: Constraint): string {
 
     case "recVar":
       return c.var;
+
+    case "fnType": {
+      const params = c.params.map(constraintToString).join(", ");
+      return `(${params}) -> ${constraintToString(c.result)}`;
+    }
   }
 }
 
@@ -851,6 +925,12 @@ function applySubstitutionImpl(c: Constraint, sub: Substitution, seen: Set<numbe
     case "rec":
       return rec(c.var, applySubstitutionImpl(c.body, sub, seen));
 
+    case "fnType":
+      return fnType(
+        c.params.map(p => applySubstitutionImpl(p, sub, seen)),
+        applySubstitutionImpl(c.result, sub, seen)
+      );
+
     default:
       return c;
   }
@@ -885,6 +965,10 @@ export function freeConstraintVars(c: Constraint): Set<number> {
         break;
       case "rec":
         collect(c.body);
+        break;
+      case "fnType":
+        for (const p of c.params) collect(p);
+        collect(c.result);
         break;
     }
   }
@@ -1005,6 +1089,15 @@ function solveInto(a: Constraint, b: Constraint, sub: Substitution): boolean {
 
       case "not":
         return solveInto(a.constraint, (b as typeof a).constraint, sub);
+
+      case "fnType": {
+        const bFn = b as typeof a;
+        if (a.params.length !== bFn.params.length) return false;
+        for (let i = 0; i < a.params.length; i++) {
+          if (!solveInto(a.params[i], bFn.params[i], sub)) return false;
+        }
+        return solveInto(a.result, bFn.result, sub);
+      }
     }
   }
 

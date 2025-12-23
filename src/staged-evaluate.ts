@@ -12,9 +12,10 @@
  * - `runtime` marks a value as runtime-only (Later)
  */
 
-import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, assertExpr, trustExpr } from "./expr";
+import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, assertExpr, assertCondExpr, trustExpr } from "./expr";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate } from "./constraint";
+import { inferFunction, InferredFunction } from "./inference";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat } from "./builtins";
 import { AssertionError } from "./evaluate";
@@ -58,6 +59,10 @@ export class SEnv {
 
   has(name: string): boolean {
     return this.bindings.has(name);
+  }
+
+  entries(): IterableIterator<[string, SBinding]> {
+    return this.bindings.entries();
   }
 }
 
@@ -167,6 +172,9 @@ export function stagingEvaluate(
 
     case "assert":
       return evalAssert(expr.expr, expr.constraint, expr.message, env, ctx);
+
+    case "assertCond":
+      return evalAssertCond(expr.condition, expr.message, env, ctx);
 
     case "trust":
       return evalTrust(expr.expr, expr.constraint, env, ctx);
@@ -377,20 +385,49 @@ function evalLet(
   return { svalue: bodyResult };
 }
 
+// Cache for inferred types in staged evaluation
+const stagedInferredTypes = new WeakMap<Value, InferredFunction>();
+
 function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
   // Functions are always Now (the closure itself is known)
   // But they may contain Later values when called
-  // We represent closures as Now values with isFunction constraint
+  // We represent closures as Now values with fnType constraint
   // The actual staged behavior happens at call time
 
   // For staged evaluation, we need to track that this is a staged closure
   // For now, we'll use a special representation
   const closure = closureVal(params, body, Env.empty()); // Placeholder env
 
+  // Infer constraints from body
+  // Convert staged env to regular env for inference (use Now values, any for Later)
+  const regularEnv = stagedEnvToEnv(env);
+  const inferred = inferFunction(params, body, regularEnv);
+  stagedInferredTypes.set(closure, inferred);
+
   // Store the staged env in a side channel (simplified approach)
   stagedClosures.set(closure, { params, body, env });
 
-  return { svalue: now(closure, isFunction) };
+  // Return function with proper fnType constraint
+  const fnConstraint = fnType(inferred.paramConstraints, inferred.resultConstraint);
+  return { svalue: now(closure, fnConstraint) };
+}
+
+/**
+ * Convert a staged environment to a regular environment for inference.
+ * Now values keep their value and constraint, Later values use placeholder with constraint.
+ */
+function stagedEnvToEnv(senv: SEnv): Env {
+  let env = Env.empty();
+  for (const [name, binding] of senv.entries()) {
+    const sv = binding.svalue;
+    if (isNow(sv)) {
+      env = env.set(name, { value: sv.value, constraint: sv.constraint });
+    } else {
+      // Later - use placeholder value with the constraint
+      env = env.set(name, { value: nullVal, constraint: sv.constraint });
+    }
+  }
+  return env;
 }
 
 // Side channel for staged closures (maps closure value to staged closure info)
@@ -809,15 +846,57 @@ function evalAssert(
 }
 
 /**
- * Staged trust - refines type without runtime check.
- * Works even if value is Later.
+ * Staged assert for condition - checks a boolean condition.
+ * Throws at compile-time if Now and false, generates residual if Later.
  */
-function evalTrust(
-  valueExpr: Expr,
-  constraintExpr: Expr,
+function evalAssertCond(
+  conditionExpr: Expr,
+  message: string | undefined,
   env: SEnv,
   ctx: RefinementContext
 ): SEvalResult {
+  // Evaluate the condition
+  const condResult = stagingEvaluate(conditionExpr, env, ctx).svalue;
+
+  if (isNow(condResult)) {
+    // Condition is Now - check immediately at compile time
+    if (condResult.value.tag !== "bool") {
+      throw new Error("assert condition must be boolean");
+    }
+
+    if (!condResult.value.value) {
+      const errorMsg = message ?? "Assertion failed: condition is false";
+      throw new AssertionError(errorMsg, condResult.value, isBool);
+    }
+
+    // Return true with boolean constraint
+    return { svalue: now(boolVal(true), isBool) };
+  }
+
+  // Condition is Later - generate residual assertion
+  const residualAssert = assertCondExpr(condResult.residual, message);
+  return { svalue: later(isBool, residualAssert) };
+}
+
+/**
+ * Staged trust - refines type without runtime check.
+ * Works even if value is Later.
+ * If no constraint is provided, the value is returned unchanged.
+ */
+function evalTrust(
+  valueExpr: Expr,
+  constraintExpr: Expr | undefined,
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult {
+  // Evaluate the expression being trusted
+  const valueResult = stagingEvaluate(valueExpr, env, ctx).svalue;
+
+  // If no constraint specified, just return the value unchanged
+  if (!constraintExpr) {
+    return { svalue: valueResult };
+  }
+
   // Evaluate the constraint expression - should be a Type value
   const constraintResult = stagingEvaluate(constraintExpr, env, ctx).svalue;
 
@@ -830,9 +909,6 @@ function evalTrust(
   }
 
   const targetConstraint = constraintResult.value.constraint;
-
-  // Evaluate the expression being trusted
-  const valueResult = stagingEvaluate(valueExpr, env, ctx).svalue;
 
   // Refine the constraint based on trust (no runtime check)
   const refinedConstraint = unify(valueResult.constraint, targetConstraint);
@@ -918,9 +994,12 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.expr, b);
         visit(e.constraint, b);
         break;
+      case "assertCond":
+        visit(e.condition, b);
+        break;
       case "trust":
         visit(e.expr, b);
-        visit(e.constraint, b);
+        if (e.constraint) visit(e.constraint, b);
         break;
     }
   }
@@ -1020,8 +1099,10 @@ function usesVar(expr: Expr, name: string): boolean {
       return usesVar(expr.expr, name);
     case "assert":
       return usesVar(expr.expr, name) || usesVar(expr.constraint, name);
+    case "assertCond":
+      return usesVar(expr.condition, name);
     case "trust":
-      return usesVar(expr.expr, name) || usesVar(expr.constraint, name);
+      return usesVar(expr.expr, name) || (expr.constraint ? usesVar(expr.constraint, name) : false);
   }
 }
 

@@ -42,6 +42,7 @@ export {
   extractFieldConstraint,
   rec,
   recVar,
+  fnType,
   // Constraint solving
   Substitution,
   emptySubstitution,
@@ -139,8 +140,10 @@ export {
   comptime,
   runtime,
   assertExpr,
+  assertCondExpr,
   trustExpr,
   exprToString,
+  AssertCondExpr,
 } from "./expr";
 
 // Environment
@@ -234,3 +237,9 @@ export {
   parseAndRun,
   parseAndCompile,
 } from "./parser";
+
+// Inference
+export {
+  InferredFunction,
+  inferFunction,
+} from "./inference";

@@ -43,6 +43,9 @@ import {
   index,
   comptime,
   runtime,
+  assertExpr,
+  assertCondExpr,
+  trustExpr,
   BinOp,
   UnaryOp,
 } from "./expr";
@@ -341,6 +344,40 @@ export class Parser {
       const expr = this.parseExpr();
       this.expect("RPAREN", "Expected ')' after runtime expression");
       return runtime(expr, name);
+    }
+
+    // Assert: assert(condition) or assert(expr, type)
+    if (this.match("ASSERT")) {
+      this.expect("LPAREN", "Expected '(' after 'assert'");
+      const first = this.parseExpr();
+
+      if (this.match("COMMA")) {
+        // assert(expr, type) - type-based assertion
+        const constraint = this.parseExpr();
+        this.expect("RPAREN", "Expected ')' after assert expression");
+        return assertExpr(first, constraint);
+      } else {
+        // assert(condition) - condition-based assertion
+        this.expect("RPAREN", "Expected ')' after assert condition");
+        return assertCondExpr(first);
+      }
+    }
+
+    // Trust: trust(expr) or trust(expr, type)
+    if (this.match("TRUST")) {
+      this.expect("LPAREN", "Expected '(' after 'trust'");
+      const expr = this.parseExpr();
+
+      if (this.match("COMMA")) {
+        // trust(expr, type) - trust with specific type
+        const constraint = this.parseExpr();
+        this.expect("RPAREN", "Expected ')' after trust expression");
+        return trustExpr(expr, constraint);
+      } else {
+        // trust(expr) - trust without specific type
+        this.expect("RPAREN", "Expected ')' after trust expression");
+        return trustExpr(expr);
+      }
     }
 
     // Identifier
