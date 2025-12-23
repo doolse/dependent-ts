@@ -2,6 +2,8 @@
 
 A functional language which compiles to JavaScript and is compatible with TypeScript type definitions.
 
+> **Design Document:** See [constraints-as-types.md](constraints-as-types.md) for the core type system design, where types are unified as constraint sets.
+
 ## Core Goals
 
 ### 1. TypeScript Type-Level Programming in Normal Syntax
@@ -35,6 +37,8 @@ fn greeting(N: string) -> Type =
 
 The type-level language and value-level language are the same language.
 
+> **Design:** See [Challenge 4: Type of Types](constraints-as-types.md#challenge-4-what-is-the-type-of-types) - types are comptime values with `isType` constraint, enabling unified syntax.
+
 ### 2. Staged Computation with Compile-Time Forcing
 
 Expressions can be forced to be known at compile time. All compile-time reflection must operate on compile-time-known values.
@@ -62,6 +66,8 @@ fields(typeOf(x))                         // ERROR: typeOf(x) is not comptime
 fields(typeof x)                          // OK if `typeof` is the comptime operator
 ```
 
+> **Design:** See [Challenge 3: Decidability](constraints-as-types.md#challenge-3-decidability-and-the-two-layer-system) - the two-layer system separates always-decidable classification constraints from value refinements that may need runtime checks.
+
 ### 3. Type Inference
 
 Hindley-Milner style type inference with extensions for refinements.
@@ -76,6 +82,8 @@ let f = fn(a, b) => a + b   // f: (number, number) -> number
 let id = fn(x) => x         // id: forall T. T -> T
 let first = fn(pair) => pair.0  // first: forall A, B. (A, B) -> A
 ```
+
+> **Design:** See [Type Inference with Constraint Variables](constraints-as-types.md#3-type-inference-with-constraint-variables) and [Challenge 6: Functions as Constraint Inference](constraints-as-types.md#challenge-6-functions-as-constraint-inference) - constraints are inferred from function bodies, enabling maximum polymorphism without redundant annotations.
 
 ### 4. Compile-Time Reflection
 
@@ -102,6 +110,8 @@ arrayType(string, 10)       // Array<string, 10>
 unionType(string, number)   // string | number
 ```
 
+> **Design:** See [Challenge 4: Type of Types](constraints-as-types.md#challenge-4-what-is-the-type-of-types) - types are comptime values that can be passed to reflection functions like `fields()`.
+
 ### 5. Type Safety
 
 The type system should be sound - well-typed programs don't go wrong.
@@ -120,6 +130,8 @@ fn describe(x: string | number) =
 let name: string = null      // ERROR: string is not nullable
 let maybeName: string? = null // OK: explicit nullable type
 ```
+
+> **Design:** See [Challenge 10: unknown](constraints-as-types.md#challenge-10-unknown-no-any) - no `any` type for soundness, and [Challenge 9: never](constraints-as-types.md#challenge-9-the-never-type) - explicit bottom type for contradictions.
 
 ### 6. Refinement Types with Flexible Verification
 
@@ -178,6 +190,8 @@ processSmallBatch(arr)       // OK: compiler proves 8 < 100
 --assertions=none     // All assertions become trust (max performance)
 ```
 
+> **Design:** See [Challenge 3: Decidability](constraints-as-types.md#challenge-3-decidability-and-the-two-layer-system) - classification constraints are always compile-time decidable, value refinements use `assert`/`trust` when not provable.
+
 ### 7. Good Error Messages for API Designers
 
 API designers can provide custom error messages for constraint violations.
@@ -195,6 +209,8 @@ connect(0)       // Error: Port must be between 1 and 65535, got 0
 connect(80)      // Error: Port 80 is reserved for HTTP, use a different port
 connect(70000)   // Error: Port must be between 1 and 65535, got 70000
 ```
+
+> **Design:** See [Challenge 7: Error Messages](constraints-as-types.md#challenge-7-error-messages) - canonical forms for common constraint combinations enable natural error messages.
 
 ### 8. Immutable Source, Optimized Output
 
@@ -227,6 +243,8 @@ function incrementAge(person) {
 }
 ```
 
+> **Design:** Code generation optimization - not covered in constraints-as-types.md. Requires separate design for alias analysis and mutation optimization.
+
 ### 9. Single Collection Type with Specialization
 
 Use `Array<T, N?>` as the single collection primitive. The compiler specializes based on usage patterns.
@@ -247,6 +265,8 @@ let c = map(arr, f)             // Can use any representation
 // - Growable: Array with push
 // - Large fixed: TypedArray where applicable
 ```
+
+> **Design:** See [Tuples and Heterogeneous Collections](constraints-as-types.md#tuples-and-heterogeneous-collections) - arrays and tuples unified as constraint sets with `isArray`, `elements`, `length`, and `elementAt` constraints.
 
 ### 10. Partial Evaluation and Specialization
 
@@ -278,6 +298,8 @@ function isoFormat(date) {
   return date.year + "-" + pad(date.month) + "-" + pad(date.day);
 }
 ```
+
+> **Design:** Code generation optimization. Relates to staging (comptime forcing) covered in [Challenge 4](constraints-as-types.md#challenge-4-what-is-the-type-of-types). Requires separate design for partial evaluation.
 
 ## Ideas (To Explore)
 
@@ -342,4 +364,6 @@ export fn add(a: number, b: number) -> number = a + b
 // Generated .d.ts
 export declare function add(a: number, b: number): number;
 ```
+
+> **Design:** See [Challenge 10: unknown](constraints-as-types.md#challenge-10-unknown-no-any) for handling TypeScript's `any` type during import (treated as `unknown`).
 
