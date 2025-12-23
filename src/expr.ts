@@ -22,7 +22,9 @@ export type Expr =
   | IndexExpr
   | BlockExpr
   | ComptimeExpr
-  | RuntimeExpr;
+  | RuntimeExpr
+  | AssertExpr
+  | TrustExpr;
 
 export interface LitExpr {
   tag: "lit";
@@ -140,6 +142,28 @@ export interface RuntimeExpr {
   name?: string;        // Optional name for the residual variable
 }
 
+/**
+ * Runtime assertion that a value satisfies a constraint.
+ * Inserts a runtime check; after the assertion, the compiler knows the constraint holds.
+ */
+export interface AssertExpr {
+  tag: "assert";
+  expr: Expr;           // The value to check
+  constraint: Expr;     // The constraint to check (evaluates to a Type value)
+  message?: string;     // Optional error message
+}
+
+/**
+ * Trust that a value satisfies a constraint without runtime checking.
+ * Escape hatch for when the programmer knows better than the type system.
+ * Use with caution - no runtime check is inserted.
+ */
+export interface TrustExpr {
+  tag: "trust";
+  expr: Expr;           // The value to trust
+  constraint: Expr;     // The constraint to trust (evaluates to a Type value)
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -217,6 +241,12 @@ export const comptime = (expr: Expr): ComptimeExpr =>
 export const runtime = (expr: Expr, name?: string): RuntimeExpr =>
   ({ tag: "runtime", expr, name });
 
+export const assertExpr = (expr: Expr, constraint: Expr, message?: string): AssertExpr =>
+  ({ tag: "assert", expr, constraint, message });
+
+export const trustExpr = (expr: Expr, constraint: Expr): TrustExpr =>
+  ({ tag: "trust", expr, constraint });
+
 // ============================================================================
 // Pretty Printing
 // ============================================================================
@@ -271,5 +301,13 @@ export function exprToString(expr: Expr): string {
       return expr.name
         ? `runtime(${expr.name}: ${exprToString(expr.expr)})`
         : `runtime(${exprToString(expr.expr)})`;
+
+    case "assert":
+      return expr.message
+        ? `assert(${exprToString(expr.expr)}, ${exprToString(expr.constraint)}, "${expr.message}")`
+        : `assert(${exprToString(expr.expr)}, ${exprToString(expr.constraint)})`;
+
+    case "trust":
+      return `trust(${exprToString(expr.expr)}, ${exprToString(expr.constraint)})`;
   }
 }

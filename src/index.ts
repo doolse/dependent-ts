@@ -12,6 +12,8 @@ export {
   isObject,
   isArray,
   isFunction,
+  isType,
+  isTypeC,
   never,
   any,
   equals,
@@ -36,6 +38,21 @@ export {
   isAny,
   constraintEquals,
   constraintToString,
+  extractAllFieldNames,
+  extractFieldConstraint,
+  rec,
+  recVar,
+  // Constraint solving
+  Substitution,
+  emptySubstitution,
+  applySubstitution,
+  freeConstraintVars,
+  solve,
+  freshCVar,
+  resetConstraintVarCounter,
+  ConstraintScheme,
+  generalize,
+  instantiate,
 } from "./constraint";
 
 // Values
@@ -48,6 +65,7 @@ export {
   ObjectValue,
   ArrayValue,
   ClosureValue,
+  TypeValue,
   numberVal,
   stringVal,
   boolVal,
@@ -55,6 +73,7 @@ export {
   objectVal,
   arrayVal,
   closureVal,
+  typeVal,
   constraintOf,
   widenConstraint,
   valueSatisfies,
@@ -81,6 +100,8 @@ export {
   BlockExpr,
   ComptimeExpr,
   RuntimeExpr,
+  AssertExpr,
+  TrustExpr,
   BinOp,
   UnaryOp,
   lit,
@@ -117,6 +138,8 @@ export {
   block,
   comptime,
   runtime,
+  assertExpr,
+  trustExpr,
   exprToString,
 } from "./expr";
 
@@ -142,6 +165,7 @@ export {
   evaluate,
   run,
   runValue,
+  AssertionError,
 } from "./evaluate";
 
 // Refinement

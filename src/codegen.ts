@@ -133,6 +133,13 @@ function genExpr(expr: Expr, opts: Required<CodeGenOptions>, depth: number): str
         return genIdentifier(expr.name);
       }
       return genExpr(expr.expr, opts, depth);
+
+    case "assert":
+      return genAssert(expr.expr, expr.constraint, expr.message, opts, depth);
+
+    case "trust":
+      // trust is purely a type-level operation - just generate the inner expression
+      return genExpr(expr.expr, opts, depth);
   }
 }
 
@@ -478,6 +485,41 @@ function genBlock(
 }
 
 // ============================================================================
+// Assert Generation
+// ============================================================================
+
+/**
+ * Generate runtime assertion code.
+ * Creates an IIFE that checks the constraint and throws if it fails.
+ */
+function genAssert(
+  valueExpr: Expr,
+  constraintExpr: Expr,
+  message: string | undefined,
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string {
+  const indent = opts.indent.repeat(depth);
+  const innerIndent = opts.indent.repeat(depth + 1);
+  const valueCode = genExpr(valueExpr, opts, depth + 1);
+
+  // For now, generate a simple runtime type check
+  // In a full implementation, this would generate a proper constraint check
+  const errorMessage = message
+    ? JSON.stringify(message)
+    : `"Assertion failed"`;
+
+  // Generate an IIFE that validates and returns the value
+  return `(() => {
+${innerIndent}const __value = ${valueCode};
+${innerIndent}if (__value === null || __value === undefined) {
+${innerIndent}${opts.indent}throw new Error(${errorMessage});
+${innerIndent}}
+${innerIndent}return __value;
+${indent}})()`;
+}
+
+// ============================================================================
 // Compilation Pipeline
 // ============================================================================
 
@@ -566,6 +608,14 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
       case "runtime":
         visit(e.expr, b);
         break;
+      case "assert":
+        visit(e.expr, b);
+        visit(e.constraint, b);
+        break;
+      case "trust":
+        visit(e.expr, b);
+        visit(e.constraint, b);
+        break;
     }
   }
 
@@ -615,5 +665,9 @@ function exprFromValue(value: import("./value").Value): Expr {
 
       return result;
     }
+    case "type":
+      // Types are meta-level values that don't have a runtime representation
+      // They're only used at compile time, so this shouldn't normally be called
+      throw new Error("Cannot convert type value to expression");
   }
 }

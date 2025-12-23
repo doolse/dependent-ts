@@ -12,11 +12,12 @@
  * - `runtime` marks a value as runtime-only (Later)
  */
 
-import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn } from "./expr";
-import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString } from "./value";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr } from "./constraint";
+import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, assertExpr, trustExpr } from "./expr";
+import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat } from "./builtins";
+import { AssertionError } from "./evaluate";
 import { extractAllRefinements, negateRefinement } from "./refinement";
 import { SValue, Now, Later, now, later, isNow, isLater, allNow, constraintOfSV } from "./svalue";
 
@@ -163,6 +164,12 @@ export function stagingEvaluate(
 
     case "runtime":
       return evalRuntime(expr.expr, expr.name, env, ctx);
+
+    case "assert":
+      return evalAssert(expr.expr, expr.constraint, expr.message, env, ctx);
+
+    case "trust":
+      return evalTrust(expr.expr, expr.constraint, env, ctx);
   }
 }
 
@@ -389,12 +396,102 @@ function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
 // Side channel for staged closures (maps closure value to staged closure info)
 const stagedClosures = new WeakMap<Value, SClosure>();
 
+// ============================================================================
+// Reflection Builtins (with comptime enforcement)
+// ============================================================================
+
+/**
+ * Try to handle a reflection builtin call.
+ * Returns null if the call is not a reflection builtin.
+ * Throws StagingError if arguments are not compile-time known.
+ */
+function tryStagedReflectionBuiltin(
+  funcExpr: Expr,
+  argExprs: Expr[],
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult | null {
+  if (funcExpr.tag !== "var") return null;
+
+  if (funcExpr.name === "fields") {
+    // fields(T) - returns array of field names from a type
+    if (argExprs.length !== 1) {
+      throw new Error("fields() requires exactly 1 argument");
+    }
+
+    const typeArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    // Comptime enforcement: type must be known at compile time
+    if (isLater(typeArg)) {
+      throw new StagingError("fields() requires a compile-time known type");
+    }
+
+    if (typeArg.value.tag !== "type") {
+      throw new TypeError(isTypeC, typeArg.constraint, "fields() argument");
+    }
+
+    const fieldNames = extractAllFieldNames(typeArg.value.constraint);
+    const fieldValues = fieldNames.map(stringVal);
+
+    return {
+      svalue: now(arrayVal(fieldValues), and(isArray, elements(isString)))
+    };
+  }
+
+  if (funcExpr.name === "fieldType") {
+    // fieldType(T, name) - returns the type of a field
+    if (argExprs.length !== 2) {
+      throw new Error("fieldType() requires exactly 2 arguments");
+    }
+
+    const typeArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const nameArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    // Comptime enforcement: both args must be known at compile time
+    if (isLater(typeArg)) {
+      throw new StagingError("fieldType() requires a compile-time known type");
+    }
+    if (isLater(nameArg)) {
+      throw new StagingError("fieldType() requires a compile-time known field name");
+    }
+
+    if (typeArg.value.tag !== "type") {
+      throw new TypeError(isTypeC, typeArg.constraint, "fieldType() first argument");
+    }
+
+    if (nameArg.value.tag !== "string") {
+      throw new TypeError(isString, nameArg.constraint, "fieldType() second argument");
+    }
+
+    const fieldConstraint = extractFieldConstraintFromConstraint(
+      typeArg.value.constraint,
+      nameArg.value.value
+    );
+
+    if (!fieldConstraint) {
+      throw new Error(`Type has no field '${nameArg.value.value}'`);
+    }
+
+    return {
+      svalue: now(typeVal(fieldConstraint), isType(fieldConstraint))
+    };
+  }
+
+  return null;
+}
+
 function evalCall(
   funcExpr: Expr,
   argExprs: Expr[],
   env: SEnv,
   ctx: RefinementContext
 ): SEvalResult {
+  // Try reflection builtins first
+  const reflectionResult = tryStagedReflectionBuiltin(funcExpr, argExprs, env, ctx);
+  if (reflectionResult !== null) {
+    return reflectionResult;
+  }
+
   const func = stagingEvaluate(funcExpr, env, ctx).svalue;
 
   requireConstraint(func.constraint, isFunction, "function call");
@@ -662,6 +759,93 @@ function evalRuntime(
   return { svalue: later(result.constraint, varRef(varName)) };
 }
 
+/**
+ * Staged assertion - inserts runtime check if value is Later.
+ * If value and constraint are both Now, checks immediately.
+ */
+function evalAssert(
+  valueExpr: Expr,
+  constraintExpr: Expr,
+  message: string | undefined,
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult {
+  // Evaluate the constraint expression - should be a Type value
+  const constraintResult = stagingEvaluate(constraintExpr, env, ctx).svalue;
+
+  if (isLater(constraintResult)) {
+    throw new StagingError("assert requires a compile-time known type constraint");
+  }
+
+  if (constraintResult.value.tag !== "type") {
+    throw new TypeError(isTypeC, constraintResult.constraint, "assert constraint");
+  }
+
+  const targetConstraint = constraintResult.value.constraint;
+
+  // Evaluate the expression being asserted
+  const valueResult = stagingEvaluate(valueExpr, env, ctx).svalue;
+
+  if (isNow(valueResult)) {
+    // Value is Now - check immediately at compile time
+    if (!valueSatisfies(valueResult.value, targetConstraint)) {
+      const errorMsg = message
+        ? message
+        : `Assertion failed: value ${valueToString(valueResult.value)} does not satisfy ${constraintToString(targetConstraint)}`;
+      throw new AssertionError(errorMsg, valueResult.value, targetConstraint);
+    }
+
+    // Return the value with the refined constraint
+    const refinedConstraint = unify(valueResult.constraint, targetConstraint);
+    return { svalue: now(valueResult.value, refinedConstraint) };
+  }
+
+  // Value is Later - generate residual assertion
+  // The residual will be: assert(value, type, message)
+  const refinedConstraint = unify(valueResult.constraint, targetConstraint);
+  const residualAssert = assertExpr(valueResult.residual, constraintExpr, message);
+
+  return { svalue: later(refinedConstraint, residualAssert) };
+}
+
+/**
+ * Staged trust - refines type without runtime check.
+ * Works even if value is Later.
+ */
+function evalTrust(
+  valueExpr: Expr,
+  constraintExpr: Expr,
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult {
+  // Evaluate the constraint expression - should be a Type value
+  const constraintResult = stagingEvaluate(constraintExpr, env, ctx).svalue;
+
+  if (isLater(constraintResult)) {
+    throw new StagingError("trust requires a compile-time known type constraint");
+  }
+
+  if (constraintResult.value.tag !== "type") {
+    throw new TypeError(isTypeC, constraintResult.constraint, "trust constraint");
+  }
+
+  const targetConstraint = constraintResult.value.constraint;
+
+  // Evaluate the expression being trusted
+  const valueResult = stagingEvaluate(valueExpr, env, ctx).svalue;
+
+  // Refine the constraint based on trust (no runtime check)
+  const refinedConstraint = unify(valueResult.constraint, targetConstraint);
+
+  if (isNow(valueResult)) {
+    return { svalue: now(valueResult.value, refinedConstraint) };
+  }
+
+  // Value is Later - trust is purely a type-level operation, no residual
+  // The trust "disappears" and just affects the constraint
+  return { svalue: later(refinedConstraint, valueResult.residual) };
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -730,6 +914,14 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
       case "runtime":
         visit(e.expr, b);
         break;
+      case "assert":
+        visit(e.expr, b);
+        visit(e.constraint, b);
+        break;
+      case "trust":
+        visit(e.expr, b);
+        visit(e.constraint, b);
+        break;
     }
   }
 
@@ -779,6 +971,11 @@ function valueToExpr(v: Value): Expr {
 
       return result;
     }
+    case "type":
+      // Types are referenced by their binding name in the environment
+      // For now, just convert to the constraint representation
+      // This is a simplified approach - could be improved
+      throw new Error("Cannot convert type value to expression directly");
   }
 }
 
@@ -821,6 +1018,10 @@ function usesVar(expr: Expr, name: string): boolean {
       return usesVar(expr.expr, name);
     case "runtime":
       return usesVar(expr.expr, name);
+    case "assert":
+      return usesVar(expr.expr, name) || usesVar(expr.constraint, name);
+    case "trust":
+      return usesVar(expr.expr, name) || usesVar(expr.constraint, name);
   }
 }
 
@@ -890,6 +1091,35 @@ import { exprToString } from "./expr";
 import { constraintToString } from "./constraint";
 
 // ============================================================================
+// Type Bindings
+// ============================================================================
+
+/**
+ * Pre-bound type constants for the staged environment.
+ * Types are Now values (known at compile time).
+ */
+const typeBindings: Record<string, SBinding> = {
+  "number": { svalue: now(typeVal(isNumber), isType(isNumber)) },
+  "string": { svalue: now(typeVal(isString), isType(isString)) },
+  "boolean": { svalue: now(typeVal(isBool), isType(isBool)) },
+  "null": { svalue: now(typeVal(isNull), isType(isNull)) },
+  "object": { svalue: now(typeVal(isObject), isType(isObject)) },
+  "array": { svalue: now(typeVal(isArray), isType(isArray)) },
+  "function": { svalue: now(typeVal(isFunction), isType(isFunction)) },
+};
+
+/**
+ * Create the initial staged environment with type bindings.
+ */
+function createInitialSEnv(): SEnv {
+  let env = SEnv.empty();
+  for (const [name, binding] of Object.entries(typeBindings)) {
+    env = env.set(name, binding);
+  }
+  return env;
+}
+
+// ============================================================================
 // Convenience Functions
 // ============================================================================
 
@@ -898,7 +1128,7 @@ import { constraintToString } from "./constraint";
  */
 export function stage(expr: Expr): SEvalResult {
   resetVarCounter();
-  return stagingEvaluate(expr, SEnv.empty());
+  return stagingEvaluate(expr, createInitialSEnv());
 }
 
 /**

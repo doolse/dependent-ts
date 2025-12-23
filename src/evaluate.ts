@@ -6,8 +6,8 @@
  */
 
 import { Expr, BinOp, UnaryOp } from "./expr";
-import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString } from "./value";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, constraintToString, unify, or, narrowOr } from "./constraint";
+import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, constraintToString, unify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, EvalResult } from "./builtins";
 import { extractAllRefinements, negateRefinement } from "./refinement";
@@ -74,6 +74,12 @@ export function evaluate(expr: Expr, env: Env, ctx: RefinementContext = Refineme
     case "runtime":
       // In pure evaluation, runtime annotations are ignored - evaluate normally
       return evaluate(expr.expr, env, ctx);
+
+    case "assert":
+      return evalAssert(expr.expr, expr.constraint, expr.message, env, ctx);
+
+    case "trust":
+      return evalTrust(expr.expr, expr.constraint, env, ctx);
   }
 }
 
@@ -236,12 +242,91 @@ function evalFn(params: string[], body: Expr, env: Env): EvalResult {
   return { value: closure, constraint: isFunction };
 }
 
+// ============================================================================
+// Reflection Builtins
+// ============================================================================
+
+/**
+ * Try to handle a reflection builtin call.
+ * Returns null if the call is not a reflection builtin.
+ */
+function tryReflectionBuiltin(
+  funcExpr: Expr,
+  args: EvalResult[],
+  env: Env
+): EvalResult | null {
+  if (funcExpr.tag !== "var") return null;
+
+  if (funcExpr.name === "fields") {
+    // fields(T) - returns array of field names from a type
+    if (args.length !== 1) {
+      throw new Error("fields() requires exactly 1 argument");
+    }
+
+    const typeArg = args[0];
+    if (typeArg.value.tag !== "type") {
+      throw new TypeError(isTypeC, typeArg.constraint, "fields() argument");
+    }
+
+    const fieldNames = extractAllFieldNames(typeArg.value.constraint);
+    const fieldValues = fieldNames.map(stringVal);
+
+    return {
+      value: arrayVal(fieldValues),
+      constraint: and(isArray, elements(isString))
+    };
+  }
+
+  if (funcExpr.name === "fieldType") {
+    // fieldType(T, name) - returns the type of a field
+    if (args.length !== 2) {
+      throw new Error("fieldType() requires exactly 2 arguments");
+    }
+
+    const typeArg = args[0];
+    const nameArg = args[1];
+
+    if (typeArg.value.tag !== "type") {
+      throw new TypeError(isTypeC, typeArg.constraint, "fieldType() first argument");
+    }
+
+    if (nameArg.value.tag !== "string") {
+      throw new TypeError(isString, nameArg.constraint, "fieldType() second argument");
+    }
+
+    const fieldConstraint = extractFieldConstraintFromConstraint(
+      typeArg.value.constraint,
+      nameArg.value.value
+    );
+
+    if (!fieldConstraint) {
+      throw new Error(`Type has no field '${nameArg.value.value}'`);
+    }
+
+    return {
+      value: typeVal(fieldConstraint),
+      constraint: isType(fieldConstraint)
+    };
+  }
+
+  return null;
+}
+
 function evalCall(
   funcExpr: Expr,
   argExprs: Expr[],
   env: Env,
   ctx: RefinementContext
 ): EvalResult {
+  // Evaluate arguments first for reflection builtins
+  const args = argExprs.map(arg => evaluate(arg, env, ctx));
+
+  // Try reflection builtins first
+  const reflectionResult = tryReflectionBuiltin(funcExpr, args, env);
+  if (reflectionResult !== null) {
+    return reflectionResult;
+  }
+
   const func = evaluate(funcExpr, env, ctx);
 
   // Function must be a closure
@@ -254,14 +339,11 @@ function evalCall(
   const closure = func.value;
 
   // Check arity
-  if (argExprs.length !== closure.params.length) {
+  if (args.length !== closure.params.length) {
     throw new Error(
-      `Expected ${closure.params.length} arguments, got ${argExprs.length}`
+      `Expected ${closure.params.length} arguments, got ${args.length}`
     );
   }
-
-  // Evaluate arguments
-  const args = argExprs.map(arg => evaluate(arg, env, ctx));
 
   // Bind arguments to parameters in the closure's environment
   let callEnv = closure.env;
@@ -416,6 +498,81 @@ function evalBlock(
   return result;
 }
 
+/**
+ * Runtime assertion that a value satisfies a constraint.
+ * Throws an AssertionError if the check fails.
+ */
+function evalAssert(
+  valueExpr: Expr,
+  constraintExpr: Expr,
+  message: string | undefined,
+  env: Env,
+  ctx: RefinementContext
+): EvalResult {
+  // Evaluate the constraint expression - should be a Type value
+  const constraintResult = evaluate(constraintExpr, env, ctx);
+  if (constraintResult.value.tag !== "type") {
+    throw new TypeError(isTypeC, constraintResult.constraint, "assert constraint");
+  }
+
+  const targetConstraint = constraintResult.value.constraint;
+
+  // Evaluate the expression being asserted
+  const valueResult = evaluate(valueExpr, env, ctx);
+
+  // Runtime check: does the value satisfy the constraint?
+  if (!valueSatisfies(valueResult.value, targetConstraint)) {
+    const errorMsg = message
+      ? message
+      : `Assertion failed: value ${valueToString(valueResult.value)} does not satisfy ${constraintToString(targetConstraint)}`;
+    throw new AssertionError(errorMsg, valueResult.value, targetConstraint);
+  }
+
+  // Return the value with the refined constraint (the intersection)
+  const refinedConstraint = unify(valueResult.constraint, targetConstraint);
+  return { value: valueResult.value, constraint: refinedConstraint };
+}
+
+/**
+ * Trust that a value satisfies a constraint without runtime checking.
+ * The programmer takes responsibility for the correctness.
+ */
+function evalTrust(
+  valueExpr: Expr,
+  constraintExpr: Expr,
+  env: Env,
+  ctx: RefinementContext
+): EvalResult {
+  // Evaluate the constraint expression - should be a Type value
+  const constraintResult = evaluate(constraintExpr, env, ctx);
+  if (constraintResult.value.tag !== "type") {
+    throw new TypeError(isTypeC, constraintResult.constraint, "trust constraint");
+  }
+
+  const targetConstraint = constraintResult.value.constraint;
+
+  // Evaluate the expression being trusted
+  const valueResult = evaluate(valueExpr, env, ctx);
+
+  // No runtime check - just refine the constraint based on trust
+  const refinedConstraint = unify(valueResult.constraint, targetConstraint);
+  return { value: valueResult.value, constraint: refinedConstraint };
+}
+
+/**
+ * Error thrown when a runtime assertion fails.
+ */
+export class AssertionError extends Error {
+  constructor(
+    message: string,
+    public readonly value: Value,
+    public readonly constraint: Constraint
+  ) {
+    super(message);
+    this.name = "AssertionError";
+  }
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -527,7 +684,39 @@ function constraintEquals(a: Constraint, b: Constraint): boolean {
 
     case "var":
       return a.id === (b as typeof a).id;
+
+    case "isType":
+      return constraintEquals(a.constraint, (b as typeof a).constraint);
   }
+}
+
+// ============================================================================
+// Type Bindings
+// ============================================================================
+
+/**
+ * Pre-bound type constants available in the initial environment.
+ * These allow types to be used as first-class values.
+ */
+const typeBindings: Record<string, Binding> = {
+  "number": { value: typeVal(isNumber), constraint: isType(isNumber) },
+  "string": { value: typeVal(isString), constraint: isType(isString) },
+  "boolean": { value: typeVal(isBool), constraint: isType(isBool) },
+  "null": { value: typeVal(isNull), constraint: isType(isNull) },
+  "object": { value: typeVal(isObject), constraint: isType(isObject) },
+  "array": { value: typeVal(isArray), constraint: isType(isArray) },
+  "function": { value: typeVal(isFunction), constraint: isType(isFunction) },
+};
+
+/**
+ * Create the initial environment with type bindings.
+ */
+function createInitialEnv(): Env {
+  let env = Env.empty();
+  for (const [name, binding] of Object.entries(typeBindings)) {
+    env = env.set(name, binding);
+  }
+  return env;
 }
 
 // ============================================================================
@@ -538,7 +727,7 @@ function constraintEquals(a: Constraint, b: Constraint): boolean {
  * Evaluate an expression with an initial environment.
  */
 export function run(expr: Expr, initialBindings?: Record<string, { value: Value; constraint: Constraint }>): EvalResult {
-  let env = Env.empty();
+  let env = createInitialEnv();
 
   if (initialBindings) {
     for (const [name, binding] of Object.entries(initialBindings)) {

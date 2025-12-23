@@ -2,7 +2,7 @@
  * Runtime values for the interpreter.
  */
 
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, equals, hasField, elements, length, elementAt } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, equals, hasField, elements, length, elementAt, isType, constraintToString } from "./constraint";
 import type { Expr } from "./expr";
 import type { Env } from "./env";
 
@@ -17,7 +17,8 @@ export type Value =
   | NullValue
   | ObjectValue
   | ArrayValue
-  | ClosureValue;
+  | ClosureValue
+  | TypeValue;
 
 export interface NumberValue {
   tag: "number";
@@ -55,6 +56,11 @@ export interface ClosureValue {
   env: Env;
 }
 
+export interface TypeValue {
+  tag: "type";
+  constraint: Constraint;  // The constraint set this type represents
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -79,6 +85,11 @@ export const closureVal = (params: string[], body: Expr, env: Env): ClosureValue
   params,
   body,
   env,
+});
+
+export const typeVal = (constraint: Constraint): TypeValue => ({
+  tag: "type",
+  constraint,
 });
 
 // ============================================================================
@@ -136,6 +147,10 @@ export function constraintOf(value: Value): Constraint {
       // For closures, we just know it's a function
       // The parameter/return constraints are inferred when called
       return isFunction;
+
+    case "type":
+      // A type value has the isType constraint wrapping what it represents
+      return isType(value.constraint);
   }
 }
 
@@ -250,6 +265,10 @@ export function valueSatisfies(value: Value, constraint: Constraint): boolean {
     case "var":
       // Variables are unknown - assume satisfied
       return true;
+
+    case "isType":
+      // Value must be a type
+      return value.tag === "type";
   }
 }
 
@@ -303,6 +322,9 @@ export function valueToString(value: Value): string {
 
     case "closure":
       return `<fn(${value.params.join(", ")})>`;
+
+    case "type":
+      return `Type<${constraintToString(value.constraint)}>`;
   }
 }
 

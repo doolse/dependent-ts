@@ -42,7 +42,14 @@ export type Constraint =
   | { tag: "any" }    // top - all values satisfy this (unknown)
 
   // Inference variable (for type inference)
-  | { tag: "var", id: number };
+  | { tag: "var", id: number }
+
+  // Meta-constraint: marks a value as being a type
+  | { tag: "isType", constraint: Constraint }
+
+  // Recursive types (μ types)
+  | { tag: "rec", var: string, body: Constraint }    // μX. body (recursive type binder)
+  | { tag: "recVar", var: string };                   // X (reference to recursive binder)
 
 // ============================================================================
 // Constructors
@@ -93,6 +100,20 @@ export const or = (...constraints: Constraint[]): Constraint => {
 export const not = (constraint: Constraint): Constraint => ({ tag: "not", constraint });
 
 export const cvar = (id: number): Constraint => ({ tag: "var", id });
+
+// Meta-constraint: this value is a type representing the given constraint
+export const isType = (constraint: Constraint): Constraint =>
+  ({ tag: "isType", constraint });
+
+// Simple "is some type" check (type representing any constraint)
+export const isTypeC: Constraint = { tag: "isType", constraint: anyC };
+
+// Recursive types
+export const rec = (varName: string, body: Constraint): Constraint =>
+  ({ tag: "rec", var: varName, body });
+
+export const recVar = (varName: string): Constraint =>
+  ({ tag: "recVar", var: varName });
 
 // ============================================================================
 // Classification Helpers
@@ -225,6 +246,16 @@ export function constraintEquals(a: Constraint, b: Constraint): boolean {
 
     case "var":
       return a.id === (b as typeof a).id;
+
+    case "isType":
+      return constraintEquals(a.constraint, (b as typeof a).constraint);
+
+    case "rec":
+      return a.var === (b as typeof a).var &&
+             constraintEquals(a.body, (b as typeof a).body);
+
+    case "recVar":
+      return a.var === (b as typeof a).var;
   }
 }
 
@@ -394,6 +425,15 @@ export function simplify(c: Constraint): Constraint {
     case "elementAt":
       return elementAt(c.index, simplify(c.constraint));
 
+    case "isType":
+      return isType(simplify(c.constraint));
+
+    case "rec":
+      return rec(c.var, simplify(c.body));
+
+    case "recVar":
+      return c;  // recVar is already simple
+
     case "not": {
       const inner = simplify(c.constraint);
       if (inner.tag === "never") return anyC;
@@ -528,7 +568,110 @@ export function implies(a: Constraint, b: Constraint): boolean {
     return sa.index === sb.index && implies(sa.constraint, sb.constraint);
   }
 
+  // isType implication: isType(A) implies isType(B) if A implies B
+  if (sa.tag === "isType" && sb.tag === "isType") {
+    return implies(sa.constraint, sb.constraint);
+  }
+
+  // Recursive type implication using coinductive reasoning
+  // rec X. A implies rec Y. B if A[X := rec X. A] implies B[Y := rec Y. B]
+  if (sa.tag === "rec" && sb.tag === "rec") {
+    // Check with assumption: use structural equality up to variable renaming
+    // For a simple approach, we check if they are alpha-equivalent
+    return impliesRec(sa, sb, new Set());
+  }
+
+  // recVar only implies itself (handled by constraintEquals above)
+
   return false;
+}
+
+/**
+ * Check if two recursive types are related using coinductive reasoning.
+ * The 'assumptions' set tracks pairs we've already assumed to avoid infinite loops.
+ */
+function impliesRec(
+  a: { tag: "rec"; var: string; body: Constraint },
+  b: { tag: "rec"; var: string; body: Constraint },
+  assumptions: Set<string>
+): boolean {
+  // Create a key for this assumption
+  const key = `${a.var}:${b.var}`;
+
+  // If we've already assumed this, it's true (coinductive)
+  if (assumptions.has(key)) return true;
+
+  // Add assumption and check body
+  const newAssumptions = new Set(assumptions);
+  newAssumptions.add(key);
+
+  // Substitute recursive references and check
+  // For simplicity, we'll check structural equality with variable renaming
+  const aBody = substituteRecVar(a.body, a.var, recVar(b.var));
+  return impliesWithAssumptions(aBody, b.body, newAssumptions);
+}
+
+/**
+ * Substitute a recVar with another constraint.
+ */
+function substituteRecVar(c: Constraint, varName: string, replacement: Constraint): Constraint {
+  switch (c.tag) {
+    case "recVar":
+      return c.var === varName ? replacement : c;
+
+    case "rec":
+      // Don't substitute inside a binding with the same name (shadowing)
+      if (c.var === varName) return c;
+      return rec(c.var, substituteRecVar(c.body, varName, replacement));
+
+    case "and":
+      return and(...c.constraints.map(x => substituteRecVar(x, varName, replacement)));
+
+    case "or":
+      return or(...c.constraints.map(x => substituteRecVar(x, varName, replacement)));
+
+    case "not":
+      return not(substituteRecVar(c.constraint, varName, replacement));
+
+    case "hasField":
+      return hasField(c.name, substituteRecVar(c.constraint, varName, replacement));
+
+    case "elements":
+      return elements(substituteRecVar(c.constraint, varName, replacement));
+
+    case "length":
+      return length(substituteRecVar(c.constraint, varName, replacement));
+
+    case "elementAt":
+      return elementAt(c.index, substituteRecVar(c.constraint, varName, replacement));
+
+    case "isType":
+      return isType(substituteRecVar(c.constraint, varName, replacement));
+
+    default:
+      return c;
+  }
+}
+
+/**
+ * Check implication with assumptions for coinductive reasoning.
+ */
+function impliesWithAssumptions(a: Constraint, b: Constraint, assumptions: Set<string>): boolean {
+  const sa = simplify(a);
+  const sb = simplify(b);
+
+  // If both are recVar and we have an assumption for them, use it
+  if (sa.tag === "recVar" && sb.tag === "recVar") {
+    return sa.var === sb.var || assumptions.has(`${sa.var}:${sb.var}`);
+  }
+
+  // For rec types, use coinductive check
+  if (sa.tag === "rec" && sb.tag === "rec") {
+    return impliesRec(sa, sb, assumptions);
+  }
+
+  // Otherwise, fall back to regular implies
+  return implies(sa, sb);
 }
 
 /**
@@ -632,5 +775,345 @@ export function constraintToString(c: Constraint): string {
 
     case "var":
       return `?${c.id}`;
+
+    case "isType":
+      return `Type<${constraintToString(c.constraint)}>`;
+
+    case "rec":
+      return `μ${c.var}. ${constraintToString(c.body)}`;
+
+    case "recVar":
+      return c.var;
   }
+}
+
+// ============================================================================
+// Constraint Solving (for type inference)
+// ============================================================================
+
+/**
+ * A substitution maps constraint variable IDs to constraints.
+ */
+export type Substitution = Map<number, Constraint>;
+
+/**
+ * Create an empty substitution.
+ */
+export function emptySubstitution(): Substitution {
+  return new Map();
+}
+
+/**
+ * Apply a substitution to a constraint, replacing variables with their bindings.
+ */
+export function applySubstitution(c: Constraint, sub: Substitution): Constraint {
+  return applySubstitutionImpl(c, sub, new Set());
+}
+
+function applySubstitutionImpl(c: Constraint, sub: Substitution, seen: Set<number>): Constraint {
+  switch (c.tag) {
+    case "var":
+      if (sub.has(c.id)) {
+        // Avoid infinite loops when variable maps to itself or creates a cycle
+        if (seen.has(c.id)) {
+          return c;
+        }
+        seen.add(c.id);
+        // Recursively apply in case the substitution contains more variables
+        return applySubstitutionImpl(sub.get(c.id)!, sub, seen);
+      }
+      return c;
+
+    case "and":
+      return and(...c.constraints.map(x => applySubstitutionImpl(x, sub, seen)));
+
+    case "or":
+      return or(...c.constraints.map(x => applySubstitutionImpl(x, sub, seen)));
+
+    case "not":
+      return not(applySubstitutionImpl(c.constraint, sub, seen));
+
+    case "hasField":
+      return hasField(c.name, applySubstitutionImpl(c.constraint, sub, seen));
+
+    case "elements":
+      return elements(applySubstitutionImpl(c.constraint, sub, seen));
+
+    case "length":
+      return length(applySubstitutionImpl(c.constraint, sub, seen));
+
+    case "elementAt":
+      return elementAt(c.index, applySubstitutionImpl(c.constraint, sub, seen));
+
+    case "isType":
+      return isType(applySubstitutionImpl(c.constraint, sub, seen));
+
+    case "rec":
+      return rec(c.var, applySubstitutionImpl(c.body, sub, seen));
+
+    default:
+      return c;
+  }
+}
+
+/**
+ * Get all free constraint variable IDs in a constraint.
+ */
+export function freeConstraintVars(c: Constraint): Set<number> {
+  const vars = new Set<number>();
+
+  function collect(c: Constraint): void {
+    switch (c.tag) {
+      case "var":
+        vars.add(c.id);
+        break;
+      case "and":
+      case "or":
+        for (const child of c.constraints) collect(child);
+        break;
+      case "not":
+      case "elements":
+      case "length":
+      case "isType":
+        collect(c.constraint);
+        break;
+      case "hasField":
+        collect(c.constraint);
+        break;
+      case "elementAt":
+        collect(c.constraint);
+        break;
+      case "rec":
+        collect(c.body);
+        break;
+    }
+  }
+
+  collect(c);
+  return vars;
+}
+
+/**
+ * Solve/unify two constraints, returning a substitution if successful.
+ * Returns null if the constraints are inconsistent.
+ */
+export function solve(a: Constraint, b: Constraint): Substitution | null {
+  const sub = emptySubstitution();
+  if (solveInto(a, b, sub)) {
+    return sub;
+  }
+  return null;
+}
+
+/**
+ * Internal helper: solve and accumulate into existing substitution.
+ */
+function solveInto(a: Constraint, b: Constraint, sub: Substitution): boolean {
+  // Apply current substitution first
+  a = applySubstitution(a, sub);
+  b = applySubstitution(b, sub);
+
+  // Trivial cases
+  if (constraintEquals(a, b)) return true;
+  if (a.tag === "any" || b.tag === "any") return true;
+  if (a.tag === "never" || b.tag === "never") return false;
+
+  // Variable cases - this is the core of unification
+  if (a.tag === "var") {
+    // Occurs check: don't allow ?A = ... ?A ...
+    if (freeConstraintVars(b).has(a.id)) {
+      return false;  // Would create infinite type
+    }
+    sub.set(a.id, b);
+    return true;
+  }
+
+  if (b.tag === "var") {
+    if (freeConstraintVars(a).has(b.id)) {
+      return false;
+    }
+    sub.set(b.id, a);
+    return true;
+  }
+
+  // Same tag cases
+  if (a.tag === b.tag) {
+    switch (a.tag) {
+      case "isNumber":
+      case "isString":
+      case "isBool":
+      case "isNull":
+      case "isObject":
+      case "isArray":
+      case "isFunction":
+        return true;
+
+      case "equals":
+        return a.value === (b as typeof a).value;
+
+      case "gt":
+      case "gte":
+      case "lt":
+      case "lte":
+        return a.bound === (b as typeof a).bound;
+
+      case "hasField":
+        return a.name === (b as typeof a).name &&
+               solveInto(a.constraint, (b as typeof a).constraint, sub);
+
+      case "elements":
+        return solveInto(a.constraint, (b as typeof a).constraint, sub);
+
+      case "length":
+        return solveInto(a.constraint, (b as typeof a).constraint, sub);
+
+      case "elementAt":
+        return a.index === (b as typeof a).index &&
+               solveInto(a.constraint, (b as typeof a).constraint, sub);
+
+      case "isType":
+        return solveInto(a.constraint, (b as typeof a).constraint, sub);
+
+      case "rec":
+        // For recursive types, check body with var renaming
+        return a.var === (b as typeof a).var &&
+               solveInto(a.body, (b as typeof a).body, sub);
+
+      case "recVar":
+        return a.var === (b as typeof a).var;
+
+      case "and": {
+        const aConstraints = a.constraints;
+        const bConstraints = (b as typeof a).constraints;
+        if (aConstraints.length !== bConstraints.length) return false;
+        // Try to unify each pair
+        for (let i = 0; i < aConstraints.length; i++) {
+          if (!solveInto(aConstraints[i], bConstraints[i], sub)) return false;
+        }
+        return true;
+      }
+
+      case "or": {
+        const aConstraints = a.constraints;
+        const bConstraints = (b as typeof a).constraints;
+        if (aConstraints.length !== bConstraints.length) return false;
+        for (let i = 0; i < aConstraints.length; i++) {
+          if (!solveInto(aConstraints[i], bConstraints[i], sub)) return false;
+        }
+        return true;
+      }
+
+      case "not":
+        return solveInto(a.constraint, (b as typeof a).constraint, sub);
+    }
+  }
+
+  // Different tags that might still unify
+  // e.g., ?A could unify with isNumber, but isNumber can't unify with isString
+  return false;
+}
+
+/**
+ * Counter for generating fresh constraint variable IDs.
+ */
+let constraintVarCounter = 0;
+
+/**
+ * Reset the constraint variable counter (for testing).
+ */
+export function resetConstraintVarCounter(): void {
+  constraintVarCounter = 0;
+}
+
+/**
+ * Create a fresh constraint variable.
+ */
+export function freshCVar(): Constraint {
+  return cvar(constraintVarCounter++);
+}
+
+/**
+ * A constraint scheme: a constraint with universally quantified variables.
+ * Used for let-polymorphism.
+ */
+export interface ConstraintScheme {
+  quantified: number[];  // IDs of quantified variables
+  constraint: Constraint;
+}
+
+/**
+ * Generalize a constraint over free variables not in the environment.
+ * Returns a constraint scheme.
+ */
+export function generalize(c: Constraint, envVars: Set<number>): ConstraintScheme {
+  const freeVars = freeConstraintVars(c);
+  const quantified: number[] = [];
+
+  for (const v of freeVars) {
+    if (!envVars.has(v)) {
+      quantified.push(v);
+    }
+  }
+
+  return { quantified, constraint: c };
+}
+
+/**
+ * Instantiate a constraint scheme with fresh variables.
+ */
+export function instantiate(scheme: ConstraintScheme): Constraint {
+  if (scheme.quantified.length === 0) {
+    return scheme.constraint;
+  }
+
+  const sub = emptySubstitution();
+  for (const v of scheme.quantified) {
+    sub.set(v, freshCVar());
+  }
+
+  return applySubstitution(scheme.constraint, sub);
+}
+
+// ============================================================================
+// Field Extraction Helpers (for reflection)
+// ============================================================================
+
+/**
+ * Extract all field names from a constraint.
+ * Returns an array of field names found in hasField constraints.
+ */
+export function extractAllFieldNames(constraint: Constraint): string[] {
+  const fields: string[] = [];
+
+  if (constraint.tag === "hasField") {
+    fields.push(constraint.name);
+  } else if (constraint.tag === "and") {
+    for (const c of constraint.constraints) {
+      if (c.tag === "hasField") {
+        fields.push(c.name);
+      }
+    }
+  }
+
+  return fields;
+}
+
+/**
+ * Extract the constraint for a specific field from an object constraint.
+ * Returns null if the field is not found.
+ */
+export function extractFieldConstraint(constraint: Constraint, name: string): Constraint | null {
+  if (constraint.tag === "hasField" && constraint.name === name) {
+    return constraint.constraint;
+  }
+
+  if (constraint.tag === "and") {
+    for (const c of constraint.constraints) {
+      if (c.tag === "hasField" && c.name === name) {
+        return c.constraint;
+      }
+    }
+  }
+
+  return null;
 }
