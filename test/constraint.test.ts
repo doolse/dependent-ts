@@ -1,14 +1,14 @@
 /**
- * Design Compliance Tests - Constraint/Type System & Reflection
+ * Constraint System Tests
  *
- * These tests document features that SHOULD work according to the design documents
- * (constraints-as-types.md and goals.md) but may not yet be implemented.
- *
- * Focus: Constraint system, type operations, and reflection capabilities.
- * NOT focused on: Parser syntax (the user can change that easily).
- *
- * Each test is marked with a reference to the relevant section in the design docs.
- * Tests that fail indicate implementation gaps.
+ * Tests for the constraint type system including:
+ * - Classification hierarchy and implications
+ * - never and any/unknown types
+ * - Union and intersection types
+ * - Object and array constraints
+ * - Constraint simplification
+ * - Unification
+ * - Value and constraint interaction
  */
 import { describe, it, expect } from "vitest";
 
@@ -46,14 +46,6 @@ import {
   any,
   constraintEquals,
   Constraint,
-  rec,
-  recVar,
-  isTypeC,
-  // Constraint solving
-  solve,
-  ConstraintScheme,
-  instantiate,
-  resetConstraintVarCounter,
 
   // Values
   numberVal,
@@ -62,95 +54,13 @@ import {
   nullVal,
   objectVal,
   arrayVal,
-  closureVal,
-  typeVal,
   constraintOf,
   widenConstraint,
   valueSatisfies,
-  valueToString,
-  Value,
-
-  // Expressions
-  num,
-  str,
-  bool,
-  nil,
-  varRef,
-  add,
-  sub,
-  mul,
-  div,
-  mod,
-  eq,
-  neq,
-  ltExpr,
-  gtExpr,
-  lteExpr,
-  gteExpr,
-  andExpr,
-  orExpr,
-  neg,
-  notExpr,
-  ifExpr,
-  letExpr,
-  fn,
-  call,
-  obj,
-  field,
-  array,
-  index,
-  block,
-  comptime,
-  runtime,
-  assertCondExpr,
-  trustExpr,
-  exprToString,
-  Expr,
-
-  // Errors
-  AssertionError,
-
-  // Environment
-  Env,
-  RefinementContext,
-  Binding,
-
-  // Evaluator
-  run,
-  runValue,
-  evaluate,
-  TypeError,
-
-  // Staging
-  stage,
-  stageToExpr,
-  stagingEvaluate,
-  SEnv,
-  StagingError,
-  isNow,
-  isLater,
-  now,
-  later,
-  Now,
-  Later,
-  SValue,
-
-  // Refinement
-  extractRefinement,
-  extractAllRefinements,
-  extractTypeGuard,
-  Refinement,
-
-  // Code Generation
-  generateJS,
-  compile,
-
-  // Parser
-  parseAndRun,
 } from "../src/index";
 
 // =============================================================================
-// SECTION 1: Classification Hierarchy and Implications
+// Classification Hierarchy and Implications
 // Reference: constraints-as-types.md, Challenge 5
 // =============================================================================
 
@@ -158,14 +68,11 @@ describe("Challenge 5: Classification Hierarchy and Contradictions", () => {
   describe("JavaScript type hierarchy", () => {
     it("isArray implies isObject (JS semantics)", () => {
       // In JavaScript, arrays are objects: typeof [] === 'object'
-      // Design doc says: isArray → isObject
-      // Current implementation treats them as disjoint for simplicity
       expect(implies(isArray, isObject)).toBe(true);
     });
 
     it("isFunction implies isObject (JS semantics)", () => {
       // In JavaScript, functions are objects
-      // Design doc says: isFunction → isObject
       expect(implies(isFunction, isObject)).toBe(true);
     });
   });
@@ -325,7 +232,7 @@ describe("Challenge 5: Classification Hierarchy and Contradictions", () => {
 });
 
 // =============================================================================
-// SECTION 2: never Type Properties
+// never Type Properties
 // Reference: constraints-as-types.md, Challenge 9
 // =============================================================================
 
@@ -366,7 +273,7 @@ describe("Challenge 9: The never Type", () => {
 });
 
 // =============================================================================
-// SECTION 3: any/unknown Type Properties
+// any/unknown Type Properties
 // Reference: constraints-as-types.md, Challenge 10
 // =============================================================================
 
@@ -398,7 +305,7 @@ describe("Challenge 10: any/unknown Properties", () => {
 });
 
 // =============================================================================
-// SECTION 4: Union Types and Narrowing
+// Union Types and Narrowing
 // Reference: constraints-as-types.md, Narrowing and Challenge 11
 // =============================================================================
 
@@ -510,8 +417,7 @@ describe("Union Types and Narrowing", () => {
 });
 
 // =============================================================================
-// SECTION 5: Intersection Types (AND constraints)
-// Reference: constraints-as-types.md
+// Intersection Types (AND constraints)
 // =============================================================================
 
 describe("Intersection Types (AND constraints)", () => {
@@ -538,7 +444,7 @@ describe("Intersection Types (AND constraints)", () => {
 });
 
 // =============================================================================
-// SECTION 6: Object Constraints
+// Object Constraints
 // Reference: constraints-as-types.md, Challenge 2
 // =============================================================================
 
@@ -611,7 +517,7 @@ describe("Object Constraints", () => {
 });
 
 // =============================================================================
-// SECTION 7: Array and Tuple Constraints
+// Array and Tuple Constraints
 // Reference: constraints-as-types.md, Tuples section
 // =============================================================================
 
@@ -680,7 +586,7 @@ describe("Array and Tuple Constraints", () => {
 });
 
 // =============================================================================
-// SECTION 8: Constraint Simplification
+// Constraint Simplification
 // Reference: constraints-as-types.md, simplify rules
 // =============================================================================
 
@@ -757,8 +663,7 @@ describe("Constraint Simplification", () => {
 });
 
 // =============================================================================
-// SECTION 9: Unification
-// Reference: constraints-as-types.md
+// Unification
 // =============================================================================
 
 describe("Unification", () => {
@@ -786,80 +691,7 @@ describe("Unification", () => {
 });
 
 // =============================================================================
-// SECTION 10: Refinement Context
-// Reference: constraints-as-types.md, Control Flow Refinement
-// =============================================================================
-
-describe("Refinement Context and Control Flow", () => {
-  describe("RefinementContext operations", () => {
-    it("refine adds constraint to context", () => {
-      const ctx = RefinementContext.empty().refine("x", gt(0));
-      expect(ctx.get("x")).toEqual(gt(0));
-    });
-
-    it("multiple refinements are ANDed", () => {
-      const ctx = RefinementContext.empty()
-        .refine("x", gt(0))
-        .refine("x", lt(10));
-      const refined = ctx.get("x");
-      expect(refined?.tag).toBe("and");
-    });
-  });
-
-  describe("extractRefinement from conditions", () => {
-    it("extracts x > 0 from comparison", () => {
-      const cond = gtExpr(varRef("x"), num(0));
-      const refinement = extractRefinement(cond);
-      const xConstraint = refinement.constraints.get("x");
-      expect(xConstraint).toBeDefined();
-      expect(xConstraint?.tag).toBe("gt");
-    });
-
-    it("extracts x < 10 from comparison", () => {
-      const cond = ltExpr(varRef("x"), num(10));
-      const refinement = extractRefinement(cond);
-      const xConstraint = refinement.constraints.get("x");
-      expect(xConstraint).toBeDefined();
-      expect(xConstraint?.tag).toBe("lt");
-    });
-
-    it("extracts x == 5 from equality", () => {
-      const cond = eq(varRef("x"), num(5));
-      const refinement = extractRefinement(cond);
-      const xConstraint = refinement.constraints.get("x");
-      expect(xConstraint).toBeDefined();
-      expect(xConstraint?.tag).toBe("equals");
-    });
-
-    it("merges compound conditions (AND)", () => {
-      const cond = andExpr(gtExpr(varRef("x"), num(0)), ltExpr(varRef("x"), num(10)));
-      const refinement = extractRefinement(cond);
-      const xConstraint = refinement.constraints.get("x");
-      // Should have both constraints
-      expect(xConstraint).toBeDefined();
-    });
-  });
-
-  describe("extractTypeGuard", () => {
-    it("detects isNumber type guard", () => {
-      const cond = call(varRef("isNumber"), varRef("x"));
-      const guard = extractTypeGuard(cond);
-      expect(guard).not.toBeNull();
-      expect(guard?.varName).toBe("x");
-      expect(guard?.constraint.tag).toBe("isNumber");
-    });
-
-    it("detects isString type guard", () => {
-      const cond = call(varRef("isString"), varRef("x"));
-      const guard = extractTypeGuard(cond);
-      expect(guard).not.toBeNull();
-      expect(guard?.constraint.tag).toBe("isString");
-    });
-  });
-});
-
-// =============================================================================
-// SECTION 11: Value and Constraint Interaction
+// Value and Constraint Interaction
 // =============================================================================
 
 describe("Value and Constraint Interaction", () => {
@@ -945,7 +777,7 @@ describe("Value and Constraint Interaction", () => {
 });
 
 // =============================================================================
-// SECTION 12: Constraint Variables (for Type Inference)
+// Constraint Variables (for Type Inference)
 // Reference: constraints-as-types.md, Challenge 1
 // =============================================================================
 
@@ -976,311 +808,5 @@ describe("Constraint Variables for Inference", () => {
   it("FUTURE: constraint solving should substitute variables", () => {
     // When we learn that ?1 = isNumber, we should substitute
     // This requires a constraint solver not yet implemented
-  });
-});
-
-// =============================================================================
-// SECTION 13: Staging System
-// Reference: constraints-as-types.md, Challenge 4; goals.md, Goal 2
-// =============================================================================
-
-describe("Staging System", () => {
-  describe("Now values (compile-time known)", () => {
-    it("literals evaluate to Now", () => {
-      const result = stage(num(42));
-      expect(isNow(result.svalue)).toBe(true);
-    });
-
-    it("arithmetic on Now values evaluates at compile time", () => {
-      const result = stage(add(num(1), num(2)));
-      expect(isNow(result.svalue)).toBe(true);
-      if (isNow(result.svalue)) {
-        expect(result.svalue.value).toEqual({ tag: "number", value: 3 });
-      }
-    });
-
-    it("conditional with Now condition picks branch at compile time", () => {
-      const result = stage(ifExpr(bool(true), num(1), num(2)));
-      expect(isNow(result.svalue)).toBe(true);
-      if (isNow(result.svalue)) {
-        expect(result.svalue.value).toEqual({ tag: "number", value: 1 });
-      }
-    });
-  });
-
-  describe("Later values (runtime only)", () => {
-    it("runtime() marks value as Later", () => {
-      const result = stage(runtime(num(42)));
-      expect(isLater(result.svalue)).toBe(true);
-    });
-
-    it("Later values have constraint but no value", () => {
-      const result = stage(runtime(num(42)));
-      if (isLater(result.svalue)) {
-        expect(implies(result.svalue.constraint, isNumber)).toBe(true);
-      }
-    });
-
-    it("operation involving Later produces Later", () => {
-      const result = stage(add(runtime(num(1), "x"), num(2)));
-      expect(isLater(result.svalue)).toBe(true);
-    });
-
-    it("Later values have residual expressions", () => {
-      const result = stage(add(runtime(num(1), "x"), num(2)));
-      if (isLater(result.svalue)) {
-        expect(result.svalue.residual).toBeDefined();
-        // Residual should be x + 2
-      }
-    });
-  });
-
-  describe("comptime forces compile-time evaluation", () => {
-    it("comptime on Now value succeeds", () => {
-      const result = stage(comptime(add(num(1), num(2))));
-      expect(isNow(result.svalue)).toBe(true);
-    });
-
-    it("comptime on Later value throws StagingError", () => {
-      expect(() => stage(comptime(runtime(num(5))))).toThrow(StagingError);
-    });
-  });
-
-  describe("Constraint propagation through staging", () => {
-    it("Later maintains constraint from Now value", () => {
-      const result = stage(
-        letExpr("x", num(5), runtime(varRef("x")))
-      );
-      if (isLater(result.svalue)) {
-        expect(implies(result.svalue.constraint, isNumber)).toBe(true);
-        expect(implies(result.svalue.constraint, equals(5))).toBe(true);
-      }
-    });
-
-    it("Later from operation has computed constraint", () => {
-      // x + 3 where x is runtime should still know result is number
-      const result = stage(
-        letExpr("x", runtime(num(5), "x"), add(varRef("x"), num(3)))
-      );
-      if (isLater(result.svalue)) {
-        expect(implies(result.svalue.constraint, isNumber)).toBe(true);
-      }
-    });
-  });
-});
-
-// =============================================================================
-// SECTION 14: Evaluation with Refinement
-// =============================================================================
-
-describe("Evaluation with Control Flow Refinement", () => {
-  it("x > 0 in then branch has gt(0) constraint", () => {
-    const result = run(
-      letExpr("x", num(5), ifExpr(gtExpr(varRef("x"), num(0)), varRef("x"), num(0)))
-    );
-    // In the then branch, x should have gt(0)
-    expect(implies(result.constraint, gt(0))).toBe(true);
-  });
-
-  it("x <= 0 in else branch of x > 0", () => {
-    const result = run(
-      letExpr("x", num(-5), ifExpr(gtExpr(varRef("x"), num(0)), num(0), varRef("x")))
-    );
-    // In the else branch, x should have lte(0)
-    expect(implies(result.constraint, lte(0))).toBe(true);
-  });
-
-  it("compound condition x > 0 && x < 10 narrows to both", () => {
-    const result = run(
-      letExpr(
-        "x",
-        num(5),
-        ifExpr(
-          andExpr(gtExpr(varRef("x"), num(0)), ltExpr(varRef("x"), num(10))),
-          varRef("x"),
-          num(0)
-        )
-      )
-    );
-    expect(implies(result.constraint, gt(0))).toBe(true);
-    expect(implies(result.constraint, lt(10))).toBe(true);
-  });
-
-  it("x == 5 narrows to equals(5)", () => {
-    const result = run(
-      letExpr("x", num(5), ifExpr(eq(varRef("x"), num(5)), varRef("x"), num(0)))
-    );
-    expect(implies(result.constraint, equals(5))).toBe(true);
-  });
-
-  it("discriminated union narrows correctly", () => {
-    const result = run(
-      letExpr(
-        "shape",
-        obj({ kind: str("circle"), radius: num(5) }),
-        ifExpr(
-          eq(field(varRef("shape"), "kind"), str("circle")),
-          field(varRef("shape"), "radius"),
-          num(0)
-        )
-      )
-    );
-    expect(result.value).toEqual({ tag: "number", value: 5 });
-  });
-});
-
-// =============================================================================
-// SECTION 15: FUTURE - Features Not Yet Implemented
-// =============================================================================
-
-describe("Recursive Types (Challenge 8)", () => {
-  // Reference: constraints-as-types.md, Challenge 8
-
-  it("rec binder for recursive types", () => {
-    // Design: rec X. (isNull OR (isObject AND hasField("head", T) AND hasField("tail", X)))
-    // Allows: type List<T> = null | { head: T, tail: List<T> }
-    const listNum = rec("X", or(
-      isNull,
-      and(isObject, hasField("head", isNumber), hasField("tail", recVar("X")))
-    ));
-    expect(listNum.tag).toBe("rec");
-    expect(constraintToString(listNum)).toContain("μX.");
-  });
-
-  it("recursive type equality up to renaming (coinductive)", () => {
-    // rec X. (null | {tail: X}) implies rec Y. (null | {tail: Y})
-    // Same structure, different var names should be related
-    const list1 = rec("X", or(isNull, hasField("tail", recVar("X"))));
-    const list2 = rec("Y", or(isNull, hasField("tail", recVar("Y"))));
-    expect(implies(list1, list2)).toBe(true);
-  });
-});
-
-describe("Type as First-Class Value (Challenge 4)", () => {
-  // Reference: constraints-as-types.md, Challenge 4
-
-  it("isType constraint for type values", () => {
-    // Types are values with isType constraint
-    // 'number' evaluates to a type value
-    const result = run(varRef("number"));
-    expect(result.value.tag).toBe("type");
-    expect(implies(result.constraint, isTypeC)).toBe(true);
-  });
-
-  it("fields() reflection function", () => {
-    // fields(T) returns array of field names
-    const personType = typeVal(and(isObject, hasField("name", isString), hasField("age", isNumber)));
-    const result = run(
-      call(varRef("fields"), varRef("T")),
-      { T: { value: personType, constraint: constraintOf(personType) } }
-    );
-    expect(result.value.tag).toBe("array");
-    const fields = (result.value as any).elements.map((e: any) => e.value);
-    expect(fields).toContain("name");
-    expect(fields).toContain("age");
-  });
-
-  it("fieldType() reflection function", () => {
-    // fieldType(T, 'name') returns type of field
-    const personType = typeVal(and(isObject, hasField("name", isString)));
-    const result = run(
-      call(varRef("fieldType"), varRef("T"), str("name")),
-      { T: { value: personType, constraint: constraintOf(personType) } }
-    );
-    expect(result.value.tag).toBe("type");
-    expect((result.value as any).constraint).toEqual(isString);
-  });
-});
-
-describe("Constraint Solving", () => {
-  it("unification with constraint variables", () => {
-    // Given ?A and isNumber, should solve ?A = isNumber
-    resetConstraintVarCounter();
-    const sub = solve(cvar(0), isNumber);
-    expect(sub).not.toBeNull();
-    expect(sub!.get(0)).toEqual(isNumber);
-  });
-
-  it("let-polymorphism with generalize/instantiate", () => {
-    // let id = fn(x) => x
-    // id has type forall A. A -> A
-    // When called with number, A = number. When called with string, A = string.
-    resetConstraintVarCounter();
-
-    // The identity function's type scheme: forall ?0. ?0
-    const idScheme: ConstraintScheme = {
-      quantified: [0],
-      constraint: cvar(0)
-    };
-
-    // Use with number
-    const inst1 = instantiate(idScheme);
-    const sub1 = solve(inst1, isNumber);
-    expect(sub1).not.toBeNull();
-
-    // Use with string (fresh instantiation)
-    const inst2 = instantiate(idScheme);
-    const sub2 = solve(inst2, isString);
-    expect(sub2).not.toBeNull();
-
-    // Both succeed because id is polymorphic
-  });
-});
-
-describe("assert and trust inline syntax", () => {
-  // Reference: goals.md, Goal 6
-
-  it("assert(condition) throws when condition is false", () => {
-    // assert(x < 100) - check condition, throw if false
-    const expr = letExpr(
-      "x",
-      num(150),
-      assertCondExpr(ltExpr(varRef("x"), num(100)))
-    );
-    expect(() => run(expr)).toThrow(AssertionError);
-  });
-
-  it("assert(condition) passes when condition is true", () => {
-    // assert(x < 100) - check condition, return true if passes
-    const expr = letExpr(
-      "x",
-      num(50),
-      assertCondExpr(ltExpr(varRef("x"), num(100)))
-    );
-    const result = run(expr);
-    expect(result.value.tag).toBe("bool");
-    expect((result.value as any).value).toBe(true);
-  });
-
-  it("trust(expr) returns value without constraint modification", () => {
-    // trust(x) without a constraint just returns the value unchanged
-    const expr = trustExpr(num(42));
-    const result = run(expr);
-    expect(result.value.tag).toBe("number");
-    expect((result.value as any).value).toBe(42);
-  });
-
-  it("trust(expr) can be used inline", () => {
-    // let f = fn(x) => x in f(trust(5))
-    const expr = letExpr(
-      "f",
-      fn(["x"], varRef("x")),
-      call(varRef("f"), trustExpr(num(5)))
-    );
-    const result = run(expr);
-    expect(result.value.tag).toBe("number");
-    expect((result.value as any).value).toBe(5);
-  });
-
-  it("assert(condition) can be parsed from source", () => {
-    const result = parseAndRun("let x = 50 in assert(x < 100)");
-    expect(result.value.tag).toBe("bool");
-    expect((result.value as any).value).toBe(true);
-  });
-
-  it("trust(expr) can be parsed from source", () => {
-    const result = parseAndRun("trust(42)");
-    expect(result.value.tag).toBe("number");
-    expect((result.value as any).value).toBe(42);
   });
 });

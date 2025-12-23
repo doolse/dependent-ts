@@ -12,10 +12,14 @@ import {
   str,
   varRef,
   assertExpr,
+  assertCondExpr,
   trustExpr,
   runtime,
   letExpr,
   add,
+  ltExpr,
+  fn,
+  call,
 
   // Constraints
   isNumber,
@@ -43,6 +47,9 @@ import {
   // Code generation
   generateJS,
   compile,
+
+  // Parser
+  parseAndRun,
 } from "../src/index";
 
 // ============================================================================
@@ -265,5 +272,86 @@ describe("assert/trust Integration", () => {
     );
     const result = run(expr);
     expect((result.value as any).value).toBe(43);
+  });
+});
+
+// ============================================================================
+// Inline assert/trust Syntax
+// ============================================================================
+
+describe("Inline assert(condition) Syntax", () => {
+  it("assert(condition) throws when condition is false", () => {
+    // assert(x < 100) - check condition, throw if false
+    const expr = letExpr(
+      "x",
+      num(150),
+      assertCondExpr(ltExpr(varRef("x"), num(100)))
+    );
+    expect(() => run(expr)).toThrow(AssertionError);
+  });
+
+  it("assert(condition) passes when condition is true", () => {
+    // assert(x < 100) - check condition, return true if passes
+    const expr = letExpr(
+      "x",
+      num(50),
+      assertCondExpr(ltExpr(varRef("x"), num(100)))
+    );
+    const result = run(expr);
+    expect(result.value.tag).toBe("bool");
+    expect((result.value as any).value).toBe(true);
+  });
+
+  it("assert(condition) can be parsed from source", () => {
+    const result = parseAndRun("let x = 50 in assert(x < 100)");
+    expect(result.value.tag).toBe("bool");
+    expect((result.value as any).value).toBe(true);
+  });
+
+  it("assert(condition) in staged evaluation with Now", () => {
+    const expr = letExpr(
+      "x",
+      num(50),
+      assertCondExpr(ltExpr(varRef("x"), num(100)))
+    );
+    const result = stage(expr);
+    expect(isNow(result.svalue)).toBe(true);
+  });
+
+  it("assert(condition) in staged evaluation with Later generates residual", () => {
+    const expr = assertCondExpr(ltExpr(runtime(num(50), "x"), num(100)));
+    const result = stage(expr);
+    expect(isLater(result.svalue)).toBe(true);
+    if (isLater(result.svalue)) {
+      expect(result.svalue.residual.tag).toBe("assertCond");
+    }
+  });
+});
+
+describe("Inline trust(expr) Syntax", () => {
+  it("trust(expr) returns value unchanged", () => {
+    // trust(x) without a constraint just returns the value unchanged
+    const expr = trustExpr(num(42));
+    const result = run(expr);
+    expect(result.value.tag).toBe("number");
+    expect((result.value as any).value).toBe(42);
+  });
+
+  it("trust(expr) can be used inline in function calls", () => {
+    // let f = fn(x) => x in f(trust(5))
+    const expr = letExpr(
+      "f",
+      fn(["x"], varRef("x")),
+      call(varRef("f"), trustExpr(num(5)))
+    );
+    const result = run(expr);
+    expect(result.value.tag).toBe("number");
+    expect((result.value as any).value).toBe(5);
+  });
+
+  it("trust(expr) can be parsed from source", () => {
+    const result = parseAndRun("trust(42)");
+    expect(result.value.tag).toBe("number");
+    expect((result.value as any).value).toBe(42);
   });
 });
