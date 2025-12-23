@@ -107,8 +107,6 @@ console.log();
 
 console.log("=== Example 4: Object Operations ===\n");
 
-// Note: We avoid passing objects to generic functions due to a polymorphism bug
-// where inferred constraints are too specific
 const objects = `
 let person = { name: "Alice", age: 30, active: true } in
 
@@ -131,7 +129,6 @@ console.log();
 
 console.log("=== Example 5: Array-like Operations ===\n");
 
-// Direct array access (avoiding generic function polymorphism bug)
 const arrays = `
 let arr = [10, 20, 30, 40, 50] in
 
@@ -204,7 +201,6 @@ const typeReflection = `
 
 const result7 = parseAndRun(typeReflection);
 console.log("Type reflection result:", valueToString(result7.value));
-console.log("Note: Type equality comparison returns undefined (known bug)");
 console.log();
 
 // ============================================================================
@@ -246,7 +242,6 @@ console.log();
 
 console.log("=== Example 9: String Concatenation ===\n");
 
-// Direct string concatenation (avoiding function polymorphism issues)
 const strings = `
 let name = "World" in
 let first = "John" in
