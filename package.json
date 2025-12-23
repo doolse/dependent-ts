@@ -5,10 +5,9 @@
   "main": "index.js",
   "scripts": {
     "tsc": "tsc",
-    "dev": "parcel src/index.html",
     "prod": "tsc && node ./build/app.js",
-    "repl": "npx ts-node src/interpreter/repl.ts",
-    "test": "npx ts-node src/interpreter/test.ts && npx ts-node src/interpreter/staging-test.ts && npx ts-node src/interpreter/codegen-test.ts && npx ts-node src/interpreter/parser-test.ts"
+    "repl": "npx ts-node src/repl.ts",
+    "test": "vitest run"
   },
   "author": "",
   "license": "ISC",
@@ -20,6 +19,7 @@
   "devDependencies": {
     "@types/cli-color": "^2.0.0",
     "@types/node": "^20.0.0",
-    "ts-node": "^10.9.0"
+    "ts-node": "^10.9.0",
+    "vitest": "^4.0.16"
   }
 }
