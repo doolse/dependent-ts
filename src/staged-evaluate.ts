@@ -464,6 +464,10 @@ function stagedEnvToEnv(senv: SEnv): Env {
 // Side channel for staged closures (maps closure value to staged closure info)
 const stagedClosures = new WeakMap<Value, SClosure>();
 
+// Coinductive cycle detection: tracks recursive functions currently being evaluated
+// Maps function name to the assumed result constraint (from type inference)
+const inProgressRecursiveCalls = new Map<string, Constraint>();
+
 // ============================================================================
 // Reflection Builtins (with comptime enforcement)
 // ============================================================================
@@ -612,7 +616,41 @@ function evalCall(
   // Evaluate arguments
   const args = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
 
-  // Bind arguments to parameters in the closure's environment
+  // Coinductive cycle detection for recursive functions with Later arguments
+  // This prevents infinite recursion when a recursive function is called with runtime values
+  if (sclosure.name && args.some(isLater)) {
+    if (inProgressRecursiveCalls.has(sclosure.name)) {
+      // Cycle detected! We're already evaluating this recursive function with Later args.
+      // Use the pre-computed result constraint and emit residual code.
+      const resultConstraint = inProgressRecursiveCalls.get(sclosure.name)!;
+      const argResiduals = args.map(sv =>
+        isNow(sv) ? valueToExpr(sv.value) : sv.residual
+      );
+      return {
+        svalue: later(resultConstraint, call(varRef(sclosure.name), ...argResiduals))
+      };
+    }
+
+    // Not in a cycle yet - mark as in-progress and evaluate body
+    const inferred = stagedInferredTypes.get(func.value);
+    const resultConstraint = inferred?.resultConstraint ?? { tag: "any" };
+    inProgressRecursiveCalls.set(sclosure.name, resultConstraint);
+
+    // Bind arguments to parameters in the closure's environment
+    let callEnv = sclosure.env;
+    callEnv = callEnv.set(sclosure.name, { svalue: func });
+    for (let i = 0; i < sclosure.params.length; i++) {
+      callEnv = callEnv.set(sclosure.params[i], { svalue: args[i] });
+    }
+
+    try {
+      return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
+    } finally {
+      inProgressRecursiveCalls.delete(sclosure.name);
+    }
+  }
+
+  // Non-recursive function or all arguments are Now - evaluate normally
   let callEnv = sclosure.env;
 
   // Add self-binding for recursive functions

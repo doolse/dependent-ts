@@ -147,10 +147,10 @@ console.log("Type:", constraintToString(result5.constraint));
 console.log();
 
 // ============================================================================
-// Example 6: Recursive Functions
+// Example 6: Recursive Functions (Compile-Time)
 // ============================================================================
 
-console.log("=== Example 6: Recursive Functions ===\n");
+console.log("=== Example 6: Recursive Functions (Compile-Time) ===\n");
 
 // Real recursion using named functions: fn name(params) => body
 const recursiveFunctions = `
@@ -163,6 +163,59 @@ let fibonacci = fn fib(n) => if n <= 1 then n else fib(n - 1) + fib(n - 2) in
 const result6 = parseAndRun(recursiveFunctions);
 console.log("Factorial & Fibonacci:", valueToString(result6.value));
 console.log("Type:", constraintToString(result6.constraint));
+console.log();
+
+// ============================================================================
+// Example 6b: Recursive Functions with Runtime Input (Staged)
+// ============================================================================
+
+console.log("=== Example 6b: Recursive Functions with Runtime Input ===\n");
+
+// When recursive functions receive runtime values, the staged evaluator
+// uses coinductive cycle detection to generate residual code instead of
+// infinitely unrolling.
+
+const recursiveStaged = `
+let factorial = fn fact(n) => if n == 0 then 1 else n * fact(n - 1) in
+let sumTo = fn sum(n) => if n == 0 then 0 else n + sum(n - 1) in
+
+{
+  factorialOfRuntime: factorial(runtime(x: 5)),
+  sumToRuntime: sumTo(runtime(y: 10))
+}
+`;
+
+const stageResult6b = stage(parse(recursiveStaged));
+if (isLater(stageResult6b.svalue)) {
+  console.log("Runtime recursive functions generate residual code:");
+  console.log("  Residual:", exprToString(stageResult6b.svalue.residual));
+  console.log("  Inferred type:", constraintToString(stageResult6b.svalue.constraint));
+  console.log();
+
+  // Generate JavaScript
+  const jsCode = compile(parse(recursiveStaged));
+  console.log("Generated JavaScript:");
+  console.log(" ", jsCode);
+} else {
+  console.log("Unexpectedly fully evaluated at compile time");
+}
+console.log();
+
+// Show mixed compile-time and runtime in one expression
+console.log("Mixed compile-time and runtime recursive calls:");
+const mixedRecursive = `
+let factorial = fn fact(n) => if n == 0 then 1 else n * fact(n - 1) in
+{
+  compileTime: factorial(5),
+  runtimeCall: factorial(runtime(n: 3))
+}
+`;
+
+const mixedResult = stage(parse(mixedRecursive));
+if (isLater(mixedResult.svalue)) {
+  console.log("  Residual:", exprToString(mixedResult.svalue.residual));
+  // Note: factorial(5) = 120 is computed at compile time and embedded in residual
+}
 console.log();
 
 // ============================================================================
@@ -292,6 +345,7 @@ console.log("This language currently supports:");
 console.log("  ✓ First-class functions with closures");
 console.log("  ✓ Higher-order functions (compose, twice, etc.)");
 console.log("  ✓ Recursive functions (fn name(params) => body)");
+console.log("  ✓ Recursive functions with runtime input (coinductive staging)");
 console.log("  ✓ Objects and arrays with type inference");
 console.log("  ✓ Control flow with type refinement");
 console.log("  ✓ Compile-time (comptime) vs runtime staging");
@@ -302,7 +356,7 @@ console.log("  ✓ Assertions (assert, trust)");
 console.log("  ✓ String concatenation");
 console.log();
 console.log("Missing for practical use:");
-console.log("  ✗ IO (print, input, files)");
+console.log("  ✗ IO (input, files)");
 console.log("  ✗ Array operations (map, filter, reduce)");
 console.log("  ✗ Module system");
 console.log("  ✗ Error handling (try/catch)");

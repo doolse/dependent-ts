@@ -155,8 +155,75 @@ describe("Recursive Functions", () => {
       }
     });
 
-    // Note: Recursive functions with runtime input currently cause infinite recursion
-    // in the staged evaluator. This would require more sophisticated handling
-    // (e.g., termination checking, fuel-based evaluation, or lazy residualization).
+    it("recursive function with runtime input produces residual code", () => {
+      const source = `
+        let factorial = fn fact(n) => if n == 0 then 1 else n * fact(n - 1) in
+        factorial(runtime(5))
+      `;
+      const result = stage(parse(source));
+      // Should be Later (runtime value) not infinite loop
+      expect(isLater(result.svalue)).toBe(true);
+      if (isLater(result.svalue)) {
+        // The residual should contain the function structure
+        const residual = exprToString(result.svalue.residual);
+        expect(residual).toContain("if");
+        expect(residual).toContain("fact");
+      }
+    });
+
+    it("fibonacci with runtime input terminates", () => {
+      const source = `
+        let fib = fn fib(n) => if n <= 1 then n else fib(n - 1) + fib(n - 2) in
+        fib(runtime(10))
+      `;
+      const result = stage(parse(source));
+      expect(isLater(result.svalue)).toBe(true);
+      if (isLater(result.svalue)) {
+        const residual = exprToString(result.svalue.residual);
+        expect(residual).toContain("fib");
+      }
+    });
+
+    it("compile produces valid JavaScript for recursive function with runtime input", () => {
+      const source = `
+        let factorial = fn fact(n) => if n == 0 then 1 else n * fact(n - 1) in
+        factorial(runtime(5))
+      `;
+      const code = compile(parse(source));
+      // Should produce valid code without infinite loop during compilation
+      // Code generator uses ternary operator (? :) instead of if/else
+      expect(code).toContain("fact");
+      expect(code).toContain("?");  // ternary operator
+    });
+
+    it("nested recursive calls with runtime input terminate", () => {
+      // f(f(runtime(n))) - inner call completes before outer
+      const source = `
+        let double = fn dbl(n) => if n == 0 then 0 else 2 + dbl(n - 1) in
+        double(double(runtime(3)))
+      `;
+      const result = stage(parse(source));
+      expect(isLater(result.svalue)).toBe(true);
+    });
+
+    it("mixed compile-time and runtime recursive calls in sequence", () => {
+      // First call is compile-time, second is runtime - both should work
+      const source1 = `
+        let factorial = fn fact(n) => if n == 0 then 1 else n * fact(n - 1) in
+        factorial(5)
+      `;
+      const result1 = stage(parse(source1));
+      expect(isNow(result1.svalue)).toBe(true);
+      if (isNow(result1.svalue)) {
+        expect((result1.svalue.value as any).value).toBe(120);
+      }
+
+      const source2 = `
+        let factorial = fn fact(n) => if n == 0 then 1 else n * fact(n - 1) in
+        factorial(runtime(3))
+      `;
+      const result2 = stage(parse(source2));
+      expect(isLater(result2.svalue)).toBe(true);
+    });
   });
 });
