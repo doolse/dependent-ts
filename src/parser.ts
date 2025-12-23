@@ -471,7 +471,7 @@ export function parse(source: string): Expr {
   return new Parser(tokens).parse();
 }
 
-import { run } from "./evaluate";
+import { run } from "./staged-evaluate";
 import { compile } from "./codegen";
 import { EvalResult } from "./builtins";
 

@@ -52,6 +52,20 @@ export class TypeError extends Error {
 }
 
 /**
+ * Error thrown when a runtime assertion fails.
+ */
+export class AssertionError extends Error {
+  constructor(
+    message: string,
+    public readonly value: Value,
+    public readonly constraint: Constraint
+  ) {
+    super(message);
+    this.name = "AssertionError";
+  }
+}
+
+/**
  * Check that a constraint satisfies a requirement.
  * Throws TypeError if not.
  */

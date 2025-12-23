@@ -17,8 +17,7 @@ import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, clo
 import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate } from "./constraint";
 import { inferFunction, InferredFunction } from "./inference";
 import { Env, Binding, RefinementContext } from "./env";
-import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat } from "./builtins";
-import { AssertionError } from "./evaluate";
+import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
 import { extractAllRefinements, negateRefinement } from "./refinement";
 import { SValue, Now, Later, now, later, isNow, isLater, allNow, constraintOfSV } from "./svalue";
 
@@ -567,6 +566,230 @@ function tryStagedReflectionBuiltin(
 
     return {
       svalue: now(typeVal(fieldConstraint), isType(fieldConstraint))
+    };
+  }
+
+  if (funcExpr.name === "comptimeFold") {
+    // comptimeFold(array, init, fn) - compile-time fold over array
+    // array must be compile-time known, fn is called at compile time for each element
+    if (argExprs.length !== 3) {
+      throw new Error("comptimeFold() requires exactly 3 arguments (array, init, fn)");
+    }
+
+    const arrArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const initArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+    const fnArg = stagingEvaluate(argExprs[2], env, ctx).svalue;
+
+    // Array must be compile-time known
+    if (isLater(arrArg)) {
+      throw new StagingError("comptimeFold() requires a compile-time known array");
+    }
+
+    if (arrArg.value.tag !== "array") {
+      throw new TypeError(isArray, arrArg.constraint, "comptimeFold() first argument");
+    }
+
+    // Function must be compile-time known closure
+    if (isLater(fnArg)) {
+      throw new StagingError("comptimeFold() requires a compile-time known function");
+    }
+
+    if (fnArg.value.tag !== "closure") {
+      throw new TypeError(isFunction, fnArg.constraint, "comptimeFold() third argument");
+    }
+
+    const arr = arrArg.value;
+    const fn = fnArg.value;
+
+    // Verify function has 2 parameters (acc, elem)
+    if (fn.params.length !== 2) {
+      throw new Error("comptimeFold() function must have exactly 2 parameters (acc, elem)");
+    }
+
+    // Get the staged closure info
+    const sclosure = stagedClosures.get(fn);
+    if (!sclosure) {
+      throw new Error("comptimeFold() function closure not properly staged");
+    }
+
+    // Iterate and fold
+    let acc: SValue = initArg;
+
+    for (const elem of arr.elements) {
+      // Create environment with acc and elem bound
+      let callEnv = sclosure.env;
+
+      // Bind acc (may be Now or Later)
+      callEnv = callEnv.set(fn.params[0], { svalue: acc });
+
+      // Bind elem (always Now since array is compile-time known)
+      const elemSValue = now(elem, constraintOf(elem));
+      callEnv = callEnv.set(fn.params[1], { svalue: elemSValue });
+
+      // Evaluate function body
+      const result = stagingEvaluate(fn.body, callEnv, RefinementContext.empty());
+      acc = result.svalue;
+    }
+
+    return { svalue: acc };
+  }
+
+  if (funcExpr.name === "objectFromEntries") {
+    // objectFromEntries(entries) - build object from [[key, value], ...] array
+    // Keys must be compile-time known strings, values can be Now or Later
+    if (argExprs.length !== 1) {
+      throw new Error("objectFromEntries() requires exactly 1 argument");
+    }
+
+    const entriesArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    // Entries array must be compile-time known
+    if (isLater(entriesArg)) {
+      throw new StagingError("objectFromEntries() requires a compile-time known entries array");
+    }
+
+    if (entriesArg.value.tag !== "array") {
+      throw new TypeError(isArray, entriesArg.constraint, "objectFromEntries() argument");
+    }
+
+    const entries = entriesArg.value.elements;
+    const fieldConstraints: Constraint[] = [isObject];
+    const fields: Map<string, Value> = new Map();
+    const residualFields: { name: string; value: Expr }[] = [];
+    let hasLater = false;
+
+    for (const entry of entries) {
+      // Each entry should be a [key, value] tuple (array of 2 elements)
+      if (entry.tag !== "array" || entry.elements.length !== 2) {
+        throw new Error("objectFromEntries() entries must be [key, value] pairs");
+      }
+
+      const keyVal = entry.elements[0];
+      const valueVal = entry.elements[1];
+
+      // Key must be a string
+      if (keyVal.tag !== "string") {
+        throw new Error("objectFromEntries() keys must be strings");
+      }
+
+      const key = keyVal.value;
+
+      // Value can be a regular Value or an SValue stored in the array
+      // For our purposes, we need to check if it's a Later value
+      // Since the entries array is Now, all values inside are also Values
+      // But during comptimeFold, we might have accumulated Later values
+
+      // Check if this is a special wrapper for SValue
+      if (valueVal.tag === "object" && valueVal.fields.has("__svalue__")) {
+        // This is a wrapped SValue from comptimeFold
+        const svalueMarker = valueVal.fields.get("__svalue__")!;
+        if (svalueMarker.tag === "string" && svalueMarker.value === "later") {
+          hasLater = true;
+          const residualField = valueVal.fields.get("residual");
+          // We'll need to reconstruct the residual - for now just mark as later
+          fieldConstraints.push(hasField(key, { tag: "any" }));
+          residualFields.push({ name: key, value: varRef(key) }); // placeholder
+        } else {
+          const actualValue = valueVal.fields.get("value")!;
+          fields.set(key, actualValue);
+          fieldConstraints.push(hasField(key, constraintOf(actualValue)));
+        }
+      } else {
+        // Regular value
+        fields.set(key, valueVal);
+        fieldConstraints.push(hasField(key, constraintOf(valueVal)));
+      }
+    }
+
+    const constraint = and(...fieldConstraints);
+
+    if (hasLater) {
+      // Generate residual object expression
+      const objFields = residualFields.map(f => ({ name: f.name, value: f.value }));
+      return { svalue: later(constraint, { tag: "obj" as const, fields: objFields }) };
+    } else {
+      // Fully evaluated at compile time
+      return { svalue: now(objectVal(Object.fromEntries(fields)), constraint) };
+    }
+  }
+
+  if (funcExpr.name === "dynamicField") {
+    // dynamicField(obj, fieldName) - access field with compile-time known name
+    // fieldName must be Now, obj can be Now or Later
+    if (argExprs.length !== 2) {
+      throw new Error("dynamicField() requires exactly 2 arguments");
+    }
+
+    const objArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const nameArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    // Field name must be compile-time known
+    if (isLater(nameArg)) {
+      throw new StagingError("dynamicField() requires a compile-time known field name");
+    }
+
+    if (nameArg.value.tag !== "string") {
+      throw new TypeError(isString, nameArg.constraint, "dynamicField() second argument");
+    }
+
+    const fieldName = nameArg.value.value;
+
+    if (isNow(objArg)) {
+      // Object is known - extract field directly
+      if (objArg.value.tag !== "object") {
+        throw new TypeError(isObject, objArg.constraint, "dynamicField() first argument");
+      }
+
+      const fieldValue = objArg.value.fields.get(fieldName);
+      if (fieldValue === undefined) {
+        throw new Error(`Object has no field '${fieldName}'`);
+      }
+
+      return { svalue: now(fieldValue, constraintOf(fieldValue)) };
+    } else {
+      // Object is Later - generate residual field access
+      const fieldConstraint = extractFieldConstraintFromConstraint(objArg.constraint, fieldName) || { tag: "any" as const };
+      return {
+        svalue: later(fieldConstraint, { tag: "field" as const, object: objArg.residual, name: fieldName })
+      };
+    }
+  }
+
+  if (funcExpr.name === "append") {
+    // append(array, elem) - immutable array append
+    if (argExprs.length !== 2) {
+      throw new Error("append() requires exactly 2 arguments");
+    }
+
+    const arrArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const elemArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    // Both must be Now for compile-time array building
+    if (isLater(arrArg)) {
+      throw new StagingError("append() requires a compile-time known array");
+    }
+
+    if (arrArg.value.tag !== "array") {
+      throw new TypeError(isArray, arrArg.constraint, "append() first argument");
+    }
+
+    // Create new array with element appended
+    const newElements = [...arrArg.value.elements];
+
+    if (isNow(elemArg)) {
+      newElements.push(elemArg.value);
+    } else {
+      // If element is Later, we need to handle this differently
+      // For now, require compile-time known elements
+      throw new StagingError("append() requires a compile-time known element");
+    }
+
+    // Compute the result constraint
+    const elemConstraint = elemArg.constraint;
+    const resultConstraint = and(isArray, elements(elemConstraint));
+
+    return {
+      svalue: now(arrayVal(newElements), resultConstraint)
     };
   }
 
@@ -1296,11 +1519,48 @@ const typeBindings: Record<string, SBinding> = {
 };
 
 /**
- * Create the initial staged environment with type bindings.
+ * Create a dummy closure value for builtin functions.
+ * These are only used for type inference - actual calls are intercepted by tryStagedReflectionBuiltin.
+ */
+function builtinClosure(params: string[], resultConstraint: Constraint): SBinding {
+  // Create a placeholder expression (varRef to itself) - will never be evaluated
+  const dummyBody = varRef("__builtin__");
+  const closure = closureVal(params, dummyBody, Env.empty());
+  const paramConstraints = params.map(() => ({ tag: "any" as const }));
+  const fnConstraint = fnType(paramConstraints, resultConstraint);
+  return { svalue: now(closure, fnConstraint) };
+}
+
+/**
+ * Pre-bound builtin functions for the staged environment.
+ * These enable type inference to work on function bodies that call builtins.
+ */
+const builtinBindings: Record<string, SBinding> = {
+  // print(value) -> null
+  "print": builtinClosure(["value"], isNull),
+  // fields(Type) -> array of strings
+  "fields": builtinClosure(["type"], and(isArray, elements(isString))),
+  // fieldType(Type, name) -> Type
+  "fieldType": builtinClosure(["type", "name"], isTypeC),
+  // append(array, elem) -> array
+  "append": builtinClosure(["array", "elem"], isArray),
+  // comptimeFold(array, init, fn) -> any
+  "comptimeFold": builtinClosure(["array", "init", "fn"], { tag: "any" }),
+  // objectFromEntries(entries) -> object
+  "objectFromEntries": builtinClosure(["entries"], isObject),
+  // dynamicField(obj, fieldName) -> any
+  "dynamicField": builtinClosure(["obj", "fieldName"], { tag: "any" }),
+};
+
+/**
+ * Create the initial staged environment with type and builtin bindings.
  */
 function createInitialSEnv(): SEnv {
   let env = SEnv.empty();
   for (const [name, binding] of Object.entries(typeBindings)) {
+    env = env.set(name, binding);
+  }
+  for (const [name, binding] of Object.entries(builtinBindings)) {
     env = env.set(name, binding);
   }
   return env;
@@ -1329,4 +1589,37 @@ export function stageToExpr(expr: Expr): Expr {
     return valueToExpr(result.value);
   }
   return result.residual;
+}
+
+/**
+ * Evaluate an expression with an initial environment.
+ * Uses staged evaluation internally but requires all values to be compile-time known.
+ * This is the primary entry point for running expressions.
+ */
+export function run(expr: Expr, initialBindings?: Record<string, { value: Value; constraint: Constraint }>): EvalResult {
+  resetVarCounter();
+  let env = createInitialSEnv();
+
+  if (initialBindings) {
+    for (const [name, binding] of Object.entries(initialBindings)) {
+      env = env.set(name, {
+        svalue: now(binding.value, binding.constraint),
+      });
+    }
+  }
+
+  const result = stagingEvaluate(expr, env);
+
+  if (!isNow(result.svalue)) {
+    throw new Error("Expression has runtime dependencies - use stage() for partial evaluation");
+  }
+
+  return { value: result.svalue.value, constraint: result.svalue.constraint };
+}
+
+/**
+ * Evaluate an expression and return just the value.
+ */
+export function runValue(expr: Expr): Value {
+  return run(expr).value;
 }

@@ -6,7 +6,7 @@
 import * as readline from "readline";
 import { parse, ParseError } from "./parser";
 import { LexerError } from "./lexer";
-import { run } from "./evaluate";
+import { run } from "./staged-evaluate";
 import { TypeError } from "./builtins";
 import { stage, StagingError } from "./staged-evaluate";
 import { compile } from "./codegen";

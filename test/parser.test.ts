@@ -326,11 +326,16 @@ describe("Parser Tests - Staging", () => {
   });
 
   it("parses runtime", () => {
-    expect(evalTo("runtime(42)")).toBe(42);
+    // runtime() creates a Later value, so we just test parsing
+    const expr = parse("runtime(42)");
+    expect(expr.tag).toBe("runtime");
   });
 
   it("parses named runtime", () => {
-    expect(evalTo("runtime(x: 42)")).toBe(42);
+    // runtime() with name creates a Later value, so we just test parsing
+    const expr = parse("runtime(x: 42)");
+    expect(expr.tag).toBe("runtime");
+    expect((expr as any).name).toBe("x");
   });
 });
 

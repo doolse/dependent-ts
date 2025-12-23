@@ -160,18 +160,11 @@ export {
   EvalResult,
   BuiltinOp,
   TypeError,
+  AssertionError,
   requireConstraint,
   getBinaryOp,
   getUnaryOp,
 } from "./builtins";
-
-// Evaluator
-export {
-  evaluate,
-  run,
-  runValue,
-  AssertionError,
-} from "./evaluate";
 
 // Refinement
 export {
@@ -211,6 +204,8 @@ export {
   stageToExpr,
   freshVar,
   resetVarCounter,
+  run,
+  runValue,
 } from "./staged-evaluate";
 
 // Code Generation
