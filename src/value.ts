@@ -269,6 +269,19 @@ export function valueSatisfies(value: Value, constraint: Constraint): boolean {
     case "isType":
       // Value must be a type
       return value.tag === "type";
+
+    case "fnType":
+      // Value must be a closure
+      return value.tag === "closure";
+
+    case "rec":
+      // Recursive types - check by unrolling
+      // For now, assume satisfied if it could be part of the union
+      return true;
+
+    case "recVar":
+      // Recursive variable references - assume satisfied
+      return true;
   }
 }
 

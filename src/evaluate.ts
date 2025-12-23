@@ -296,6 +296,21 @@ function tryReflectionBuiltin(
     };
   }
 
+  if (funcExpr.name === "print") {
+    // print(value) - prints value to stdout, returns null
+    if (args.length !== 1) {
+      throw new Error("print() requires exactly 1 argument");
+    }
+
+    const value = args[0].value;
+    console.log(valueToString(value));
+
+    return {
+      value: nullVal,
+      constraint: isNull
+    };
+  }
+
   if (funcExpr.name === "fieldType") {
     // fieldType(T, name) - returns the type of a field
     if (args.length !== 2) {
@@ -373,19 +388,41 @@ function evalCall(
     // Extract param constraints from instantiated fnType
     if (instantiated.tag === "fnType") {
       const minLen = Math.min(args.length, instantiated.params.length);
+
+      // Build up a substitution by unifying each argument with its parameter
+      let callSubstitution: Map<number, Constraint> = new Map();
+
       for (let i = 0; i < minLen; i++) {
         const paramConstraint = instantiated.params[i];
         const arg = args[i];
         if (!paramConstraint || !arg) continue;
-        // For constraint variables, unify - the variable will accept any type
-        // For concrete constraints, check implication
-        if (paramConstraint.tag === "var") {
-          // Polymorphic parameter - accepts any type
+
+        // Apply current substitution to the parameter constraint
+        const resolvedParam = applySubstitution(paramConstraint, callSubstitution);
+
+        // For constraint variables, unify to learn what type the variable should be
+        // For concrete constraints (after substitution), check implication
+        if (resolvedParam.tag === "var") {
+          // Polymorphic parameter - bind the variable to the argument type
+          callSubstitution.set(resolvedParam.id, arg.constraint);
           continue;
         }
-        if (!implies(arg.constraint, paramConstraint)) {
+
+        // Try to solve/unify the argument with the parameter
+        // This handles cases like and(isArray, elements(?2)) where ?2 needs to be inferred
+        const solution = solve(arg.constraint, resolvedParam);
+        if (solution) {
+          // Merge the solution into our substitution
+          for (const [id, c] of solution) {
+            callSubstitution.set(id, c);
+          }
+          continue;
+        }
+
+        // If solve fails, fall back to implication check (for non-variable constraints)
+        if (!implies(arg.constraint, resolvedParam)) {
           throw new TypeError(
-            paramConstraint,
+            resolvedParam,
             arg.constraint,
             `argument ${i + 1} to ${closure.params[i]}`
           );
@@ -772,6 +809,22 @@ function constraintEquals(a: Constraint, b: Constraint): boolean {
 
     case "isType":
       return constraintEquals(a.constraint, (b as typeof a).constraint);
+
+    case "fnType": {
+      const bFn = b as typeof a;
+      if (a.params.length !== bFn.params.length) return false;
+      for (let i = 0; i < a.params.length; i++) {
+        if (!constraintEquals(a.params[i], bFn.params[i])) return false;
+      }
+      return constraintEquals(a.result, bFn.result);
+    }
+
+    case "rec":
+      return a.var === (b as typeof a).var &&
+             constraintEquals(a.body, (b as typeof a).body);
+
+    case "recVar":
+      return a.var === (b as typeof a).var;
   }
 }
 

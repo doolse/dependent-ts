@@ -346,6 +346,12 @@ function genCall(
   opts: Required<CodeGenOptions>,
   depth: number
 ): string {
+  // Special case: print() becomes console.log()
+  if (func.tag === "var" && func.name === "print") {
+    const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
+    return `console.log(${argsCode})`;
+  }
+
   const funcCode = genExpr(func, opts, depth);
   const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
 

@@ -7,7 +7,7 @@
  * - impl: the actual implementation
  */
 
-import { Constraint, isNumber, isString, isBool, and, equals, gt, gte, lt, lte, implies, constraintToString } from "./constraint";
+import { Constraint, isNumber, isString, isBool, and, equals, gt, gte, lt, lte, implies, constraintToString, constraintEquals } from "./constraint";
 import { Value, numberVal, stringVal, boolVal, constraintOf } from "./value";
 import type { BinOp, UnaryOp } from "./expr";
 
@@ -480,5 +480,8 @@ function valueEquals(a: Value, b: Value): boolean {
     case "closure":
       // Closures are never equal
       return false;
+    case "type":
+      // Compare types by structural equality of their constraints
+      return constraintEquals(a.constraint, (b as typeof a).constraint);
   }
 }

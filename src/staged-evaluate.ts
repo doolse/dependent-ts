@@ -475,6 +475,27 @@ function tryStagedReflectionBuiltin(
     };
   }
 
+  if (funcExpr.name === "print") {
+    // print(value) - prints value to stdout, returns null
+    if (argExprs.length !== 1) {
+      throw new Error("print() requires exactly 1 argument");
+    }
+
+    const arg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    if (isNow(arg)) {
+      // Value known at compile time - print now
+      console.log(valueToString(arg.value));
+      return { svalue: now(nullVal, isNull) };
+    } else {
+      // Value not known - generate residual print call
+      // later(constraint, residual) - print returns null
+      return {
+        svalue: later(isNull, call(varRef("print"), arg.residual))
+      };
+    }
+  }
+
   if (funcExpr.name === "fieldType") {
     // fieldType(T, name) - returns the type of a field
     if (argExprs.length !== 2) {

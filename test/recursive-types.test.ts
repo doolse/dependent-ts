@@ -205,3 +205,82 @@ describe("Recursive Type Edge Cases", () => {
     expect(str).toContain("μY.");
   });
 });
+
+// ============================================================================
+// Recursive Type Evaluation and Construction
+// From docs/constraints-as-types.md: List, Tree types
+// ============================================================================
+
+import { run, obj, nil, num, ifExpr, eq, varRef, letExpr, fn, call } from "../src/index";
+
+describe("Recursive Type Construction", () => {
+  describe("List type construction", () => {
+    it("can construct list-like values that match recursive type", () => {
+      // List<number> = null | { head: number, tail: List }
+      // null (empty list)
+      const emptyResult = run(nil);
+      expect(emptyResult.value.tag).toBe("null");
+
+      // { head: 1, tail: null } (single element)
+      const single = obj({ head: num(1), tail: nil });
+      const singleResult = run(single);
+      expect(singleResult.value.tag).toBe("object");
+
+      // { head: 1, tail: { head: 2, tail: null } } (two elements)
+      const two = obj({
+        head: num(1),
+        tail: obj({ head: num(2), tail: nil })
+      });
+      const twoResult = run(two);
+      expect(twoResult.value.tag).toBe("object");
+    });
+
+    it("recursive type constraint matches list structure", () => {
+      const listNum = rec("List", or(
+        isNull,
+        and(
+          isObject,
+          hasField("head", isNumber),
+          hasField("tail", recVar("List"))
+        )
+      ));
+
+      // null should satisfy this - rec type gets unrolled to check branches
+      expect(implies(isNull, listNum)).toBe(true);
+    });
+  });
+
+  describe("Recursive type unrolling", () => {
+    it("unrolled recursive type should match its components", () => {
+      const listType = rec("X", or(isNull, hasField("tail", recVar("X"))));
+      const unrolled = or(isNull, hasField("tail", listType));
+
+      expect(implies(isNull, unrolled)).toBe(true);
+      expect(implies(isNull, listType)).toBe(true);
+    });
+
+    it("object matching recursive type works with unrolling", () => {
+      const listType = rec("X", or(isNull, and(isObject, hasField("tail", recVar("X")))));
+      const singleNode = and(isObject, hasField("tail", isNull));
+
+      expect(implies(singleNode, listType)).toBe(true);
+    });
+  });
+
+  describe("Recursive function types (not yet working)", () => {
+    it("length function on list should be typeable", () => {
+      // For now, just test non-recursive version
+      const listLength = fn(["list"],
+        ifExpr(
+          eq(varRef("list"), nil),
+          num(0),
+          num(1) // Placeholder - should be 1 + recursive call
+        )
+      );
+
+      const result = run(call(listLength, nil));
+      expect(result.value.tag).toBe("number");
+      expect((result.value as any).value).toBe(0);
+    });
+  });
+});

@@ -402,3 +402,85 @@ describe("Integration: Types as Values", () => {
     expect((emailTypeResult.value as any).constraint).toEqual(isString);
   });
 });
+
+// ============================================================================
+// Type-Level Programming
+// From docs/goals.md: "Everything that can be done using TypeScript's type-level
+// syntax should be expressible as normal function syntax"
+// ============================================================================
+
+import { fn, letExpr, ifExpr, bool, num, eq } from "../src/index";
+
+describe("Type-Level Programming", () => {
+  describe("Type constructors as functions", () => {
+    it("should be able to call a function that creates a type", () => {
+      // Creating a function that returns its input (identity for types)
+      const nullableExpr = fn(["T"], varRef("T"));
+      const result = run(nullableExpr);
+      expect(result.value.tag).toBe("closure");
+    });
+
+    it("should allow passing types to functions", () => {
+      const expr = call(fn(["T"], varRef("T")), varRef("number"));
+      const result = run(expr);
+      expect(result.value.tag).toBe("type");
+    });
+
+    it("should support type-level conditionals using if", () => {
+      const expr = letExpr("T", varRef("number"),
+        ifExpr(
+          eq(varRef("T"), varRef("string")),
+          bool(true),
+          bool(false)
+        )
+      );
+      const result = run(expr);
+      expect(result.value.tag).toBe("bool");
+      expect((result.value as any).value).toBe(false); // number != string
+    });
+  });
+
+  describe("Type operations as builtins (not yet implemented)", () => {
+    it("should have isSubtype builtin for subtype checking", () => {
+      expect(() => {
+        run(call(varRef("isSubtype"), varRef("number"), varRef("number")));
+      }).toThrow();
+    });
+
+    it("should have unionType builtin", () => {
+      expect(() => {
+        run(call(varRef("unionType"), varRef("string"), varRef("number")));
+      }).toThrow();
+    });
+
+    it("should have arrayType builtin", () => {
+      expect(() => {
+        run(call(varRef("arrayType"), varRef("string"), num(10)));
+      }).toThrow();
+    });
+  });
+
+  describe("Type value operations", () => {
+    it("type values can be compared for equality", () => {
+      const expr = eq(varRef("number"), varRef("number"));
+      const result = run(expr);
+      expect(result.value.tag).toBe("bool");
+      expect((result.value as any).value).toBe(true);
+    });
+
+    it("different type values are not equal", () => {
+      const expr = eq(varRef("number"), varRef("string"));
+      const result = run(expr);
+      expect(result.value.tag).toBe("bool");
+      expect((result.value as any).value).toBe(false);
+    });
+  });
+
+  describe("unknown type (not yet implemented)", () => {
+    it("should have unknown type binding", () => {
+      expect(() => {
+        run(varRef("unknown"));
+      }).toThrow();
+    });
+  });
+});

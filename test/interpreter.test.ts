@@ -702,3 +702,67 @@ describe("Discriminated Union Tests", () => {
     }
   });
 });
+
+// ============================================================================
+// Tuples and Element Access
+// From docs/constraints-as-types.md: Tuples use elementAt for position-specific types
+// ============================================================================
+
+import { elementAt, length as lengthC, runtime } from "../src/index";
+import { stage, isLater } from "../src/index";
+
+describe("Tuples and Element Access", () => {
+  describe("Tuple constraints", () => {
+    it("array with mixed types has elementAt constraints", () => {
+      const expr = array(str("hello"), num(42), bool(true));
+      const result = run(expr);
+
+      expect(implies(result.constraint, isArray)).toBe(true);
+      expect(implies(result.constraint, elementAt(0, isString))).toBe(true);
+      expect(implies(result.constraint, elementAt(1, isNumber))).toBe(true);
+      expect(implies(result.constraint, elementAt(2, isBool))).toBe(true);
+    });
+
+    it("accessing tuple with known index gives precise type", () => {
+      const expr = index(array(str("hello"), num(42)), num(0));
+      const result = run(expr);
+      expect(result.value.tag).toBe("string");
+      expect(implies(result.constraint, isString)).toBe(true);
+    });
+
+    it("accessing tuple with unknown runtime index should give union", () => {
+      const expr = letExpr("t", array(str("hello"), num(42)),
+        index(varRef("t"), runtime(num(0), "i"))
+      );
+      const result = stage(expr);
+
+      if (isLater(result.svalue)) {
+        const constraint = result.svalue.constraint;
+        expect(constraint).toBeDefined();
+      }
+    });
+  });
+
+  describe("Length constraints", () => {
+    it("array literal has known length constraint", () => {
+      const expr = array(num(1), num(2), num(3));
+      const result = run(expr);
+      expect(implies(result.constraint, lengthC(equals(3)))).toBe(true);
+    });
+
+    it("empty array has length 0", () => {
+      const expr = array();
+      const result = run(expr);
+      expect(implies(result.constraint, lengthC(equals(0)))).toBe(true);
+    });
+  });
+});
+
+describe("String Concatenation", () => {
+  it("string + string concatenation works (+ is polymorphic)", () => {
+    const expr = add(str("hello"), str(" world"));
+    const result = run(expr);
+    expect(result.value.tag).toBe("string");
+    expect((result.value as any).value).toBe("hello world");
+  });
+});

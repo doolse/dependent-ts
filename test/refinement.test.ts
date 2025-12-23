@@ -14,6 +14,7 @@ import {
   isNumber,
   isString,
   isBool,
+  isObject,
   and,
   equals,
   gt,
@@ -178,5 +179,67 @@ describe("Evaluation with Control Flow Refinement", () => {
       )
     );
     expect(result.value).toEqual({ tag: "number", value: 5 });
+  });
+});
+
+// ============================================================================
+// Advanced Control Flow Refinement
+// ============================================================================
+
+import { or, simplify } from "../src/index";
+
+describe("Advanced Control Flow Refinement", () => {
+  describe("OR elimination", () => {
+    it("if branch eliminates one side of OR", () => {
+      const circleOrSquare = or(
+        and(isObject, hasField("kind", equals("circle"))),
+        and(isObject, hasField("kind", equals("square")))
+      );
+
+      const refined = simplify(and(circleOrSquare, hasField("kind", equals("circle"))));
+      expect(implies(refined, hasField("kind", equals("circle")))).toBe(true);
+      expect(implies(refined, hasField("kind", equals("square")))).toBe(false);
+    });
+  });
+
+  describe("Nested refinement preservation", () => {
+    it("nested if preserves outer refinements", () => {
+      const expr = letExpr("x", num(5),
+        ifExpr(
+          gtExpr(varRef("x"), num(0)),
+          ifExpr(
+            ltExpr(varRef("x"), num(10)),
+            varRef("x"),
+            num(0)
+          ),
+          num(0)
+        )
+      );
+      const result = run(expr);
+      expect(implies(result.constraint, gt(0))).toBe(true);
+      expect(implies(result.constraint, lt(10))).toBe(true);
+    });
+  });
+});
+
+describe("Type Guards (not yet implemented)", () => {
+  describe("isNumber/isString as type guards", () => {
+    it("should have isNumber builtin that narrows types", () => {
+      expect(() => {
+        run(call(varRef("isNumber"), num(5)));
+      }).toThrow();
+    });
+
+    it("can manually simulate type guard with typeof-like check", () => {
+      const expr = letExpr("x", num(5),
+        ifExpr(
+          gtExpr(varRef("x"), num(0)),
+          varRef("x"),
+          num(0)
+        )
+      );
+      const result = run(expr);
+      expect(result.value.tag).toBe("number");
+    });
   });
 });

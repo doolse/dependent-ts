@@ -368,3 +368,23 @@ describe("Integration Tests", () => {
     expect(code.trim()).toBe("2");
   });
 });
+
+// ============================================================================
+// Code Generation for Complex Cases
+// ============================================================================
+
+import { stage, isLater, assertExpr } from "../src/index";
+
+describe("Code Generation for Complex Cases", () => {
+  describe("Residual code for runtime assertions", () => {
+    it("generates assertion code for runtime checks", () => {
+      const expr = assertExpr(runtime(num(5), "x"), varRef("number"));
+      const result = stage(expr);
+
+      expect(isLater(result.svalue)).toBe(true);
+      if (isLater(result.svalue)) {
+        expect(result.svalue.residual.tag).toBe("assert");
+      }
+    });
+  });
+});

@@ -393,3 +393,21 @@ describe("Error Tests", () => {
     expect(() => parse("let x = 5 x")).toThrow(ParseError);
   });
 });
+
+// ============================================================================
+// Unimplemented Syntax Edge Cases
+// ============================================================================
+
+describe("Unimplemented Syntax", () => {
+  it("spread operator in arrays is not supported", () => {
+    expect(() => parse("[1, ...arr, 2]")).toThrow();
+  });
+
+  it("match expression is not in the parser", () => {
+    expect(() => parse("match x with | 1 => true | _ => false")).toThrow();
+  });
+
+  it("type annotations in function syntax not supported", () => {
+    expect(() => parse("fn(x: number) => x + 1")).toThrow();
+  });
+});

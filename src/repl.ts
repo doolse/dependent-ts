@@ -94,6 +94,10 @@ function showHelp(): void {
   console.log("  stage      Show staged evaluation (Now/Later)");
   console.log("  compile    Compile to JavaScript");
   console.log("  ast        Show parsed AST");
+  console.log("\nBuiltins:");
+  console.log("  print(value)         Output value to console");
+  console.log("  fields(Type)         Get field names from a type");
+  console.log("  fieldType(Type, name) Get type of a field");
   console.log("\nExamples:");
   console.log("  1 + 2 * 3");
   console.log("  let x = 5 in x + 1");
@@ -101,6 +105,7 @@ function showHelp(): void {
   console.log("  if x > 0 then x else -x");
   console.log("  { name: \"Alice\", age: 30 }");
   console.log("  [1, 2, 3][1]");
+  console.log("  print(\"Hello, World!\")");
   console.log("");
 }
 

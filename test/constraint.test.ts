@@ -810,3 +810,109 @@ describe("Constraint Variables for Inference", () => {
     // This requires a constraint solver not yet implemented
   });
 });
+
+// ============================================================================
+// Additional Constraint Tests from Design Exploration
+// ============================================================================
+
+describe("Constraint Arithmetic", () => {
+  describe("Arithmetic propagation at compile time", () => {
+    it("comparison constraints combine properly", () => {
+      const constraint = and(isNumber, gt(5), lt(10));
+      expect(implies(constraint, gt(0))).toBe(true);
+      expect(implies(constraint, lt(15))).toBe(true);
+    });
+  });
+});
+
+describe("Object Types: Open vs Closed", () => {
+  describe("Open objects (default)", () => {
+    it("object with extra fields assignable to smaller type", () => {
+      const larger = and(isObject,
+        hasField("name", isString),
+        hasField("age", isNumber),
+        hasField("role", isString)
+      );
+      const smaller = and(isObject, hasField("name", isString));
+
+      expect(implies(larger, smaller)).toBe(true);
+    });
+  });
+
+  describe("Closed objects (exactFields)", () => {
+    it("exactFields constraint exists but may not be fully implemented", () => {
+      const objConstraint = and(isObject, hasField("x", isNumber));
+      // exactFields would reject { x: number, y: string }
+      // For now, hasField is open
+    });
+  });
+});
+
+describe("Never Type Propagation", () => {
+  it("contradictory constraints produce never", () => {
+    const c = and(isNumber, isString);
+    expect(isNever(simplify(c))).toBe(true);
+  });
+});
+
+describe("Subtyping Edge Cases", () => {
+  it("literal type implies base type", () => {
+    expect(implies(equals(5), isNumber)).toBe(true);
+    expect(implies(equals("hello"), isString)).toBe(true);
+    expect(implies(equals(true), isBool)).toBe(true);
+  });
+
+  it("base type does not imply literal", () => {
+    expect(implies(isNumber, equals(5))).toBe(false);
+  });
+
+  it("gt bound transitivity", () => {
+    expect(implies(gt(10), gt(5))).toBe(true);
+    expect(implies(gt(5), gt(10))).toBe(false);
+  });
+
+  it("gte vs gt boundary", () => {
+    expect(implies(gte(10), gt(5))).toBe(true);
+    expect(implies(gte(10), gt(10))).toBe(false);
+    expect(implies(gt(10), gte(10))).toBe(true);
+  });
+});
+
+describe("Union Type Issues", () => {
+  it("value satisfies one branch of union", () => {
+    const union = or(isNumber, isString);
+    expect(implies(isNumber, union)).toBe(true);
+    expect(implies(isString, union)).toBe(true);
+    expect(implies(isBool, union)).toBe(false);
+  });
+
+  it("union does not imply its branches", () => {
+    const union = or(isNumber, isString);
+    expect(implies(union, isNumber)).toBe(false);
+    expect(implies(union, isString)).toBe(false);
+  });
+});
+
+describe("Field Constraint Issues", () => {
+  it("hasField implies hasField with wider field constraint", () => {
+    const narrow = hasField("x", equals(5));
+    const wide = hasField("x", isNumber);
+    expect(implies(narrow, wide)).toBe(true);
+  });
+
+  it("hasField with different names are unrelated", () => {
+    const x = hasField("x", isNumber);
+    const y = hasField("y", isNumber);
+    expect(implies(x, y)).toBe(false);
+    expect(implies(y, x)).toBe(false);
+  });
+});
+
+describe("Function Type Inference Issues", () => {
+  it("heterogeneous array doesn't satisfy homogeneous array constraint", () => {
+    const hetero = and(isArray, elementAt(0, isNumber), elementAt(1, isString));
+    const homo = and(isArray, elements(isNumber));
+
+    expect(implies(hetero, homo)).toBe(false);
+  });
+});

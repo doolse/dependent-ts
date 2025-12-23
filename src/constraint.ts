@@ -625,6 +625,19 @@ export function implies(a: Constraint, b: Constraint): boolean {
     return impliesRec(sa, sb, new Set());
   }
 
+  // When checking A implies rec X. B (where A is not rec), unroll: A implies B[X := rec X. B]
+  // Example: isNull implies rec("List", or(isNull, ...)) unrolls to isNull implies or(isNull, ...)
+  if (sb.tag === "rec") {
+    const unrolled = substituteRecVar(sb.body, sb.var, sb);
+    return implies(sa, unrolled);
+  }
+
+  // When checking rec X. A implies B (where B is not rec), unroll: A[X := rec X. A] implies B
+  if (sa.tag === "rec") {
+    const unrolled = substituteRecVar(sa.body, sa.var, sa);
+    return implies(unrolled, sb);
+  }
+
   // fnType implication: contravariant params, covariant result
   // fnType(A, R) implies fnType(A', R') if A' implies A and R implies R'
   if (sa.tag === "fnType" && sb.tag === "fnType") {
@@ -1069,10 +1082,29 @@ function solveInto(a: Constraint, b: Constraint, sub: Substitution): boolean {
       case "and": {
         const aConstraints = a.constraints;
         const bConstraints = (b as typeof a).constraints;
-        if (aConstraints.length !== bConstraints.length) return false;
-        // Try to unify each pair
-        for (let i = 0; i < aConstraints.length; i++) {
-          if (!solveInto(aConstraints[i], bConstraints[i], sub)) return false;
+
+        // For each constraint in b (the pattern), find a matching constraint in a
+        // This allows a to have extra constraints (subtyping: more constraints = more specific)
+        for (const bC of bConstraints) {
+          const bCSub = applySubstitution(bC, sub);
+
+          // Try to find a constraint in a that matches/solves with this one from b
+          let found = false;
+          for (const aC of aConstraints) {
+            const aCsub = applySubstitution(aC, sub);
+
+            // Create a temporary substitution to test
+            const tempSub = new Map(sub);
+            if (solveInto(aCsub, bCSub, tempSub)) {
+              // Merge temp substitution into main substitution
+              for (const [id, c] of tempSub) {
+                sub.set(id, c);
+              }
+              found = true;
+              break;
+            }
+          }
+          if (!found) return false;
         }
         return true;
       }
@@ -1099,6 +1131,21 @@ function solveInto(a: Constraint, b: Constraint, sub: Substitution): boolean {
         return solveInto(a.result, bFn.result, sub);
       }
     }
+  }
+
+  // Handle and(A, B, ...) solving with a single constraint C
+  // If any constraint in the AND matches C, we can unify
+  if (a.tag === "and" && b.tag !== "and") {
+    for (const aC of a.constraints) {
+      const tempSub = new Map(sub);
+      if (solveInto(aC, b, tempSub)) {
+        for (const [id, c] of tempSub) {
+          sub.set(id, c);
+        }
+        return true;
+      }
+    }
+    return false;
   }
 
   // Different tags that might still unify

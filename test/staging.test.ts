@@ -380,3 +380,51 @@ describe("Partial Evaluation Examples", () => {
     }
   });
 });
+
+// ============================================================================
+// Additional Staging Tests from Design Exploration
+// ============================================================================
+
+describe("Comptime Enforcement", () => {
+  it("comptime on literal succeeds", () => {
+    const expr = comptime(num(5));
+    const result = stage(expr);
+    expect(isNow(result.svalue)).toBe(true);
+  });
+
+  it("comptime on pure computation succeeds", () => {
+    const expr = comptime(add(num(2), num(3)));
+    const result = stage(expr);
+    expect(isNow(result.svalue)).toBe(true);
+    if (isNow(result.svalue)) {
+      expect((result.svalue.value as any).value).toBe(5);
+    }
+  });
+
+  it("comptime on runtime value fails", () => {
+    const expr = comptime(runtime(num(5), "x"));
+    expect(() => stage(expr)).toThrow();
+  });
+});
+
+describe("Staging Boundary Issues", () => {
+  it("comptime field access on runtime object fails", () => {
+    const expr = letExpr("obj", runtime(obj({ x: num(5) }), "obj"),
+      comptime(field(varRef("obj"), "x"))
+    );
+    expect(() => stage(expr)).toThrow();
+  });
+
+  it("runtime nested in comptime fails", () => {
+    const expr = comptime(add(runtime(num(1), "x"), num(2)));
+    expect(() => stage(expr)).toThrow();
+  });
+});
+
+describe("typeof Operator (not yet implemented)", () => {
+  it("should have typeof builtin for getting type of expression", () => {
+    expect(() => {
+      stage(call(varRef("typeof"), num(5)));
+    }).toThrow();
+  });
+});

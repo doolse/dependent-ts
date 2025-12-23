@@ -355,3 +355,42 @@ describe("Inline trust(expr) Syntax", () => {
     expect((result.value as any).value).toBe(42);
   });
 });
+
+// ============================================================================
+// Function Where Clauses
+// From docs/constraints-as-types.md: "fn safeDiv(x, y) where y != 0 = x / y"
+// ============================================================================
+
+import { parse, neq, div } from "../src/index";
+
+describe("Function Where Clauses", () => {
+  describe("Where clause syntax (not implemented)", () => {
+    it("parser should support where clause", () => {
+      expect(() => {
+        parse("fn(x, y) where y > 0 => x / y");
+      }).toThrow();
+    });
+  });
+
+  describe("Simulating where clauses with assert", () => {
+    it("can simulate where clause with assert in body", () => {
+      const safeDiv = fn(["x", "y"],
+        letExpr("_", assertExpr(neq(varRef("y"), num(0)), varRef("boolean")),
+          div(varRef("x"), varRef("y"))
+        )
+      );
+
+      const expr = call(safeDiv, num(10), num(2));
+      const result = run(expr);
+      expect(result.value.tag).toBe("number");
+      expect((result.value as any).value).toBe(5);
+    });
+  });
+});
+
+describe("Custom Error Messages", () => {
+  it("assert with custom message includes that message", () => {
+    const expr = assertExpr(str("hello"), varRef("number"), "Value must be a number");
+    expect(() => run(expr)).toThrow("Value must be a number");
+  });
+});

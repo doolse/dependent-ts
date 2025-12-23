@@ -335,3 +335,38 @@ describe("Let-Polymorphism Scenario", () => {
     expect(inst.tag).toBe("and");
   });
 });
+
+// ============================================================================
+// Additional Constraint Variable Tests
+// ============================================================================
+
+describe("Constraint Variables and Solving", () => {
+  beforeEach(() => {
+    resetConstraintVarCounter();
+  });
+
+  describe("Fresh variables", () => {
+    it("fresh variables unify with concrete constraints", () => {
+      const v = freshCVar();
+      const result = solve(v, isNumber);
+
+      expect(result).not.toBeNull();
+      if (result) {
+        const applied = applySubstitution(v, result);
+        expect(applied).toEqual(isNumber);
+      }
+    });
+
+    it("solving conflicting constraints returns null", () => {
+      const v = freshCVar();
+      const result1 = solve(v, isNumber);
+      expect(result1).not.toBeNull();
+
+      if (result1) {
+        const applied = applySubstitution(v, result1);
+        const result2 = solve(applied, isString);
+        expect(result2).toBeNull();
+      }
+    });
+  });
+});

@@ -175,3 +175,65 @@ describe("Function Type Inference", () => {
     });
   });
 });
+
+// ============================================================================
+// Polymorphic Type Inference
+// From docs/goals.md: "let id = fn(x) => x  // id: forall T. T -> T"
+// ============================================================================
+
+import { equals, array, index } from "../src/index";
+
+describe("Polymorphic Type Inference", () => {
+  describe("Identity function polymorphism", () => {
+    it("identity function works with numbers", () => {
+      const expr = letExpr("id", fn(["x"], varRef("x")),
+        call(varRef("id"), num(42))
+      );
+      const result = run(expr);
+      expect(result.value.tag).toBe("number");
+      expect((result.value as any).value).toBe(42);
+    });
+
+    it("identity function works with strings", () => {
+      const expr = letExpr("id", fn(["x"], varRef("x")),
+        call(varRef("id"), str("hello"))
+      );
+      const result = run(expr);
+      expect(result.value.tag).toBe("string");
+      expect((result.value as any).value).toBe("hello");
+    });
+
+    it("identity function preserves constraint through calls", () => {
+      const expr = letExpr("id", fn(["x"], varRef("x")),
+        call(varRef("id"), num(5))
+      );
+      const result = run(expr);
+      expect(implies(result.constraint, equals(5))).toBe(true);
+    });
+
+    it("identity function should work with different types in same scope", () => {
+      const expr = letExpr("id", fn(["x"], varRef("x")),
+        array(
+          call(varRef("id"), num(5)),
+          call(varRef("id"), str("hello"))
+        )
+      );
+      const result = run(expr);
+      expect(result.value.tag).toBe("array");
+      const arr = result.value as { tag: "array"; elements: any[] };
+      expect(arr.elements[0].tag).toBe("number");
+      expect(arr.elements[1].tag).toBe("string");
+    });
+  });
+
+  describe("First/second function polymorphism", () => {
+    it("first on tuple-like object preserves type - polymorphic inference works", () => {
+      const expr = letExpr("first", fn(["arr"], index(varRef("arr"), num(0))),
+        call(varRef("first"), array(num(1), str("two")))
+      );
+      const result = run(expr);
+      expect(result.value.tag).toBe("number");
+      expect((result.value as { value: number }).value).toBe(1);
+    });
+  });
+});
