@@ -5,7 +5,7 @@
  * Each builtin has a name, type signature, and evaluation handler.
  */
 
-import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, and, or, elements, fnType, isType, isTypeC } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, fnType, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar } from "./constraint";
 import { Value, numberVal, stringVal, boolVal, nullVal, arrayVal, typeVal, BuiltinValue, StringValue, NumberValue, ArrayValue, ClosureValue, constraintOf, valueToString } from "./value";
 import { Expr, methodCall, call, varRef } from "./expr";
 import type { SValue, Now, Later } from "./svalue";
@@ -41,6 +41,9 @@ export interface BuiltinDef {
 
   /** If true, can be used as a method (first param is receiver) */
   isMethod?: boolean;
+
+  /** If true, accepts variable number of arguments (at least params.length) */
+  variadic?: boolean;
 }
 
 export interface ParamDef {
@@ -313,6 +316,498 @@ registerBuiltin({
           methodCall(arrResidual, "filter", [fnResidual])
         )
       };
+    }
+  }
+});
+
+// ============================================================================
+// Core Builtins: Type Reflection
+// ============================================================================
+
+registerBuiltin({
+  name: "fields",
+  params: [{ name: "type", constraint: isTypeC }],
+  resultType: () => and(isArray, elements(isString)),
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const typeArg = args[0];
+      if (!ctx.isNow(typeArg)) {
+        throw new Error("fields() requires a compile-time known type");
+      }
+      if (typeArg.value.tag !== "type") {
+        throw new Error("fields() argument must be a type");
+      }
+      const fieldNames = extractAllFieldNames(typeArg.value.constraint);
+      const fieldValues = fieldNames.map(stringVal);
+      return { svalue: ctx.now(arrayVal(fieldValues), and(isArray, elements(isString))) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "fieldType",
+  params: [
+    { name: "type", constraint: isTypeC },
+    { name: "name", constraint: isString }
+  ],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const typeArg = args[0];
+      const nameArg = args[1];
+      if (!ctx.isNow(typeArg)) {
+        throw new Error("fieldType() requires a compile-time known type");
+      }
+      if (!ctx.isNow(nameArg)) {
+        throw new Error("fieldType() requires a compile-time known field name");
+      }
+      if (typeArg.value.tag !== "type") {
+        throw new Error("fieldType() first argument must be a type");
+      }
+      if (nameArg.value.tag !== "string") {
+        throw new Error("fieldType() second argument must be a string");
+      }
+      const fieldConstraint = extractFieldConstraint(typeArg.value.constraint, nameArg.value.value);
+      if (!fieldConstraint) {
+        throw new Error(`Type has no field '${nameArg.value.value}'`);
+      }
+      return { svalue: ctx.now(typeVal(fieldConstraint), isType(fieldConstraint)) };
+    }
+  }
+});
+
+// ============================================================================
+// Core Builtins: Type Constructors
+// ============================================================================
+
+registerBuiltin({
+  name: "arrayType",
+  params: [{ name: "elementType", constraint: isTypeC }],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const elemArg = args[0];
+      if (!ctx.isNow(elemArg)) {
+        throw new Error("arrayType() requires a compile-time known type");
+      }
+      if (elemArg.value.tag !== "type") {
+        throw new Error("arrayType() argument must be a type");
+      }
+      const resultConstraint = and(isArray, elements(elemArg.value.constraint));
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "nullable",
+  params: [{ name: "type", constraint: isTypeC }],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const typeArg = args[0];
+      if (!ctx.isNow(typeArg)) {
+        throw new Error("nullable() requires a compile-time known type");
+      }
+      if (typeArg.value.tag !== "type") {
+        throw new Error("nullable() argument must be a type");
+      }
+      const resultConstraint = or(typeArg.value.constraint, isNull);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "objectType",
+  params: [{ name: "fields", constraint: isObject }],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const objArg = args[0];
+      if (!ctx.isNow(objArg)) {
+        throw new Error("objectType() requires a compile-time known object");
+      }
+      if (objArg.value.tag !== "object") {
+        throw new Error("objectType() argument must be an object");
+      }
+      const constraints: Constraint[] = [isObject];
+      for (const [fieldName, fieldVal] of objArg.value.fields) {
+        if (fieldVal.tag !== "type") {
+          throw new Error(`objectType() field '${fieldName}' must be a type, got ${fieldVal.tag}`);
+        }
+        constraints.push(hasField(fieldName, fieldVal.constraint));
+      }
+      const resultConstraint = and(...constraints);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "recType",
+  params: [
+    { name: "varName", constraint: isString },
+    { name: "bodyType", constraint: isTypeC }
+  ],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const nameArg = args[0];
+      const bodyArg = args[1];
+      if (!ctx.isNow(nameArg)) {
+        throw new Error("recType() requires a compile-time known variable name");
+      }
+      if (!ctx.isNow(bodyArg)) {
+        throw new Error("recType() requires a compile-time known body type");
+      }
+      if (nameArg.value.tag !== "string") {
+        throw new Error("recType() first argument must be a string");
+      }
+      if (bodyArg.value.tag !== "type") {
+        throw new Error("recType() second argument must be a type");
+      }
+      const resultConstraint = rec(nameArg.value.value, bodyArg.value.constraint);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "recVarType",
+  params: [{ name: "varName", constraint: isString }],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const nameArg = args[0];
+      if (!ctx.isNow(nameArg)) {
+        throw new Error("recVarType() requires a compile-time known variable name");
+      }
+      if (nameArg.value.tag !== "string") {
+        throw new Error("recVarType() argument must be a string");
+      }
+      const resultConstraint = recVar(nameArg.value.value);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "functionType",
+  params: [
+    { name: "paramTypes", constraint: isArray },
+    { name: "resultType", constraint: isTypeC }
+  ],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const paramsArg = args[0];
+      const resultArg = args[1];
+      if (!ctx.isNow(paramsArg)) {
+        throw new Error("functionType() requires compile-time known param types");
+      }
+      if (!ctx.isNow(resultArg)) {
+        throw new Error("functionType() requires a compile-time known result type");
+      }
+      if (paramsArg.value.tag !== "array") {
+        throw new Error("functionType() first argument must be an array");
+      }
+      if (resultArg.value.tag !== "type") {
+        throw new Error("functionType() second argument must be a type");
+      }
+      const paramConstraints: Constraint[] = [];
+      for (let i = 0; i < paramsArg.value.elements.length; i++) {
+        const param = paramsArg.value.elements[i];
+        if (param.tag !== "type") {
+          throw new Error(`functionType() param ${i + 1} must be a type`);
+        }
+        paramConstraints.push(param.constraint);
+      }
+      const resultConstraint = fnType(paramConstraints, resultArg.value.constraint);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "objectTypeFromEntries",
+  params: [{ name: "entries", constraint: isArray }],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const entriesArg = args[0];
+      if (!ctx.isNow(entriesArg)) {
+        throw new Error("objectTypeFromEntries() requires a compile-time known entries array");
+      }
+      if (entriesArg.value.tag !== "array") {
+        throw new Error("objectTypeFromEntries() argument must be an array");
+      }
+      const entries = entriesArg.value.elements;
+      const constraints: Constraint[] = [isObject];
+      for (const entry of entries) {
+        if (entry.tag !== "array" || entry.elements.length !== 2) {
+          throw new Error("objectTypeFromEntries() entries must be [name, type] pairs");
+        }
+        const nameVal = entry.elements[0];
+        const typeValEntry = entry.elements[1];
+        if (nameVal.tag !== "string") {
+          throw new Error("objectTypeFromEntries() field names must be strings");
+        }
+        if (typeValEntry.tag !== "type") {
+          throw new Error(`objectTypeFromEntries() field '${nameVal.value}' must have a type value`);
+        }
+        constraints.push(hasField(nameVal.value, typeValEntry.constraint));
+      }
+      const resultConstraint = and(...constraints);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+// ============================================================================
+// Core Builtins: Array Operations
+// ============================================================================
+
+registerBuiltin({
+  name: "append",
+  params: [
+    { name: "array", constraint: isArray },
+    { name: "elem", constraint: { tag: "any" } }
+  ],
+  resultType: (argConstraints) => isArray,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const arrArg = args[0];
+      const elemArg = args[1];
+      if (!ctx.isNow(arrArg)) {
+        throw new Error("append() requires a compile-time known array");
+      }
+      if (!ctx.isNow(elemArg)) {
+        throw new Error("append() requires a compile-time known element");
+      }
+      if (arrArg.value.tag !== "array") {
+        throw new Error("append() first argument must be an array");
+      }
+      const newElements = [...arrArg.value.elements, elemArg.value];
+      const resultConstraint = and(isArray, elements(elemArg.constraint));
+      return { svalue: ctx.now(arrayVal(newElements), resultConstraint) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "comptimeFold",
+  params: [
+    { name: "array", constraint: isArray },
+    { name: "init", constraint: { tag: "any" } },
+    { name: "fn", constraint: isFunction }
+  ],
+  resultType: () => ({ tag: "any" }),
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const arrArg = args[0];
+      const initArg = args[1];
+      const fnArg = args[2];
+
+      if (!ctx.isNow(arrArg)) {
+        throw new Error("comptimeFold() requires a compile-time known array");
+      }
+      if (!ctx.isNow(fnArg)) {
+        throw new Error("comptimeFold() requires a compile-time known function");
+      }
+      if (arrArg.value.tag !== "array") {
+        throw new Error("comptimeFold() first argument must be an array");
+      }
+      if (fnArg.value.tag !== "closure") {
+        throw new Error("comptimeFold() third argument must be a function");
+      }
+
+      const arr = arrArg.value;
+      const fn = fnArg.value as ClosureValue;
+
+      if (fn.params.length !== 2) {
+        throw new Error("comptimeFold() function must have exactly 2 parameters (acc, elem)");
+      }
+
+      // Iterate and fold
+      let acc: SValue = initArg;
+
+      for (const elem of arr.elements) {
+        const elemSV = ctx.now(elem, constraintOf(elem));
+        const result = ctx.invokeClosure(fn, [acc, elemSV]);
+        acc = result.svalue;
+      }
+
+      return { svalue: acc };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "unionType",
+  params: [
+    { name: "type1", constraint: isTypeC },
+    { name: "type2", constraint: isTypeC }
+  ],
+  variadic: true,
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const constraints: Constraint[] = [];
+      for (let i = 0; i < args.length; i++) {
+        const typeArg = args[i];
+        if (!ctx.isNow(typeArg)) {
+          throw new Error(`unionType() argument ${i + 1} must be compile-time known`);
+        }
+        if (typeArg.value.tag !== "type") {
+          throw new Error(`unionType() argument ${i + 1} must be a type`);
+        }
+        constraints.push(typeArg.value.constraint);
+      }
+      const resultConstraint = or(...constraints);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "intersectionType",
+  params: [
+    { name: "type1", constraint: isTypeC },
+    { name: "type2", constraint: isTypeC }
+  ],
+  variadic: true,
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const constraints: Constraint[] = [];
+      for (let i = 0; i < args.length; i++) {
+        const typeArg = args[i];
+        if (!ctx.isNow(typeArg)) {
+          throw new Error(`intersectionType() argument ${i + 1} must be compile-time known`);
+        }
+        if (typeArg.value.tag !== "type") {
+          throw new Error(`intersectionType() argument ${i + 1} must be a type`);
+        }
+        constraints.push(typeArg.value.constraint);
+      }
+      const resultConstraint = and(...constraints);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "objectFromEntries",
+  params: [{ name: "entries", constraint: isArray }],
+  resultType: () => isObject,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const entriesArg = args[0];
+
+      if (!ctx.isNow(entriesArg)) {
+        throw new Error("objectFromEntries() requires a compile-time known entries array");
+      }
+      if (entriesArg.value.tag !== "array") {
+        throw new Error("objectFromEntries() argument must be an array");
+      }
+
+      const entries = entriesArg.value.elements;
+      const fieldConstraints: Constraint[] = [isObject];
+      const fields: Map<string, Value> = new Map();
+
+      for (const entry of entries) {
+        if (entry.tag !== "array" || entry.elements.length !== 2) {
+          throw new Error("objectFromEntries() entries must be [key, value] pairs");
+        }
+
+        const keyVal = entry.elements[0];
+        const valueVal = entry.elements[1];
+
+        if (keyVal.tag !== "string") {
+          throw new Error("objectFromEntries() keys must be strings");
+        }
+
+        const key = keyVal.value;
+        fields.set(key, valueVal);
+        fieldConstraints.push(hasField(key, constraintOf(valueVal)));
+      }
+
+      const constraint = and(...fieldConstraints);
+      const objValue: Value = { tag: "object", fields };
+      return { svalue: ctx.now(objValue, constraint) };
+    }
+  }
+});
+
+// ============================================================================
+// Core Builtins: Object Operations
+// ============================================================================
+
+registerBuiltin({
+  name: "dynamicField",
+  params: [
+    { name: "obj", constraint: isObject },
+    { name: "fieldName", constraint: isString }
+  ],
+  resultType: () => ({ tag: "any" }),
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const objArg = args[0];
+      const nameArg = args[1];
+      if (!ctx.isNow(nameArg)) {
+        throw new Error("dynamicField() requires a compile-time known field name");
+      }
+      if (nameArg.value.tag !== "string") {
+        throw new Error("dynamicField() second argument must be a string");
+      }
+      const fieldName = nameArg.value.value;
+      if (ctx.isNow(objArg)) {
+        if (objArg.value.tag !== "object") {
+          throw new Error("dynamicField() first argument must be an object");
+        }
+        const fieldValue = objArg.value.fields.get(fieldName);
+        if (fieldValue === undefined) {
+          throw new Error(`Object has no field '${fieldName}'`);
+        }
+        return { svalue: ctx.now(fieldValue, constraintOf(fieldValue)) };
+      } else {
+        // Object is Later - generate residual field access
+        const fieldConstraint = extractFieldConstraint(objArg.constraint, fieldName) || { tag: "any" as const };
+        return {
+          svalue: ctx.later(fieldConstraint, { tag: "field" as const, object: objArg.residual, name: fieldName } as Expr)
+        };
+      }
     }
   }
 });
