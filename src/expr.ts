@@ -4,6 +4,80 @@
  */
 
 // ============================================================================
+// Pattern Types (for destructuring)
+// ============================================================================
+
+/**
+ * Patterns for destructuring in let expressions.
+ */
+export type Pattern =
+  | VarPattern
+  | ArrayPattern
+  | ObjectPattern;
+
+/**
+ * Simple variable pattern: let x = ...
+ */
+export interface VarPattern {
+  tag: "varPattern";
+  name: string;
+}
+
+/**
+ * Array destructuring pattern: let [a, b] = ...
+ */
+export interface ArrayPattern {
+  tag: "arrayPattern";
+  elements: Pattern[];
+}
+
+/**
+ * Object destructuring pattern: let { x, y } = ...
+ */
+export interface ObjectPattern {
+  tag: "objectPattern";
+  fields: { key: string; pattern: Pattern }[];
+}
+
+// Pattern constructors
+export const varPattern = (name: string): VarPattern => ({ tag: "varPattern", name });
+export const arrayPattern = (...elements: Pattern[]): ArrayPattern => ({ tag: "arrayPattern", elements });
+export const objectPattern = (fields: { key: string; pattern: Pattern }[]): ObjectPattern =>
+  ({ tag: "objectPattern", fields });
+
+/**
+ * Convert a pattern to a string for pretty printing.
+ */
+export function patternToString(pattern: Pattern): string {
+  switch (pattern.tag) {
+    case "varPattern":
+      return pattern.name;
+    case "arrayPattern":
+      return `[${pattern.elements.map(patternToString).join(", ")}]`;
+    case "objectPattern":
+      return `{ ${pattern.fields.map(f =>
+        f.key === (f.pattern.tag === "varPattern" ? f.pattern.name : "")
+          ? f.key
+          : `${f.key}: ${patternToString(f.pattern)}`
+      ).join(", ")} }`;
+  }
+}
+
+/**
+ * Extract all variable names from a pattern.
+ */
+export function patternVars(pattern: Pattern): string[] {
+  switch (pattern.tag) {
+    case "varPattern":
+      return [pattern.name];
+    case "arrayPattern":
+      return pattern.elements.flatMap(patternVars);
+    case "objectPattern":
+      return pattern.fields.flatMap(f => patternVars(f.pattern));
+  }
+}
+
+// ============================================================================
 // Expression Types
 // ============================================================================
 
@@ -14,6 +88,7 @@ export type Expr =
   | UnaryOpExpr
   | IfExpr
   | LetExpr
+  | LetPatternExpr
   | FnExpr
   | RecFnExpr
   | CallExpr
@@ -27,7 +102,8 @@ export type Expr =
   | AssertExpr
   | AssertCondExpr
   | TrustExpr
-  | MethodCallExpr;
+  | MethodCallExpr
+  | ImportExpr;
 
 export interface LitExpr {
   tag: "lit";
@@ -82,6 +158,18 @@ export interface IfExpr {
 export interface LetExpr {
   tag: "let";
   name: string;
+  value: Expr;
+  body: Expr;
+}
+
+/**
+ * Let expression with pattern destructuring.
+ * Allows: let [a, b] = expr in body
+ *         let { x, y } = expr in body
+ */
+export interface LetPatternExpr {
+  tag: "letPattern";
+  pattern: Pattern;
   value: Expr;
   body: Expr;
 }
@@ -202,6 +290,20 @@ export interface MethodCallExpr {
   args: Expr[];         // Method arguments (not including receiver)
 }
 
+/**
+ * Import expression for loading external TypeScript declarations.
+ * Syntax: import { name1, name2 } from "module"
+ *
+ * This binds the imported names in the body expression.
+ * Imported values become Later (runtime) with constraints from .d.ts files.
+ */
+export interface ImportExpr {
+  tag: "import";
+  names: string[];      // Names to import (e.g., ["useState", "useEffect"])
+  modulePath: string;   // Module path (e.g., "react")
+  body: Expr;           // Expression where imports are in scope
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -250,6 +352,9 @@ export const ifExpr = (cond: Expr, then: Expr, els: Expr): IfExpr =>
 export const letExpr = (name: string, value: Expr, body: Expr): LetExpr =>
   ({ tag: "let", name, value, body });
 
+export const letPatternExpr = (pattern: Pattern, value: Expr, body: Expr): LetPatternExpr =>
+  ({ tag: "letPattern", pattern, value, body });
+
 export const fn = (params: string[], body: Expr): FnExpr =>
   ({ tag: "fn", params, body });
 
@@ -294,6 +399,9 @@ export const trustExpr = (expr: Expr, constraint?: Expr): TrustExpr =>
 export const methodCall = (receiver: Expr, method: string, args: Expr[]): MethodCallExpr =>
   ({ tag: "methodCall", receiver, method, args });
 
+export const importExpr = (names: string[], modulePath: string, body: Expr): ImportExpr =>
+  ({ tag: "import", names, modulePath, body });
+
 // ============================================================================
 // Pretty Printing
 // ============================================================================
@@ -317,6 +425,9 @@ export function exprToString(expr: Expr): string {
 
     case "let":
       return `let ${expr.name} = ${exprToString(expr.value)} in ${exprToString(expr.body)}`;
+
+    case "letPattern":
+      return `let ${patternToString(expr.pattern)} = ${exprToString(expr.value)} in ${exprToString(expr.body)}`;
 
     case "fn":
       return `fn(${expr.params.join(", ")}) => ${exprToString(expr.body)}`;
@@ -369,5 +480,8 @@ export function exprToString(expr: Expr): string {
 
     case "methodCall":
       return `${exprToString(expr.receiver)}.${expr.method}(${expr.args.map(exprToString).join(", ")})`;
+
+    case "import":
+      return `import { ${expr.names.join(", ")} } from "${expr.modulePath}" in ${exprToString(expr.body)}`;
   }
 }

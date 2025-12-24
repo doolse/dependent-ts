@@ -26,6 +26,8 @@ export type TokenType =
   | "RUNTIME"
   | "ASSERT"
   | "TRUST"
+  | "IMPORT"
+  | "FROM"
   // Operators
   | "PLUS"
   | "MINUS"
@@ -83,6 +85,8 @@ const KEYWORDS: Record<string, TokenType> = {
   runtime: "RUNTIME",
   assert: "ASSERT",
   trust: "TRUST",
+  import: "IMPORT",
+  from: "FROM",
 };
 
 // ============================================================================

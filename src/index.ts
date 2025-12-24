@@ -9,6 +9,7 @@ export {
   isString,
   isBool,
   isNull,
+  isUndefined,
   isObject,
   isArray,
   isFunction,
@@ -16,6 +17,8 @@ export {
   isTypeC,
   never,
   any,
+  neverC,
+  anyC,
   equals,
   gt,
   gte,
@@ -43,6 +46,13 @@ export {
   rec,
   recVar,
   fnType,
+  // Generic types
+  TypeParam,
+  typeParam,
+  makeTypeParam,
+  genericFnType,
+  freshTypeParamId,
+  resetTypeParamCounter,
   // Constraint solving
   Substitution,
   emptySubstitution,
@@ -92,6 +102,7 @@ export {
   UnaryOpExpr,
   IfExpr,
   LetExpr,
+  LetPatternExpr,
   FnExpr,
   RecFnExpr,
   CallExpr,
@@ -106,6 +117,16 @@ export {
   TrustExpr,
   BinOp,
   UnaryOp,
+  // Patterns for destructuring
+  Pattern,
+  VarPattern,
+  ArrayPattern,
+  ObjectPattern,
+  varPattern,
+  arrayPattern,
+  objectPattern,
+  patternToString,
+  patternVars,
   lit,
   num,
   str,
@@ -131,6 +152,7 @@ export {
   notExpr,
   ifExpr,
   letExpr,
+  letPatternExpr,
   fn,
   recfn,
   call,
@@ -145,9 +167,11 @@ export {
   assertCondExpr,
   trustExpr,
   methodCall,
+  importExpr,
   exprToString,
   AssertCondExpr,
   MethodCallExpr,
+  ImportExpr,
 } from "./expr";
 
 // Method Registry
@@ -225,6 +249,7 @@ export {
   CodeGenOptions,
   generateJS,
   generateModule,
+  generateModuleWithImports,
   generateFunction,
   compile,
 } from "./codegen";
@@ -252,3 +277,21 @@ export {
   InferredFunction,
   inferFunction,
 } from "./inference";
+
+// Generic Inference
+export {
+  InstantiationResult,
+  substituteTypeParams,
+  instantiateGenericCall,
+  tryInstantiateCall,
+  inferGenericCallResult,
+} from "./generic-inference";
+
+// TypeScript Declaration Loader
+export {
+  ModuleDeclarations,
+  TSDeclarationLoader,
+  loadModule,
+  loadFromSource,
+  loadExports,
+} from "./ts-loader";

@@ -5,7 +5,7 @@
  * into JavaScript code strings that can be executed.
  */
 
-import { Expr } from "./expr";
+import { Expr, patternToString, patternVars } from "./expr";
 
 // ============================================================================
 // Code Generation Options
@@ -101,6 +101,9 @@ function genExpr(expr: Expr, opts: Required<CodeGenOptions>, depth: number): str
     case "let":
       return genLet(expr.name, expr.value, expr.body, opts, depth);
 
+    case "letPattern":
+      return genLetPattern(expr.pattern, expr.value, expr.body, opts, depth);
+
     case "fn":
       return genFunction(expr.params, expr.body, opts, depth);
 
@@ -149,6 +152,9 @@ function genExpr(expr: Expr, opts: Required<CodeGenOptions>, depth: number): str
 
     case "methodCall":
       return genMethodCall(expr.receiver, expr.method, expr.args, opts, depth);
+
+    case "import":
+      return genImport(expr.names, expr.modulePath, expr.body, opts, depth);
   }
 }
 
@@ -325,6 +331,50 @@ function genLet(
 
   return `(() => {
 ${innerIndent}const ${safeName} = ${valueCode};
+${innerIndent}return ${bodyCode};
+${indent}})()`;
+}
+
+import type { Pattern } from "./expr";
+
+/**
+ * Generate JavaScript for pattern destructuring.
+ */
+function genPattern(pattern: Pattern): string {
+  switch (pattern.tag) {
+    case "varPattern":
+      return genIdentifier(pattern.name);
+    case "arrayPattern":
+      return `[${pattern.elements.map(genPattern).join(", ")}]`;
+    case "objectPattern":
+      return `{ ${pattern.fields.map(f => {
+        const patStr = genPattern(f.pattern);
+        // If the pattern is just a variable with the same name as the key, use shorthand
+        if (f.pattern.tag === "varPattern" && f.pattern.name === f.key) {
+          return genIdentifier(f.key);
+        }
+        return `${genIdentifier(f.key)}: ${patStr}`;
+      }).join(", ")} }`;
+  }
+}
+
+function genLetPattern(
+  pattern: Pattern,
+  value: Expr,
+  body: Expr,
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string {
+  const patternCode = genPattern(pattern);
+  const valueCode = genExpr(value, opts, depth + 1);
+  const bodyCode = genExpr(body, opts, depth + 1);
+
+  // Use IIFE to create proper scoping
+  const indent = opts.indent.repeat(depth);
+  const innerIndent = opts.indent.repeat(depth + 1);
+
+  return `(() => {
+${innerIndent}const ${patternCode} = ${valueCode};
 ${innerIndent}return ${bodyCode};
 ${indent}})()`;
 }
@@ -615,6 +665,211 @@ ${indent}})()`;
 }
 
 // ============================================================================
+// Import Generation
+// ============================================================================
+
+/**
+ * Generate JavaScript import statement followed by the body.
+ *
+ * Generates:
+ * import { name1, name2 } from "module";
+ * body
+ */
+function genImport(
+  names: string[],
+  modulePath: string,
+  body: Expr,
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string {
+  const indent = opts.indent.repeat(depth);
+  const innerIndent = opts.indent.repeat(depth + 1);
+  const bodyCode = genExpr(body, opts, depth + 1);
+
+  // Generate import names
+  const importNames = names.map(genIdentifier).join(", ");
+
+  // Use IIFE to properly scope the import
+  // The import statement must be at module level in real ES modules,
+  // but for generated code we'll use dynamic import or assume bundler handles it
+  return `(() => {
+${innerIndent}// import { ${importNames} } from ${JSON.stringify(modulePath)};
+${innerIndent}return ${bodyCode};
+${indent}})()`;
+}
+
+/**
+ * Generate JavaScript with top-level imports.
+ * This is for generating complete modules with proper ES imports.
+ */
+export function generateModuleWithImports(expr: Expr, options: CodeGenOptions = {}): string {
+  const opts = { ...defaultOptions, ...options };
+
+  // Collect all imports from the expression
+  const imports = collectImports(expr);
+
+  // Generate import statements
+  const importStatements = Array.from(imports.entries())
+    .map(([modulePath, names]) => {
+      const importNames = Array.from(names).map(genIdentifier).join(", ");
+      return `import { ${importNames} } from ${JSON.stringify(modulePath)};`;
+    })
+    .join("\n");
+
+  // Strip import expressions from the body since we're hoisting them
+  const strippedExpr = stripImports(expr);
+  const code = genExpr(strippedExpr, opts, 0);
+
+  if (importStatements) {
+    return `${importStatements}\n\nexport default ${code};\n`;
+  }
+  return `export default ${code};\n`;
+}
+
+/**
+ * Collect all imports from an expression tree.
+ */
+function collectImports(expr: Expr): Map<string, Set<string>> {
+  const imports = new Map<string, Set<string>>();
+
+  function visit(e: Expr): void {
+    switch (e.tag) {
+      case "import": {
+        const existing = imports.get(e.modulePath) || new Set();
+        for (const name of e.names) {
+          existing.add(name);
+        }
+        imports.set(e.modulePath, existing);
+        visit(e.body);
+        break;
+      }
+      case "binop":
+        visit(e.left);
+        visit(e.right);
+        break;
+      case "unary":
+        visit(e.operand);
+        break;
+      case "if":
+        visit(e.cond);
+        visit(e.then);
+        visit(e.else);
+        break;
+      case "let":
+        visit(e.value);
+        visit(e.body);
+        break;
+      case "letPattern":
+        visit(e.value);
+        visit(e.body);
+        break;
+      case "fn":
+        visit(e.body);
+        break;
+      case "recfn":
+        visit(e.body);
+        break;
+      case "call":
+        visit(e.func);
+        for (const a of e.args) visit(a);
+        break;
+      case "obj":
+        for (const f of e.fields) visit(f.value);
+        break;
+      case "field":
+        visit(e.object);
+        break;
+      case "array":
+        for (const el of e.elements) visit(el);
+        break;
+      case "index":
+        visit(e.array);
+        visit(e.index);
+        break;
+      case "block":
+        for (const ex of e.exprs) visit(ex);
+        break;
+      case "comptime":
+        visit(e.expr);
+        break;
+      case "runtime":
+        visit(e.expr);
+        break;
+      case "assert":
+        visit(e.expr);
+        visit(e.constraint);
+        break;
+      case "assertCond":
+        visit(e.condition);
+        break;
+      case "trust":
+        visit(e.expr);
+        if (e.constraint) visit(e.constraint);
+        break;
+      case "methodCall":
+        visit(e.receiver);
+        for (const a of e.args) visit(a);
+        break;
+      // lit, var don't need visiting
+    }
+  }
+
+  visit(expr);
+  return imports;
+}
+
+/**
+ * Strip import expressions from an expression tree.
+ * Replaces import nodes with just their body, since imports are hoisted.
+ */
+function stripImports(expr: Expr): Expr {
+  switch (expr.tag) {
+    case "import":
+      return stripImports(expr.body);
+    case "binop":
+      return { ...expr, left: stripImports(expr.left), right: stripImports(expr.right) };
+    case "unary":
+      return { ...expr, operand: stripImports(expr.operand) };
+    case "if":
+      return { ...expr, cond: stripImports(expr.cond), then: stripImports(expr.then), else: stripImports(expr.else) };
+    case "let":
+      return { ...expr, value: stripImports(expr.value), body: stripImports(expr.body) };
+    case "letPattern":
+      return { ...expr, value: stripImports(expr.value), body: stripImports(expr.body) };
+    case "fn":
+      return { ...expr, body: stripImports(expr.body) };
+    case "recfn":
+      return { ...expr, body: stripImports(expr.body) };
+    case "call":
+      return { ...expr, func: stripImports(expr.func), args: expr.args.map(stripImports) };
+    case "obj":
+      return { ...expr, fields: expr.fields.map(f => ({ ...f, value: stripImports(f.value) })) };
+    case "field":
+      return { ...expr, object: stripImports(expr.object) };
+    case "array":
+      return { ...expr, elements: expr.elements.map(stripImports) };
+    case "index":
+      return { ...expr, array: stripImports(expr.array), index: stripImports(expr.index) };
+    case "block":
+      return { ...expr, exprs: expr.exprs.map(stripImports) };
+    case "comptime":
+      return { ...expr, expr: stripImports(expr.expr) };
+    case "runtime":
+      return { ...expr, expr: stripImports(expr.expr) };
+    case "assert":
+      return { ...expr, expr: stripImports(expr.expr), constraint: stripImports(expr.constraint) };
+    case "assertCond":
+      return { ...expr, condition: stripImports(expr.condition) };
+    case "trust":
+      return { ...expr, expr: stripImports(expr.expr), constraint: expr.constraint ? stripImports(expr.constraint) : undefined };
+    case "methodCall":
+      return { ...expr, receiver: stripImports(expr.receiver), args: expr.args.map(stripImports) };
+    default:
+      return expr;
+  }
+}
+
+// ============================================================================
 // Compilation Pipeline
 // ============================================================================
 
@@ -668,6 +923,13 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.value, b);
         const newBound = new Set(b);
         newBound.add(e.name);
+        visit(e.body, newBound);
+        break;
+      }
+      case "letPattern": {
+        visit(e.value, b);
+        const newBound = new Set(b);
+        for (const v of patternVars(e.pattern)) newBound.add(v);
         visit(e.body, newBound);
         break;
       }
@@ -725,6 +987,12 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.receiver, b);
         for (const a of e.args) visit(a, b);
         break;
+      case "import": {
+        const newBound = new Set(b);
+        for (const name of e.names) newBound.add(name);
+        visit(e.body, newBound);
+        break;
+      }
     }
   }
 

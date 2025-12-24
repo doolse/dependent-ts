@@ -19,6 +19,7 @@
   "devDependencies": {
     "@types/cli-color": "^2.0.0",
     "@types/node": "^20.0.0",
+    "@types/react": "^19.2.7",
     "ts-node": "^10.9.0",
     "vitest": "^4.0.16"
   }

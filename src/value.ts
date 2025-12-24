@@ -303,6 +303,19 @@ export function valueSatisfies(value: Value, constraint: Constraint): boolean {
     case "recVar":
       // Recursive variable references - assume satisfied
       return true;
+
+    case "isUndefined":
+      // Note: value.ts doesn't have an "undefined" tag, so this is currently unsatisfied
+      // This will need to be addressed when undefined values are added
+      return false;
+
+    case "typeParam":
+      // Type parameters can satisfy anything within their bound
+      return valueSatisfies(value, constraint.bound);
+
+    case "genericFnType":
+      // Value must be a closure (generic functions are still closures)
+      return value.tag === "closure";
   }
 }
 

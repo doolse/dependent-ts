@@ -35,6 +35,7 @@ import {
   unary,
   ifExpr,
   letExpr,
+  letPatternExpr,
   fn,
   recfn,
   call,
@@ -48,8 +49,13 @@ import {
   assertCondExpr,
   trustExpr,
   methodCall,
+  importExpr,
   BinOp,
   UnaryOp,
+  Pattern,
+  varPattern,
+  arrayPattern,
+  objectPattern,
 } from "./expr";
 
 // ============================================================================
@@ -125,22 +131,100 @@ export class Parser {
   // ==========================================================================
 
   private parseExpr(): Expr {
-    // Check for let, if, fn first
+    // Check for let, if, fn, import first
     if (this.check("LET")) return this.parseLetExpr();
     if (this.check("IF")) return this.parseIfExpr();
     if (this.check("FN")) return this.parseFnExpr();
+    if (this.check("IMPORT")) return this.parseImportExpr();
 
     return this.parseOrExpr();
   }
 
+  private parseImportExpr(): Expr {
+    this.expect("IMPORT", "Expected 'import'");
+    this.expect("LBRACE", "Expected '{' after 'import'");
+
+    // Parse named imports
+    const names: string[] = [];
+    if (!this.check("RBRACE")) {
+      do {
+        const name = this.expect("IDENT", "Expected identifier in import").value;
+        names.push(name);
+      } while (this.match("COMMA"));
+    }
+
+    this.expect("RBRACE", "Expected '}' after import names");
+    this.expect("FROM", "Expected 'from' after import names");
+
+    // Parse module path (a string literal)
+    const pathToken = this.expect("STRING", "Expected module path string after 'from'");
+    const modulePath = pathToken.value;
+
+    this.expect("IN", "Expected 'in' after module path");
+    const body = this.parseExpr();
+
+    return importExpr(names, modulePath, body);
+  }
+
   private parseLetExpr(): Expr {
     this.expect("LET", "Expected 'let'");
+
+    // Check if this is a destructuring pattern: let [a, b] = ... or let { x, y } = ...
+    if (this.check("LBRACKET") || this.check("LBRACE")) {
+      const pattern = this.parsePattern();
+      this.expect("ASSIGN", "Expected '=' after pattern in let binding");
+      const value = this.parseExpr();
+      this.expect("IN", "Expected 'in' after let value");
+      const body = this.parseExpr();
+      return letPatternExpr(pattern, value, body);
+    }
+
+    // Simple let binding: let name = ...
     const name = this.expect("IDENT", "Expected identifier after 'let'").value;
     this.expect("ASSIGN", "Expected '=' after identifier in let binding");
     const value = this.parseExpr();
     this.expect("IN", "Expected 'in' after let value");
     const body = this.parseExpr();
     return letExpr(name, value, body);
+  }
+
+  private parsePattern(): Pattern {
+    // Array pattern: [a, b, c]
+    if (this.match("LBRACKET")) {
+      const elements: Pattern[] = [];
+      if (!this.check("RBRACKET")) {
+        do {
+          elements.push(this.parsePattern());
+        } while (this.match("COMMA"));
+      }
+      this.expect("RBRACKET", "Expected ']' after array pattern");
+      return arrayPattern(...elements);
+    }
+
+    // Object pattern: { x, y } or { x: a, y: b }
+    if (this.match("LBRACE")) {
+      const fields: { key: string; pattern: Pattern }[] = [];
+      if (!this.check("RBRACE")) {
+        do {
+          const key = this.expect("IDENT", "Expected field name in object pattern").value;
+          let pat: Pattern;
+          if (this.match("COLON")) {
+            // { key: pattern }
+            pat = this.parsePattern();
+          } else {
+            // { key } - shorthand for { key: key }
+            pat = varPattern(key);
+          }
+          fields.push({ key, pattern: pat });
+        } while (this.match("COMMA"));
+      }
+      this.expect("RBRACE", "Expected '}' after object pattern");
+      return objectPattern(fields);
+    }
+
+    // Simple variable pattern
+    const name = this.expect("IDENT", "Expected identifier in pattern").value;
+    return varPattern(name);
   }
 
   private parseIfExpr(): Expr {

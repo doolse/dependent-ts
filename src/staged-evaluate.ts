@@ -12,7 +12,8 @@
  * - `runtime` marks a value as runtime-only (Later)
  */
 
-import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr, methodCall } from "./expr";
+import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, letPatternExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr, methodCall, importExpr, Pattern, patternVars } from "./expr";
+import { TSDeclarationLoader } from "./ts-loader";
 import { lookupMethod } from "./methods";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
 import { getBuiltin, getAllBuiltins, BuiltinDef, StagedBuiltinContext } from "./builtin-registry";
@@ -145,6 +146,9 @@ export function stagingEvaluate(
     case "let":
       return evalLet(expr.name, expr.value, expr.body, env, ctx);
 
+    case "letPattern":
+      return evalLetPattern(expr.pattern, expr.value, expr.body, env, ctx);
+
     case "fn":
       return evalFn(expr.params, expr.body, env);
 
@@ -186,6 +190,9 @@ export function stagingEvaluate(
 
     case "methodCall":
       return evalMethodCall(expr.receiver, expr.method, expr.args, env, ctx);
+
+    case "import":
+      return evalImport(expr.names, expr.modulePath, expr.body, env, ctx);
   }
 }
 
@@ -391,6 +398,158 @@ function evalLet(
       svalue: later(
         bodyResult.constraint,
         letExpr(name, valueResult.residual, bodyResult.residual)
+      )
+    };
+  }
+
+  return { svalue: bodyResult };
+}
+
+/**
+ * Extract a value from a pattern binding.
+ * For Now values, extracts the actual value component.
+ * For Later values, generates index/field access residuals.
+ */
+function extractFromPattern(
+  pattern: Pattern,
+  value: SValue,
+  env: SEnv
+): { env: SEnv; bindings: Array<{ name: string; svalue: SValue }> } {
+  const bindings: Array<{ name: string; svalue: SValue }> = [];
+
+  function extract(pat: Pattern, val: SValue, basePath: Expr): void {
+    switch (pat.tag) {
+      case "varPattern":
+        bindings.push({ name: pat.name, svalue: val });
+        break;
+
+      case "arrayPattern": {
+        for (let i = 0; i < pat.elements.length; i++) {
+          const elemPat = pat.elements[i];
+          if (isNow(val)) {
+            // Extract element from Now array value
+            const arrVal = val.value;
+            if (arrVal.tag === "array" && i < arrVal.elements.length) {
+              const elemVal = arrVal.elements[i];
+              extract(elemPat, now(elemVal, constraintOf(elemVal)), index(basePath, lit(i)));
+            } else {
+              // Type error - but for now create a Later with any constraint
+              extract(elemPat, later({ tag: "any" }, index(basePath, lit(i))), index(basePath, lit(i)));
+            }
+          } else {
+            // Later value - extract constraint and generate residual
+            const elemConstraint = extractElementAtConstraint(val.constraint, i);
+            extract(elemPat, later(elemConstraint, index(basePath, lit(i))), index(basePath, lit(i)));
+          }
+        }
+        break;
+      }
+
+      case "objectPattern": {
+        for (const { key, pattern: fieldPat } of pat.fields) {
+          if (isNow(val)) {
+            // Extract field from Now object value
+            const objVal = val.value;
+            if (objVal.tag === "object") {
+              const fieldVal = objVal.fields.get(key);
+              if (fieldVal) {
+                extract(fieldPat, now(fieldVal, constraintOf(fieldVal)), field(basePath, key));
+              } else {
+                extract(fieldPat, later({ tag: "any" }, field(basePath, key)), field(basePath, key));
+              }
+            } else {
+              extract(fieldPat, later({ tag: "any" }, field(basePath, key)), field(basePath, key));
+            }
+          } else {
+            // Later value - extract constraint and generate residual
+            const fieldConstraint = extractFieldConstraintFromConstraint(val.constraint, key);
+            extract(fieldPat, later(fieldConstraint, field(basePath, key)), field(basePath, key));
+          }
+        }
+        break;
+      }
+    }
+  }
+
+  // Start extraction with a reference to a temporary variable
+  const tempVar = freshVar("_tmp");
+  const tempExpr = varRef(tempVar);
+  extract(pattern, value, tempExpr);
+
+  // Build the new environment with all bindings
+  let newEnv = env;
+  for (const { name, svalue } of bindings) {
+    newEnv = newEnv.set(name, { svalue });
+  }
+
+  return { env: newEnv, bindings };
+}
+
+/**
+ * Extract the constraint for an array element at a given index.
+ */
+function extractElementAtConstraint(constraint: Constraint, idx: number): Constraint {
+  if (constraint.tag === "elementAt" && constraint.index === idx) {
+    return constraint.constraint;
+  }
+  if (constraint.tag === "and") {
+    for (const c of constraint.constraints) {
+      const found = extractElementAtConstraint(c, idx);
+      if (found.tag !== "any") return found;
+    }
+    // Fall back to elements constraint if no elementAt found
+    for (const c of constraint.constraints) {
+      if (c.tag === "elements") return c.constraint;
+    }
+  }
+  return { tag: "any" };
+}
+
+/**
+ * Extract the constraint for an object field.
+ */
+function extractFieldConstraintFromConstraint(constraint: Constraint, fieldName: string): Constraint {
+  if (constraint.tag === "hasField" && constraint.name === fieldName) {
+    return constraint.constraint;
+  }
+  if (constraint.tag === "and") {
+    for (const c of constraint.constraints) {
+      const found = extractFieldConstraintFromConstraint(c, fieldName);
+      if (found.tag !== "any") return found;
+    }
+  }
+  return { tag: "any" };
+}
+
+function evalLetPattern(
+  pattern: Pattern,
+  valueExpr: Expr,
+  bodyExpr: Expr,
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult {
+  const valueResult = stagingEvaluate(valueExpr, env, ctx).svalue;
+
+  // Extract bindings from the pattern
+  const { env: newEnv, bindings } = extractFromPattern(pattern, valueResult, env);
+
+  const bodyResult = stagingEvaluate(bodyExpr, newEnv, ctx).svalue;
+
+  // If the body is Now, return it directly
+  if (isNow(bodyResult)) {
+    return { svalue: bodyResult };
+  }
+
+  // Check if any of the pattern variables are used in the body
+  const patVars = patternVars(pattern);
+  const anyVarUsed = patVars.some(name => usesVar(bodyExpr, name));
+
+  // If value was Later and body uses pattern variables, we need residual let pattern
+  if (isLater(valueResult) && anyVarUsed) {
+    return {
+      svalue: later(
+        bodyResult.constraint,
+        letPatternExpr(pattern, valueResult.residual, bodyResult.residual)
       )
     };
   }
@@ -1076,6 +1235,75 @@ function evalTrust(
   return { svalue: later(refinedConstraint, valueResult.residual) };
 }
 
+// Cache for loaded module exports to avoid reloading
+// Key: "module:export" -> Constraint
+const exportCache = new Map<string, Constraint>();
+
+/**
+ * Staged import - loads TypeScript declarations and creates Later bindings.
+ *
+ * Imported values are always Later because they represent external code
+ * that cannot be executed at compile time. The constraints come from
+ * the .d.ts type declarations.
+ *
+ * Syntax: import { name1, name2 } from "module" in body
+ */
+function evalImport(
+  names: string[],
+  modulePath: string,
+  bodyExpr: Expr,
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult {
+  // Load only the requested exports (lazy loading for efficiency)
+  const uncachedNames = names.filter(name => !exportCache.has(`${modulePath}:${name}`));
+
+  if (uncachedNames.length > 0) {
+    const loader = new TSDeclarationLoader();
+    const loadedExports = loader.loadExports(modulePath, uncachedNames);
+
+    // Cache the loaded exports
+    for (const [name, constraint] of loadedExports) {
+      exportCache.set(`${modulePath}:${name}`, constraint);
+    }
+  }
+
+  // Create Later bindings for each imported name
+  let newEnv = env;
+  for (const name of names) {
+    const constraint = exportCache.get(`${modulePath}:${name}`);
+    if (!constraint) {
+      throw new Error(`Module "${modulePath}" has no export named "${name}"`);
+    }
+    // Imported values are Later - they exist at runtime only
+    newEnv = newEnv.set(name, { svalue: later(constraint, varRef(name)) });
+  }
+
+  // Evaluate the body with imports in scope
+  const bodyResult = stagingEvaluate(bodyExpr, newEnv, ctx).svalue;
+
+  // If body is Now (doesn't use any imported values), return it directly
+  if (isNow(bodyResult)) {
+    return { svalue: bodyResult };
+  }
+
+  // Check if any imported names are actually used in the body
+  const anyImportUsed = names.some(name => usesVar(bodyExpr, name));
+
+  // If imports are used, wrap in residual import expression
+  if (anyImportUsed) {
+    return {
+      svalue: later(
+        bodyResult.constraint,
+        importExpr(names, modulePath, bodyResult.residual)
+      )
+    };
+  }
+
+  // No imports used - just return the body result
+  return { svalue: bodyResult };
+}
+
 // ============================================================================
 // Helpers
 // ============================================================================
@@ -1109,6 +1337,13 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.value, b);
         const newBound = new Set(b);
         newBound.add(e.name);
+        visit(e.body, newBound);
+        break;
+      }
+      case "letPattern": {
+        visit(e.value, b);
+        const newBound = new Set(b);
+        for (const v of patternVars(e.pattern)) newBound.add(v);
         visit(e.body, newBound);
         break;
       }
@@ -1162,6 +1397,17 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.expr, b);
         if (e.constraint) visit(e.constraint, b);
         break;
+      case "methodCall":
+        visit(e.receiver, b);
+        for (const a of e.args) visit(a, b);
+        break;
+      case "import": {
+        // Import names are bound in the body
+        const newBound = new Set(b);
+        for (const name of e.names) newBound.add(name);
+        visit(e.body, newBound);
+        break;
+      }
     }
   }
 
@@ -1242,6 +1488,13 @@ function usesVar(expr: Expr, name: string): boolean {
         return usesVar(expr.value, name); // Body doesn't count - shadowed
       }
       return usesVar(expr.value, name) || usesVar(expr.body, name);
+    case "letPattern": {
+      const patVars = patternVars(expr.pattern);
+      if (patVars.includes(name)) {
+        return usesVar(expr.value, name); // Body doesn't count - shadowed
+      }
+      return usesVar(expr.value, name) || usesVar(expr.body, name);
+    }
     case "fn":
       if (expr.params.includes(name)) return false; // Shadowed
       return usesVar(expr.body, name);
@@ -1272,6 +1525,10 @@ function usesVar(expr: Expr, name: string): boolean {
       return usesVar(expr.expr, name) || (expr.constraint ? usesVar(expr.constraint, name) : false);
     case "methodCall":
       return usesVar(expr.receiver, name) || expr.args.some(a => usesVar(a, name));
+    case "import":
+      // Import names shadow variables in the body
+      if (expr.names.includes(name)) return false;
+      return usesVar(expr.body, name);
   }
 }
 
