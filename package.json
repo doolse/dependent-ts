@@ -7,7 +7,10 @@
     "tsc": "tsc",
     "prod": "tsc && node ./build/app.js",
     "repl": "npx ts-node src/repl.ts",
-    "test": "vitest run"
+    "test": "vitest run",
+    "example:build": "npx ts-node examples/build-counter.ts",
+    "example:serve": "npx serve examples -p 3333",
+    "example": "npm run example:build && npm run example:serve"
   },
   "author": "",
   "license": "ISC",
