@@ -98,6 +98,18 @@ function showHelp(): void {
   console.log("  print(value)         Output value to console");
   console.log("  fields(Type)         Get field names from a type");
   console.log("  fieldType(Type, name) Get type of a field");
+  console.log("  map(fn, array)       Transform array elements");
+  console.log("  filter(fn, array)    Keep elements where fn returns true");
+  console.log("  startsWith(s, pre)   Check if string starts with prefix");
+  console.log("  endsWith(s, suf)     Check if string ends with suffix");
+  console.log("  contains(s, sub)     Check if string contains substring");
+  console.log("\nType Constructors:");
+  console.log("  objectType({f1: T1, f2: T2})  Create object type with fields");
+  console.log("  arrayType(ElemType)           Create array type");
+  console.log("  unionType(T1, T2, ...)        Create union type (T1 | T2)");
+  console.log("  intersectionType(T1, T2, ...) Create intersection (T1 & T2)");
+  console.log("  nullable(Type)                Create nullable (Type | null)");
+  console.log("  functionType([Params], Result) Create function type");
   console.log("\nExamples:");
   console.log("  1 + 2 * 3");
   console.log("  let x = 5 in x + 1");

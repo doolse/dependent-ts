@@ -374,6 +374,20 @@ function genCall(
     return `console.log(${argsCode})`;
   }
 
+  // Special case: map(fn, arr) becomes arr.map(fn)
+  if (func.tag === "var" && func.name === "map" && args.length === 2) {
+    const fnCode = genExpr(args[0], opts, depth);
+    const arrCode = genExpr(args[1], opts, depth);
+    return `${arrCode}.map(${fnCode})`;
+  }
+
+  // Special case: filter(fn, arr) becomes arr.filter(fn)
+  if (func.tag === "var" && func.name === "filter" && args.length === 2) {
+    const fnCode = genExpr(args[0], opts, depth);
+    const arrCode = genExpr(args[1], opts, depth);
+    return `${arrCode}.filter(${fnCode})`;
+  }
+
   const funcCode = genExpr(func, opts, depth);
   const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
 

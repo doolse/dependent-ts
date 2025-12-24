@@ -36,6 +36,7 @@ import {
   call,
   str,
   obj,
+  array,
 
   // Evaluator
   run,
@@ -440,23 +441,97 @@ describe("Type-Level Programming", () => {
     });
   });
 
-  describe("Type operations as builtins (not yet implemented)", () => {
-    it("should have isSubtype builtin for subtype checking", () => {
-      expect(() => {
-        run(call(varRef("isSubtype"), varRef("number"), varRef("number")));
-      }).toThrow();
+  describe("Type constructor builtins", () => {
+    it("objectType creates object type from field definitions", () => {
+      const result = run(call(varRef("objectType"), obj({ name: varRef("string"), age: varRef("number") })));
+      expect(result.value.tag).toBe("type");
+
+      // Check that the constraint has the right fields
+      const typeVal = result.value as any;
+      expect(implies(typeVal.constraint, isObject)).toBe(true);
+      expect(implies(typeVal.constraint, hasField("name", isString))).toBe(true);
+      expect(implies(typeVal.constraint, hasField("age", isNumber))).toBe(true);
     });
 
-    it("should have unionType builtin", () => {
-      expect(() => {
-        run(call(varRef("unionType"), varRef("string"), varRef("number")));
-      }).toThrow();
+    it("arrayType creates array type", () => {
+      const result = run(call(varRef("arrayType"), varRef("number")));
+      expect(result.value.tag).toBe("type");
+
+      const typeVal = result.value as any;
+      expect(implies(typeVal.constraint, isArray)).toBe(true);
     });
 
-    it("should have arrayType builtin", () => {
-      expect(() => {
-        run(call(varRef("arrayType"), varRef("string"), num(10)));
-      }).toThrow();
+    it("unionType creates union of types", () => {
+      const result = run(call(varRef("unionType"), varRef("string"), varRef("number")));
+      expect(result.value.tag).toBe("type");
+
+      // Both string and number should be subtypes of the union
+      const typeVal = result.value as any;
+      expect(implies(isString, typeVal.constraint)).toBe(true);
+      expect(implies(isNumber, typeVal.constraint)).toBe(true);
+    });
+
+    it("intersectionType creates intersection of types", () => {
+      const typeA = call(varRef("objectType"), obj({ x: varRef("number") }));
+      const typeB = call(varRef("objectType"), obj({ y: varRef("string") }));
+      const result = run(call(varRef("intersectionType"), typeA, typeB));
+      expect(result.value.tag).toBe("type");
+
+      // Should have both fields
+      const typeVal = result.value as any;
+      expect(implies(typeVal.constraint, hasField("x", isNumber))).toBe(true);
+      expect(implies(typeVal.constraint, hasField("y", isString))).toBe(true);
+    });
+
+    it("nullable creates union with null", () => {
+      const result = run(call(varRef("nullable"), varRef("string")));
+      expect(result.value.tag).toBe("type");
+
+      const typeVal = result.value as any;
+      // Both string and null should be subtypes of nullable(string)
+      expect(implies(isString, typeVal.constraint)).toBe(true);
+      expect(implies(isNull, typeVal.constraint)).toBe(true);
+    });
+
+    it("functionType creates function type", () => {
+      const result = run(call(
+        varRef("functionType"),
+        array(varRef("number"), varRef("string")),
+        varRef("boolean")
+      ));
+      expect(result.value.tag).toBe("type");
+
+      const typeVal = result.value as any;
+      expect(typeVal.constraint.tag).toBe("fnType");
+      expect(typeVal.constraint.params.length).toBe(2);
+    });
+
+    it("types created by objectType can be used with fields()", () => {
+      const personType = call(varRef("objectType"), obj({
+        name: varRef("string"),
+        age: varRef("number")
+      }));
+
+      const result = run(call(varRef("fields"), personType));
+      expect(result.value.tag).toBe("array");
+      const fieldNames = (result.value as any).elements.map((e: any) => e.value);
+      expect(fieldNames).toContain("name");
+      expect(fieldNames).toContain("age");
+    });
+
+    it("types created by objectType can be used with fieldType()", () => {
+      const personType = call(varRef("objectType"), obj({
+        name: varRef("string"),
+        age: varRef("number")
+      }));
+
+      const nameType = run(call(varRef("fieldType"), personType, str("name")));
+      expect(nameType.value.tag).toBe("type");
+      expect((nameType.value as any).constraint).toEqual(isString);
+
+      const ageType = run(call(varRef("fieldType"), personType, str("age")));
+      expect(ageType.value.tag).toBe("type");
+      expect((ageType.value as any).constraint).toEqual(isNumber);
     });
   });
 

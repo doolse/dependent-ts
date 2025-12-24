@@ -14,7 +14,7 @@
 
 import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr } from "./expr";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate, equals } from "./constraint";
 import { inferFunction, InferredFunction } from "./inference";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
@@ -530,6 +530,95 @@ function tryStagedReflectionBuiltin(
     }
   }
 
+  // ============================================================================
+  // String Operations
+  // ============================================================================
+
+  if (funcExpr.name === "startsWith") {
+    // startsWith(str, prefix) - check if string starts with prefix
+    if (argExprs.length !== 2) {
+      throw new Error("startsWith() requires exactly 2 arguments (str, prefix)");
+    }
+
+    const strArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const prefixArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    // Both Later -> runtime
+    if (isLater(strArg) || isLater(prefixArg)) {
+      const strResidual = isNow(strArg) ? valueToExpr(strArg.value) : strArg.residual;
+      const prefixResidual = isNow(prefixArg) ? valueToExpr(prefixArg.value) : prefixArg.residual;
+      return {
+        svalue: later(isBool, call(varRef("startsWith"), strResidual, prefixResidual))
+      };
+    }
+
+    if (strArg.value.tag !== "string") {
+      throw new TypeError(isString, strArg.constraint, "startsWith() first argument");
+    }
+    if (prefixArg.value.tag !== "string") {
+      throw new TypeError(isString, prefixArg.constraint, "startsWith() second argument");
+    }
+
+    const result = strArg.value.value.startsWith(prefixArg.value.value);
+    return { svalue: now(boolVal(result), and(isBool, equals(result))) };
+  }
+
+  if (funcExpr.name === "endsWith") {
+    // endsWith(str, suffix) - check if string ends with suffix
+    if (argExprs.length !== 2) {
+      throw new Error("endsWith() requires exactly 2 arguments (str, suffix)");
+    }
+
+    const strArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const suffixArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    if (isLater(strArg) || isLater(suffixArg)) {
+      const strResidual = isNow(strArg) ? valueToExpr(strArg.value) : strArg.residual;
+      const suffixResidual = isNow(suffixArg) ? valueToExpr(suffixArg.value) : suffixArg.residual;
+      return {
+        svalue: later(isBool, call(varRef("endsWith"), strResidual, suffixResidual))
+      };
+    }
+
+    if (strArg.value.tag !== "string") {
+      throw new TypeError(isString, strArg.constraint, "endsWith() first argument");
+    }
+    if (suffixArg.value.tag !== "string") {
+      throw new TypeError(isString, suffixArg.constraint, "endsWith() second argument");
+    }
+
+    const result = strArg.value.value.endsWith(suffixArg.value.value);
+    return { svalue: now(boolVal(result), and(isBool, equals(result))) };
+  }
+
+  if (funcExpr.name === "contains") {
+    // contains(str, substr) - check if string contains substring
+    if (argExprs.length !== 2) {
+      throw new Error("contains() requires exactly 2 arguments (str, substr)");
+    }
+
+    const strArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const substrArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    if (isLater(strArg) || isLater(substrArg)) {
+      const strResidual = isNow(strArg) ? valueToExpr(strArg.value) : strArg.residual;
+      const substrResidual = isNow(substrArg) ? valueToExpr(substrArg.value) : substrArg.residual;
+      return {
+        svalue: later(isBool, call(varRef("contains"), strResidual, substrResidual))
+      };
+    }
+
+    if (strArg.value.tag !== "string") {
+      throw new TypeError(isString, strArg.constraint, "contains() first argument");
+    }
+    if (substrArg.value.tag !== "string") {
+      throw new TypeError(isString, substrArg.constraint, "contains() second argument");
+    }
+
+    const result = strArg.value.value.includes(substrArg.value.value);
+    return { svalue: now(boolVal(result), and(isBool, equals(result))) };
+  }
+
   if (funcExpr.name === "fieldType") {
     // fieldType(T, name) - returns the type of a field
     if (argExprs.length !== 2) {
@@ -791,6 +880,376 @@ function tryStagedReflectionBuiltin(
     return {
       svalue: now(arrayVal(newElements), resultConstraint)
     };
+  }
+
+  if (funcExpr.name === "map") {
+    // map(fn, array) - transform each element
+    // Comptime if both are known, runtime otherwise
+    if (argExprs.length !== 2) {
+      throw new Error("map() requires exactly 2 arguments (fn, array)");
+    }
+
+    const fnArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const arrArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    // If array is Later, generate runtime code
+    if (isLater(arrArg)) {
+      // Generate residual: arr.map(fn)
+      const fnResidual = isNow(fnArg) ? valueToExpr(fnArg.value) : fnArg.residual;
+      const resultConstraint = and(isArray, elements({ tag: "any" }));
+      return {
+        svalue: later(resultConstraint, call(varRef("map"), fnResidual, arrArg.residual))
+      };
+    }
+
+    if (arrArg.value.tag !== "array") {
+      throw new TypeError(isArray, arrArg.constraint, "map() second argument");
+    }
+
+    // Function must be Now for compile-time mapping
+    if (isLater(fnArg)) {
+      // Array is known but function is not - generate runtime code
+      const arrResidual = valueToExpr(arrArg.value);
+      const resultConstraint = and(isArray, elements({ tag: "any" }));
+      return {
+        svalue: later(resultConstraint, call(varRef("map"), fnArg.residual, arrResidual))
+      };
+    }
+
+    if (fnArg.value.tag !== "closure") {
+      throw new TypeError(isFunction, fnArg.constraint, "map() first argument");
+    }
+
+    const fn = fnArg.value;
+    if (fn.params.length !== 1) {
+      throw new Error("map() function must have exactly 1 parameter");
+    }
+
+    const sclosure = stagedClosures.get(fn);
+    if (!sclosure) {
+      throw new Error("map() function closure not properly staged");
+    }
+
+    // Map over array at compile time
+    const resultElements: Value[] = [];
+    let resultElemConstraint: Constraint = { tag: "never" };
+
+    for (const elem of arrArg.value.elements) {
+      let callEnv = sclosure.env;
+      const elemSValue = now(elem, constraintOf(elem));
+      callEnv = callEnv.set(fn.params[0], { svalue: elemSValue });
+
+      const result = stagingEvaluate(fn.body, callEnv, RefinementContext.empty());
+
+      if (isLater(result.svalue)) {
+        // If any result is Later, we need to generate runtime code
+        const arrResidual = valueToExpr(arrArg.value);
+        const fnResidual = valueToExpr(fnArg.value);
+        return {
+          svalue: later(and(isArray, elements({ tag: "any" })), call(varRef("map"), fnResidual, arrResidual))
+        };
+      }
+
+      resultElements.push(result.svalue.value);
+      resultElemConstraint = resultElemConstraint.tag === "never"
+        ? result.svalue.constraint
+        : or(resultElemConstraint, result.svalue.constraint);
+    }
+
+    const resultConstraint = and(isArray, elements(resultElemConstraint));
+    return { svalue: now(arrayVal(resultElements), resultConstraint) };
+  }
+
+  if (funcExpr.name === "filter") {
+    // filter(fn, array) - keep elements where fn returns true
+    // Comptime if both are known, runtime otherwise
+    if (argExprs.length !== 2) {
+      throw new Error("filter() requires exactly 2 arguments (fn, array)");
+    }
+
+    const fnArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const arrArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    // If array is Later, generate runtime code
+    if (isLater(arrArg)) {
+      const fnResidual = isNow(fnArg) ? valueToExpr(fnArg.value) : fnArg.residual;
+      // Filter preserves element type
+      const elemConstraint = extractElementsConstraint(arrArg.constraint);
+      const resultConstraint = and(isArray, elements(elemConstraint));
+      return {
+        svalue: later(resultConstraint, call(varRef("filter"), fnResidual, arrArg.residual))
+      };
+    }
+
+    if (arrArg.value.tag !== "array") {
+      throw new TypeError(isArray, arrArg.constraint, "filter() second argument");
+    }
+
+    // Function must be Now for compile-time filtering
+    if (isLater(fnArg)) {
+      const arrResidual = valueToExpr(arrArg.value);
+      const elemConstraint = extractElementsConstraint(arrArg.constraint);
+      const resultConstraint = and(isArray, elements(elemConstraint));
+      return {
+        svalue: later(resultConstraint, call(varRef("filter"), fnArg.residual, arrResidual))
+      };
+    }
+
+    if (fnArg.value.tag !== "closure") {
+      throw new TypeError(isFunction, fnArg.constraint, "filter() first argument");
+    }
+
+    const fn = fnArg.value;
+    if (fn.params.length !== 1) {
+      throw new Error("filter() function must have exactly 1 parameter");
+    }
+
+    const sclosure = stagedClosures.get(fn);
+    if (!sclosure) {
+      throw new Error("filter() function closure not properly staged");
+    }
+
+    // Filter array at compile time
+    const resultElements: Value[] = [];
+    let resultElemConstraint: Constraint = { tag: "never" };
+
+    for (const elem of arrArg.value.elements) {
+      let callEnv = sclosure.env;
+      const elemSValue = now(elem, constraintOf(elem));
+      callEnv = callEnv.set(fn.params[0], { svalue: elemSValue });
+
+      const result = stagingEvaluate(fn.body, callEnv, RefinementContext.empty());
+
+      if (isLater(result.svalue)) {
+        // If predicate result is Later, generate runtime code
+        const arrResidual = valueToExpr(arrArg.value);
+        const fnResidual = valueToExpr(fnArg.value);
+        const elemConstraint = extractElementsConstraint(arrArg.constraint);
+        return {
+          svalue: later(and(isArray, elements(elemConstraint)), call(varRef("filter"), fnResidual, arrResidual))
+        };
+      }
+
+      if (result.svalue.value.tag !== "bool") {
+        throw new TypeError(isBool, result.svalue.constraint, "filter() predicate return value");
+      }
+
+      if (result.svalue.value.value) {
+        resultElements.push(elem);
+        const elemC = constraintOf(elem);
+        resultElemConstraint = resultElemConstraint.tag === "never"
+          ? elemC
+          : or(resultElemConstraint, elemC);
+      }
+    }
+
+    const resultConstraint = resultElemConstraint.tag === "never"
+      ? and(isArray, elements({ tag: "any" }))
+      : and(isArray, elements(resultElemConstraint));
+    return { svalue: now(arrayVal(resultElements), resultConstraint) };
+  }
+
+  // ============================================================================
+  // Type Constructor Builtins
+  // ============================================================================
+
+  if (funcExpr.name === "objectType") {
+    // objectType({ field1: Type1, field2: Type2, ... }) - creates an object type
+    if (argExprs.length !== 1) {
+      throw new Error("objectType() requires exactly 1 argument (an object of field types)");
+    }
+
+    const objArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    if (isLater(objArg)) {
+      throw new StagingError("objectType() requires a compile-time known object");
+    }
+
+    if (objArg.value.tag !== "object") {
+      throw new TypeError(isObject, objArg.constraint, "objectType() argument");
+    }
+
+    // Build constraint from object fields
+    const constraints: Constraint[] = [isObject];
+    for (const [fieldName, fieldVal] of objArg.value.fields) {
+      if (fieldVal.tag !== "type") {
+        throw new Error(`objectType() field '${fieldName}' must be a type, got ${fieldVal.tag}`);
+      }
+      constraints.push(hasField(fieldName, fieldVal.constraint));
+    }
+
+    const resultConstraint = and(...constraints);
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
+  }
+
+  if (funcExpr.name === "arrayType") {
+    // arrayType(ElementType) - creates an array type
+    if (argExprs.length !== 1) {
+      throw new Error("arrayType() requires exactly 1 argument");
+    }
+
+    const elemArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    if (isLater(elemArg)) {
+      throw new StagingError("arrayType() requires a compile-time known type");
+    }
+
+    if (elemArg.value.tag !== "type") {
+      throw new TypeError(isTypeC, elemArg.constraint, "arrayType() argument");
+    }
+
+    const resultConstraint = and(isArray, elements(elemArg.value.constraint));
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
+  }
+
+  if (funcExpr.name === "unionType") {
+    // unionType(Type1, Type2, ...) - creates a union type (or)
+    if (argExprs.length < 2) {
+      throw new Error("unionType() requires at least 2 arguments");
+    }
+
+    const constraints: Constraint[] = [];
+    for (let i = 0; i < argExprs.length; i++) {
+      const typeArg = stagingEvaluate(argExprs[i], env, ctx).svalue;
+
+      if (isLater(typeArg)) {
+        throw new StagingError(`unionType() argument ${i + 1} must be compile-time known`);
+      }
+
+      if (typeArg.value.tag !== "type") {
+        throw new TypeError(isTypeC, typeArg.constraint, `unionType() argument ${i + 1}`);
+      }
+
+      constraints.push(typeArg.value.constraint);
+    }
+
+    const resultConstraint = or(...constraints);
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
+  }
+
+  if (funcExpr.name === "intersectionType") {
+    // intersectionType(Type1, Type2, ...) - creates an intersection type (and)
+    if (argExprs.length < 2) {
+      throw new Error("intersectionType() requires at least 2 arguments");
+    }
+
+    const constraints: Constraint[] = [];
+    for (let i = 0; i < argExprs.length; i++) {
+      const typeArg = stagingEvaluate(argExprs[i], env, ctx).svalue;
+
+      if (isLater(typeArg)) {
+        throw new StagingError(`intersectionType() argument ${i + 1} must be compile-time known`);
+      }
+
+      if (typeArg.value.tag !== "type") {
+        throw new TypeError(isTypeC, typeArg.constraint, `intersectionType() argument ${i + 1}`);
+      }
+
+      constraints.push(typeArg.value.constraint);
+    }
+
+    const resultConstraint = and(...constraints);
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
+  }
+
+  if (funcExpr.name === "nullable") {
+    // nullable(Type) - creates a union of type with null
+    if (argExprs.length !== 1) {
+      throw new Error("nullable() requires exactly 1 argument");
+    }
+
+    const typeArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    if (isLater(typeArg)) {
+      throw new StagingError("nullable() requires a compile-time known type");
+    }
+
+    if (typeArg.value.tag !== "type") {
+      throw new TypeError(isTypeC, typeArg.constraint, "nullable() argument");
+    }
+
+    const resultConstraint = or(typeArg.value.constraint, isNull);
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
+  }
+
+  if (funcExpr.name === "objectTypeFromEntries") {
+    // objectTypeFromEntries([[name1, Type1], [name2, Type2], ...]) - creates object type from entries
+    if (argExprs.length !== 1) {
+      throw new Error("objectTypeFromEntries() requires exactly 1 argument (array of [name, type] pairs)");
+    }
+
+    const entriesArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    if (isLater(entriesArg)) {
+      throw new StagingError("objectTypeFromEntries() requires a compile-time known entries array");
+    }
+
+    if (entriesArg.value.tag !== "array") {
+      throw new TypeError(isArray, entriesArg.constraint, "objectTypeFromEntries() argument");
+    }
+
+    const entries = entriesArg.value.elements;
+    const constraints: Constraint[] = [isObject];
+
+    for (const entry of entries) {
+      // Each entry should be a [name, type] tuple
+      if (entry.tag !== "array" || entry.elements.length !== 2) {
+        throw new Error("objectTypeFromEntries() entries must be [name, type] pairs");
+      }
+
+      const nameVal = entry.elements[0];
+      const typeVal = entry.elements[1];
+
+      if (nameVal.tag !== "string") {
+        throw new Error("objectTypeFromEntries() field names must be strings");
+      }
+
+      if (typeVal.tag !== "type") {
+        throw new Error(`objectTypeFromEntries() field '${nameVal.value}' must have a type value, got ${typeVal.tag}`);
+      }
+
+      constraints.push(hasField(nameVal.value, typeVal.constraint));
+    }
+
+    const resultConstraint = and(...constraints);
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
+  }
+
+  if (funcExpr.name === "functionType") {
+    // functionType(paramTypes, resultType) - creates a function type
+    // paramTypes is an array of types
+    if (argExprs.length !== 2) {
+      throw new Error("functionType() requires exactly 2 arguments (paramTypes array, resultType)");
+    }
+
+    const paramsArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const resultArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    if (isLater(paramsArg)) {
+      throw new StagingError("functionType() requires compile-time known param types");
+    }
+    if (isLater(resultArg)) {
+      throw new StagingError("functionType() requires a compile-time known result type");
+    }
+
+    if (paramsArg.value.tag !== "array") {
+      throw new TypeError(isArray, paramsArg.constraint, "functionType() first argument");
+    }
+    if (resultArg.value.tag !== "type") {
+      throw new TypeError(isTypeC, resultArg.constraint, "functionType() second argument");
+    }
+
+    const paramConstraints: Constraint[] = [];
+    for (let i = 0; i < paramsArg.value.elements.length; i++) {
+      const param = paramsArg.value.elements[i];
+      if (param.tag !== "type") {
+        throw new Error(`functionType() param ${i + 1} must be a type`);
+      }
+      paramConstraints.push(param.constraint);
+    }
+
+    const resultConstraint = fnType(paramConstraints, resultArg.value.constraint);
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
   }
 
   return null;
@@ -1550,6 +2009,36 @@ const builtinBindings: Record<string, SBinding> = {
   "objectFromEntries": builtinClosure(["entries"], isObject),
   // dynamicField(obj, fieldName) -> any
   "dynamicField": builtinClosure(["obj", "fieldName"], { tag: "any" }),
+
+  // Type constructor builtins
+  // objectType({ field1: Type1, ... }) -> Type
+  "objectType": builtinClosure(["fields"], isTypeC),
+  // arrayType(ElementType) -> Type
+  "arrayType": builtinClosure(["elementType"], isTypeC),
+  // unionType(Type1, Type2, ...) -> Type (variadic, but we declare 2 params for inference)
+  "unionType": builtinClosure(["type1", "type2"], isTypeC),
+  // intersectionType(Type1, Type2, ...) -> Type
+  "intersectionType": builtinClosure(["type1", "type2"], isTypeC),
+  // nullable(Type) -> Type (union with null)
+  "nullable": builtinClosure(["type"], isTypeC),
+  // functionType([ParamTypes], ResultType) -> Type
+  "functionType": builtinClosure(["paramTypes", "resultType"], isTypeC),
+  // objectTypeFromEntries([[name, Type], ...]) -> Type
+  "objectTypeFromEntries": builtinClosure(["entries"], isTypeC),
+
+  // Array operations
+  // map(fn, array) -> array
+  "map": builtinClosure(["fn", "array"], isArray),
+  // filter(fn, array) -> array
+  "filter": builtinClosure(["fn", "array"], isArray),
+
+  // String operations
+  // startsWith(str, prefix) -> boolean
+  "startsWith": builtinClosure(["str", "prefix"], isBool),
+  // endsWith(str, suffix) -> boolean
+  "endsWith": builtinClosure(["str", "suffix"], isBool),
+  // contains(str, substr) -> boolean
+  "contains": builtinClosure(["str", "substr"], isBool),
 };
 
 /**

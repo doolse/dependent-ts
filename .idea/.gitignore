@@ -13,3 +13,4 @@
 /dataSources.local.xml
 # Editor-based HTTP Client requests
 /httpRequests/
+db-forest-config.xml
