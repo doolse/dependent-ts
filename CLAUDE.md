@@ -5,17 +5,18 @@
 This is a TypeScript implementation of a dependent type system with **constraints-as-types**. Types are represented as logical predicates (constraints) that values must satisfy, unifying traditional types with refinement types.
 
 The system includes:
-- A pure interpreter with constraint checking
 - A staged evaluator (partial evaluation with Now/Later staging)
 - A JavaScript code generator for residual expressions
 - A lexer and parser for the expression language
+- Type inference with constraint solving
 
 ## Build & Test Commands
 
 ```bash
-npm test        # Run vitest tests
-npm run tsc     # Type-check with TypeScript
-npm run repl    # Start the interactive REPL
+npm test           # Run vitest tests
+npm run tsc        # Type-check with TypeScript
+npm run repl       # Start the interactive REPL
+npm run docs:verify  # Verify documentation examples are up-to-date
 ```
 
 ## Architecture
@@ -27,13 +28,13 @@ npm run repl    # Start the interactive REPL
 | `constraint.ts` | Constraint types and operations (the type system core) |
 | `value.ts` | Runtime values (number, string, bool, object, array, closure, type) |
 | `expr.ts` | Expression AST and constructors |
-| `evaluate.ts` | Pure interpreter with constraint checking |
-| `staged-evaluate.ts` | Partial evaluator with Now/Later staging |
+| `staged-evaluate.ts` | Staged evaluator with Now/Later partial evaluation |
+| `svalue.ts` | Staged values (Now = compile-time known, Later = runtime) |
 | `codegen.ts` | JavaScript code generator |
 | `env.ts` | Environment and refinement context |
 | `builtins.ts` | Built-in operations (+, -, *, /, ==, etc.) |
 | `refinement.ts` | Control flow refinement extraction |
-| `svalue.ts` | Staged values (Now = compile-time known, Later = runtime) |
+| `inference.ts` | Type inference for functions |
 | `lexer.ts` | Tokenizer for the expression language |
 | `parser.ts` | Recursive descent parser |
 | `index.ts` | Public API exports |
@@ -62,7 +63,9 @@ npm run repl    # Start the interactive REPL
 
 ```
 let x = 5 in x + 1
+let [a, b] = arr in a + b        // Destructuring
 fn(x, y) => x + y
+fn fac(n) => if n == 0 then 1 else n * fac(n-1)  // Named recursive
 if cond then a else b
 { field: value }
 obj.field
@@ -70,6 +73,9 @@ obj.field
 arr[0]
 comptime(expr)
 runtime(expr)
+runtime(name: expr)              // Named runtime variable
+assert(value, type)
+trust(value, type)
 ```
 
 ## Code Patterns
@@ -137,3 +143,7 @@ const code = compile(expr); // stage + codegen pipeline
 - Control flow narrows types via refinement contexts
 - Discriminated unions work via `narrowOr` eliminating contradictory branches
 - Recursive types use `rec`/`recVar` with coinductive reasoning for subtyping
+
+## Documentation
+
+See `docs/implementation-guide.md` for a comprehensive deep dive into the implementation, including executable code examples.

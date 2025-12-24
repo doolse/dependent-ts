@@ -10,7 +10,8 @@
     "test": "vitest run",
     "example:build": "npx ts-node examples/build-counter.ts",
     "example:serve": "npx serve examples -p 3333",
-    "example": "npm run example:build && npm run example:serve"
+    "example": "npm run example:build && npm run example:serve",
+    "docs:verify": "npx ts-node docs/run-examples.ts"
   },
   "author": "",
   "license": "ISC",

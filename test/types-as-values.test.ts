@@ -406,8 +406,8 @@ describe("Integration: Types as Values", () => {
 
 // ============================================================================
 // Type-Level Programming
-// From docs/goals.md: "Everything that can be done using TypeScript's type-level
-// syntax should be expressible as normal function syntax"
+// Goal: Everything that can be done using TypeScript's type-level syntax
+// should be expressible as normal function syntax
 // ============================================================================
 
 import { fn, letExpr, ifExpr, bool, num, eq } from "../src/index";

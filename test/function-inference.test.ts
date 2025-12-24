@@ -178,7 +178,7 @@ describe("Function Type Inference", () => {
 
 // ============================================================================
 // Polymorphic Type Inference
-// From docs/goals.md: "let id = fn(x) => x  // id: forall T. T -> T"
+// Goal: "let id = fn(x) => x" should infer "forall T. T -> T"
 // ============================================================================
 
 import { equals, array, index } from "../src/index";
