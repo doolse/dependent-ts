@@ -383,6 +383,49 @@ ${indent}})()`;
 // Function Generation
 // ============================================================================
 
+/**
+ * Check if an expression is a let chain (let x = ... in let y = ... in ...)
+ * These should be generated as statements in function bodies, not IIFEs.
+ */
+function isLetChain(expr: Expr): boolean {
+  return expr.tag === "let" || expr.tag === "letPattern";
+}
+
+/**
+ * Generate a function body as statements (for let chains).
+ * Converts: let x = a in let y = b in result
+ * To: const x = a; const y = b; return result;
+ */
+function genFunctionBodyStatements(
+  body: Expr,
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string {
+  const indent = opts.indent.repeat(depth);
+  const statements: string[] = [];
+
+  let current = body;
+  while (isLetChain(current)) {
+    if (current.tag === "let") {
+      const safeName = genIdentifier(current.name);
+      const valueCode = genExpr(current.value, opts, depth);
+      statements.push(`${indent}const ${safeName} = ${valueCode};`);
+      current = current.body;
+    } else if (current.tag === "letPattern") {
+      const patternCode = genPattern(current.pattern);
+      const valueCode = genExpr(current.value, opts, depth);
+      statements.push(`${indent}const ${patternCode} = ${valueCode};`);
+      current = current.body;
+    }
+  }
+
+  // The final expression is the return value
+  const returnCode = genExpr(current, opts, depth);
+  statements.push(`${indent}return ${returnCode};`);
+
+  return statements.join("\n");
+}
+
 function genFunction(
   params: string[],
   body: Expr,
@@ -390,9 +433,16 @@ function genFunction(
   depth: number
 ): string {
   const safeParams = params.map(genIdentifier).join(", ");
-  const bodyCode = genExpr(body, opts, depth);
 
-  // Use arrow function syntax
+  // If body is a let chain, generate as block with statements
+  if (isLetChain(body)) {
+    const bodyStatements = genFunctionBodyStatements(body, opts, depth + 1);
+    const indent = opts.indent.repeat(depth);
+    return `(${safeParams}) => {\n${bodyStatements}\n${indent}}`;
+  }
+
+  // Simple expression body
+  const bodyCode = genExpr(body, opts, depth);
   return `(${safeParams}) => ${bodyCode}`;
 }
 
@@ -409,9 +459,16 @@ function genRecFunction(
 ): string {
   const safeName = genIdentifier(name);
   const safeParams = params.map(genIdentifier).join(", ");
-  const bodyCode = genExpr(body, opts, depth);
 
-  // Use named function expression for recursion
+  // If body is a let chain, generate as block with statements
+  if (isLetChain(body)) {
+    const bodyStatements = genFunctionBodyStatements(body, opts, depth + 1);
+    const indent = opts.indent.repeat(depth);
+    return `function ${safeName}(${safeParams}) {\n${bodyStatements}\n${indent}}`;
+  }
+
+  // Simple expression body
+  const bodyCode = genExpr(body, opts, depth);
   return `function ${safeName}(${safeParams}) { return ${bodyCode}; }`;
 }
 

@@ -10,6 +10,8 @@ import {
   generateModuleWithImports,
   exprToString,
   isLater,
+  loadExports,
+  constraintToString,
 } from "../src/index";
 
 describe("Import Expression", () => {
@@ -74,6 +76,57 @@ describe("Import Expression", () => {
       const code = generateModuleWithImports(expr);
       expect(code).toContain('import { useState } from "react";');
       expect(code).toContain('import { something } from "other";');
+    });
+  });
+
+  describe("React jsx-runtime", () => {
+    it("loads jsx and jsxs from react/jsx-runtime", () => {
+      const exports = loadExports("react/jsx-runtime", ["jsx", "jsxs", "Fragment"]);
+      expect(exports.size).toBe(3);
+      expect(exports.has("jsx")).toBe(true);
+      expect(exports.has("jsxs")).toBe(true);
+      expect(exports.has("Fragment")).toBe(true);
+    });
+
+    it("loads useState from react", () => {
+      const exports = loadExports("react", ["useState"]);
+      expect(exports.size).toBe(1);
+      const useStateType = exports.get("useState");
+      expect(useStateType).toBeDefined();
+      // useState is a generic function
+      const typeStr = constraintToString(useStateType!);
+      expect(typeStr).toContain("->");  // It's a function
+    });
+
+    it("generates React counter component", () => {
+      const code = `
+        import { jsx, jsxs } from "react/jsx-runtime" in
+        import { useState } from "react" in
+          fn(props) =>
+            let [count, setCount] = useState(0) in
+            jsxs("div", {
+              children: [
+                jsx("p", { children: count }),
+                jsx("button", {
+                  onClick: fn() => setCount(count + 1),
+                  children: "+"
+                })
+              ]
+            })
+      `;
+      const expr = parse(code);
+      const jsCode = generateModuleWithImports(expr);
+
+      // Should have proper imports
+      expect(jsCode).toContain('import { jsx, jsxs } from "react/jsx-runtime";');
+      expect(jsCode).toContain('import { useState } from "react";');
+
+      // Should have useState destructuring
+      expect(jsCode).toContain("const [count, setCount] = useState(0)");
+
+      // Should have jsx calls
+      expect(jsCode).toContain("jsxs(");
+      expect(jsCode).toContain("jsx(");
     });
   });
 });
