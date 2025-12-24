@@ -1221,39 +1221,93 @@ export function instantiate(scheme: ConstraintScheme): Constraint {
 /**
  * Extract all field names from a constraint.
  * Returns an array of field names found in hasField constraints.
+ * Handles recursive types (rec/recVar) and unions (or).
+ * For unions, returns all fields that COULD exist (union of fields from all branches).
  */
 export function extractAllFieldNames(constraint: Constraint): string[] {
-  const fields: string[] = [];
+  const fields = new Set<string>();
 
-  if (constraint.tag === "hasField") {
-    fields.push(constraint.name);
-  } else if (constraint.tag === "and") {
-    for (const c of constraint.constraints) {
-      if (c.tag === "hasField") {
-        fields.push(c.name);
-      }
+  function extract(c: Constraint): void {
+    switch (c.tag) {
+      case "hasField":
+        fields.add(c.name);
+        break;
+      case "and":
+        for (const sub of c.constraints) {
+          extract(sub);
+        }
+        break;
+      case "or":
+        // For unions, collect fields from all branches
+        for (const sub of c.constraints) {
+          extract(sub);
+        }
+        break;
+      case "rec":
+        // Unwrap recursive type and look at the body
+        extract(c.body);
+        break;
+      case "recVar":
+        // Recursive variable reference - no fields here, don't recurse
+        break;
+      // Other constraint types don't contain field information
     }
   }
 
-  return fields;
+  extract(constraint);
+  return Array.from(fields);
 }
 
 /**
  * Extract the constraint for a specific field from an object constraint.
  * Returns null if the field is not found.
+ * Handles recursive types (rec/recVar) and unions (or).
+ * For unions, returns a union of the field constraints from branches that have the field.
  */
 export function extractFieldConstraint(constraint: Constraint, name: string): Constraint | null {
-  if (constraint.tag === "hasField" && constraint.name === name) {
-    return constraint.constraint;
-  }
-
-  if (constraint.tag === "and") {
-    for (const c of constraint.constraints) {
-      if (c.tag === "hasField" && c.name === name) {
-        return c.constraint;
+  function extract(c: Constraint): Constraint | null {
+    switch (c.tag) {
+      case "hasField":
+        if (c.name === name) {
+          return c.constraint;
+        }
+        return null;
+      case "and":
+        for (const sub of c.constraints) {
+          const result = extract(sub);
+          if (result !== null) {
+            return result;
+          }
+        }
+        return null;
+      case "or": {
+        // For unions, collect field constraints from all branches that have the field
+        const fieldConstraints: Constraint[] = [];
+        for (const sub of c.constraints) {
+          const result = extract(sub);
+          if (result !== null) {
+            fieldConstraints.push(result);
+          }
+        }
+        if (fieldConstraints.length === 0) {
+          return null;
+        }
+        if (fieldConstraints.length === 1) {
+          return fieldConstraints[0];
+        }
+        // Return union of all field constraints
+        return or(...fieldConstraints);
       }
+      case "rec":
+        // Unwrap recursive type and look at the body
+        return extract(c.body);
+      case "recVar":
+        // Recursive variable reference - no field info here
+        return null;
+      default:
+        return null;
     }
   }
 
-  return null;
+  return extract(constraint);
 }

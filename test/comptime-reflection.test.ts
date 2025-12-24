@@ -13,14 +13,21 @@ import {
   num,
   obj,
   field,
+  letExpr,
 
   // Constraints
   isArray,
   isObject,
   isString,
   isNumber,
+  isNull,
   hasField,
   and,
+  or,
+  rec,
+  recVar,
+  extractAllFieldNames,
+  extractFieldConstraint,
 
   // Values
   typeVal,
@@ -434,5 +441,322 @@ describe("JSON Serializer Pattern", () => {
     const names = arr.elements.map((e: any) => e.value);
     expect(names).toContain("name");
     expect(names).toContain("age");
+  });
+});
+
+// ============================================================================
+// recType() and recVarType() Tests
+// ============================================================================
+
+describe("recType() and recVarType() builtins", () => {
+  it("creates a simple recursive type (linked list)", () => {
+    // ListType = recType("List", unionType(null, objectType({ head: number, tail: recVarType("List") })))
+    const result = run(
+      call(varRef("recType"),
+        str("List"),
+        call(varRef("unionType"),
+          varRef("null"),
+          call(varRef("objectType"),
+            obj({
+              head: varRef("number"),
+              tail: call(varRef("recVarType"), str("List"))
+            })
+          )
+        )
+      )
+    );
+
+    expect(result.value.tag).toBe("type");
+    const typeValue = result.value as { tag: "type"; constraint: any };
+    expect(typeValue.constraint.tag).toBe("rec");
+    expect(typeValue.constraint.var).toBe("List");
+  });
+
+  it("creates a tree type with left and right children", () => {
+    const result = run(
+      call(varRef("recType"),
+        str("Tree"),
+        call(varRef("objectType"),
+          obj({
+            value: varRef("number"),
+            left: call(varRef("nullable"), call(varRef("recVarType"), str("Tree"))),
+            right: call(varRef("nullable"), call(varRef("recVarType"), str("Tree")))
+          })
+        )
+      )
+    );
+
+    expect(result.value.tag).toBe("type");
+    const typeValue = result.value as { tag: "type"; constraint: any };
+    expect(typeValue.constraint.tag).toBe("rec");
+    expect(typeValue.constraint.var).toBe("Tree");
+  });
+
+  it("fields() extracts field names from recursive type", () => {
+    // Create a list type and check that fields() works
+    const listType = call(varRef("recType"),
+      str("List"),
+      call(varRef("unionType"),
+        varRef("null"),
+        call(varRef("objectType"),
+          obj({
+            head: varRef("number"),
+            tail: call(varRef("recVarType"), str("List"))
+          })
+        )
+      )
+    );
+
+    const result = run(
+      call(varRef("fields"), listType)
+    );
+
+    expect(result.value.tag).toBe("array");
+    const arr = result.value as { tag: "array"; elements: any[] };
+    const names = arr.elements.map((e: any) => e.value);
+    expect(names).toContain("head");
+    expect(names).toContain("tail");
+  });
+
+  it("fieldType() extracts field type from recursive type", () => {
+    const listType = call(varRef("recType"),
+      str("List"),
+      call(varRef("unionType"),
+        varRef("null"),
+        call(varRef("objectType"),
+          obj({
+            head: varRef("number"),
+            tail: call(varRef("recVarType"), str("List"))
+          })
+        )
+      )
+    );
+
+    const result = run(
+      call(varRef("fieldType"), listType, str("head"))
+    );
+
+    expect(result.value.tag).toBe("type");
+    const typeValue = result.value as { tag: "type"; constraint: any };
+    expect(typeValue.constraint.tag).toBe("isNumber");
+  });
+
+  it("fieldType() returns recVar for recursive field", () => {
+    const listType = call(varRef("recType"),
+      str("List"),
+      call(varRef("unionType"),
+        varRef("null"),
+        call(varRef("objectType"),
+          obj({
+            head: varRef("number"),
+            tail: call(varRef("recVarType"), str("List"))
+          })
+        )
+      )
+    );
+
+    const result = run(
+      call(varRef("fieldType"), listType, str("tail"))
+    );
+
+    expect(result.value.tag).toBe("type");
+    const typeValue = result.value as { tag: "type"; constraint: any };
+    // The tail field type should be the recVar
+    expect(typeValue.constraint.tag).toBe("recVar");
+    expect(typeValue.constraint.var).toBe("List");
+  });
+});
+
+// ============================================================================
+// typeOf() Tests
+// ============================================================================
+
+describe("typeOf() builtin", () => {
+  it("returns type of a number literal", () => {
+    const result = run(call(varRef("typeOf"), num(42)));
+    expect(result.value.tag).toBe("type");
+  });
+
+  it("returns type of an object literal", () => {
+    const result = run(call(varRef("typeOf"), obj({ x: num(1), y: num(2) })));
+    expect(result.value.tag).toBe("type");
+    const typeValue = result.value as { tag: "type"; constraint: any };
+    // Should have field constraints
+    const fieldNames = extractAllFieldNames(typeValue.constraint);
+    expect(fieldNames).toContain("x");
+    expect(fieldNames).toContain("y");
+  });
+
+  it("can be used with fields() to reflect on value's type", () => {
+    const result = run(
+      call(varRef("fields"),
+        call(varRef("typeOf"), obj({ name: str("Alice"), age: num(30) }))
+      )
+    );
+
+    expect(result.value.tag).toBe("array");
+    const arr = result.value as { tag: "array"; elements: any[] };
+    const names = arr.elements.map((e: any) => e.value);
+    expect(names).toContain("name");
+    expect(names).toContain("age");
+  });
+
+  it("works on runtime values (Later) - constraint is still known", () => {
+    // Use a runtime() expression to create a Later value with known constraint
+    // runtime(expr, name) marks the value as Later but preserves the constraint
+    const personExpr = letExpr("person",
+      // Create a runtime value with object constraint
+      {
+        tag: "runtime" as const,
+        expr: obj({ name: str("Alice"), age: num(30) }),
+        name: "person"
+      },
+      call(varRef("fields"),
+        call(varRef("typeOf"), varRef("person"))
+      )
+    );
+
+    // Use stage() since the let binding has a Later value
+    const result = stage(personExpr);
+
+    // Even though person is Later, typeOf returns the constraint which is known
+    // So fields() should return a Now value at compile time
+    expect(isNow(result.svalue)).toBe(true);
+    if (isNow(result.svalue)) {
+      expect(result.svalue.value.tag).toBe("array");
+      const arr = result.svalue.value as { tag: "array"; elements: any[] };
+      const names = arr.elements.map((e: any) => e.value);
+      expect(names).toContain("name");
+      expect(names).toContain("age");
+    }
+  });
+});
+
+// ============================================================================
+// extractAllFieldNames() Direct Tests
+// ============================================================================
+
+describe("extractAllFieldNames() handles complex constraints", () => {
+  it("extracts fields from simple hasField", () => {
+    const c = hasField("name", isString);
+    expect(extractAllFieldNames(c)).toEqual(["name"]);
+  });
+
+  it("extracts fields from and constraint", () => {
+    const c = and(isObject, hasField("x", isNumber), hasField("y", isNumber));
+    const fields = extractAllFieldNames(c);
+    expect(fields).toContain("x");
+    expect(fields).toContain("y");
+  });
+
+  it("extracts fields from or constraint (union of fields)", () => {
+    const c = or(
+      and(isObject, hasField("a", isNumber)),
+      and(isObject, hasField("b", isString))
+    );
+    const fields = extractAllFieldNames(c);
+    expect(fields).toContain("a");
+    expect(fields).toContain("b");
+  });
+
+  it("extracts fields from rec constraint", () => {
+    const c = rec("Node", and(
+      isObject,
+      hasField("value", isNumber),
+      hasField("next", or(isNull, recVar("Node")))
+    ));
+    const fields = extractAllFieldNames(c);
+    expect(fields).toContain("value");
+    expect(fields).toContain("next");
+  });
+
+  it("handles nested or inside rec", () => {
+    // rec("X", or(null, and(hasField("a"), hasField("b", recVar("X")))))
+    const c = rec("X", or(
+      isNull,
+      and(isObject, hasField("a", isNumber), hasField("b", recVar("X")))
+    ));
+    const fields = extractAllFieldNames(c);
+    expect(fields).toContain("a");
+    expect(fields).toContain("b");
+  });
+
+  it("does not infinite loop on recVar", () => {
+    const c = rec("Loop", and(
+      hasField("self", recVar("Loop")),
+      hasField("data", isNumber)
+    ));
+    const fields = extractAllFieldNames(c);
+    expect(fields).toContain("self");
+    expect(fields).toContain("data");
+  });
+});
+
+// ============================================================================
+// extractFieldConstraint() Direct Tests
+// ============================================================================
+
+describe("extractFieldConstraint() handles complex constraints", () => {
+  it("extracts constraint from simple hasField", () => {
+    const c = hasField("name", isString);
+    expect(extractFieldConstraint(c, "name")).toEqual(isString);
+    expect(extractFieldConstraint(c, "other")).toBeNull();
+  });
+
+  it("extracts constraint from and", () => {
+    const c = and(isObject, hasField("x", isNumber), hasField("y", isString));
+    expect(extractFieldConstraint(c, "x")).toEqual(isNumber);
+    expect(extractFieldConstraint(c, "y")).toEqual(isString);
+    expect(extractFieldConstraint(c, "z")).toBeNull();
+  });
+
+  it("extracts constraint from or (returns union)", () => {
+    const c = or(
+      and(isObject, hasField("x", isNumber)),
+      and(isObject, hasField("x", isString))
+    );
+    const xConstraint = extractFieldConstraint(c, "x");
+    // Should be or(isNumber, isString)
+    expect(xConstraint).not.toBeNull();
+    expect(xConstraint!.tag).toBe("or");
+  });
+
+  it("extracts constraint from rec", () => {
+    const c = rec("Node", and(
+      isObject,
+      hasField("value", isNumber),
+      hasField("next", recVar("Node"))
+    ));
+    expect(extractFieldConstraint(c, "value")).toEqual(isNumber);
+    const nextConstraint = extractFieldConstraint(c, "next");
+    expect(nextConstraint).not.toBeNull();
+    expect(nextConstraint!.tag).toBe("recVar");
+  });
+
+  it("returns null for field only in some branches of or", () => {
+    const c = or(
+      and(isObject, hasField("a", isNumber)),
+      and(isObject, hasField("b", isString))
+    );
+    // 'a' only exists in first branch
+    const aConstraint = extractFieldConstraint(c, "a");
+    expect(aConstraint).toEqual(isNumber); // Returns from the branch that has it
+  });
+
+  it("handles deeply nested structures", () => {
+    const c = rec("Tree", or(
+      isNull,
+      and(
+        isObject,
+        hasField("value", isNumber),
+        hasField("left", recVar("Tree")),
+        hasField("right", recVar("Tree"))
+      )
+    ));
+
+    expect(extractFieldConstraint(c, "value")).toEqual(isNumber);
+    expect(extractFieldConstraint(c, "left")?.tag).toBe("recVar");
+    expect(extractFieldConstraint(c, "right")?.tag).toBe("recVar");
+    expect(extractFieldConstraint(c, "nonexistent")).toBeNull();
   });
 });

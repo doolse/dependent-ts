@@ -14,7 +14,7 @@
 
 import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr } from "./expr";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate, equals } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate, equals, rec, recVar } from "./constraint";
 import { inferFunction, InferredFunction } from "./inference";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
@@ -374,13 +374,18 @@ function evalLet(
 
   const bodyResult = stagingEvaluate(bodyExpr, newEnv, ctx).svalue;
 
+  // If the body is Now, return it directly even if the bound value was Later.
+  // This handles cases like typeOf() which extract compile-time type info from Later values.
+  if (isNow(bodyResult)) {
+    return { svalue: bodyResult };
+  }
+
   // If value was Later and body uses it, we need residual let
   if (isLater(valueResult) && usesVar(bodyExpr, name)) {
-    const bodyResidual = isNow(bodyResult) ? valueToExpr(bodyResult.value) : bodyResult.residual;
     return {
       svalue: later(
         bodyResult.constraint,
-        letExpr(name, valueResult.residual, bodyResidual)
+        letExpr(name, valueResult.residual, bodyResult.residual)
       )
     };
   }
@@ -483,6 +488,22 @@ function tryStagedReflectionBuiltin(
   ctx: RefinementContext
 ): SEvalResult | null {
   if (funcExpr.tag !== "var") return null;
+
+  if (funcExpr.name === "typeOf") {
+    // typeOf(value) - returns the compile-time known type/constraint of a value
+    // Works even if the value itself is Later, because constraints are tracked at compile time
+    if (argExprs.length !== 1) {
+      throw new Error("typeOf() requires exactly 1 argument");
+    }
+
+    const arg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+    const constraint = constraintOfSV(arg);
+
+    // Return the constraint as a TypeValue - always Now since constraints are compile-time
+    return {
+      svalue: now(typeVal(constraint), isType(constraint))
+    };
+  }
 
   if (funcExpr.name === "fields") {
     // fields(T) - returns array of field names from a type
@@ -1252,6 +1273,62 @@ function tryStagedReflectionBuiltin(
     return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
   }
 
+  if (funcExpr.name === "recType") {
+    // recType(varName, bodyType) - creates a recursive type
+    // The bodyType can reference the recursive variable using recVarType(varName)
+    if (argExprs.length !== 2) {
+      throw new Error("recType() requires exactly 2 arguments (varName, bodyType)");
+    }
+
+    const nameArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    if (isLater(nameArg)) {
+      throw new StagingError("recType() requires a compile-time known variable name");
+    }
+
+    if (nameArg.value.tag !== "string") {
+      throw new TypeError(isString, nameArg.constraint, "recType() first argument");
+    }
+
+    const varName = nameArg.value.value;
+
+    // Evaluate the body type expression
+    const bodyArg = stagingEvaluate(argExprs[1], env, ctx).svalue;
+
+    if (isLater(bodyArg)) {
+      throw new StagingError("recType() requires a compile-time known body type");
+    }
+
+    if (bodyArg.value.tag !== "type") {
+      throw new TypeError(isTypeC, bodyArg.constraint, "recType() second argument");
+    }
+
+    const resultConstraint = rec(varName, bodyArg.value.constraint);
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
+  }
+
+  if (funcExpr.name === "recVarType") {
+    // recVarType(varName) - creates a reference to a recursive type variable
+    // Must be used inside a recType() body
+    if (argExprs.length !== 1) {
+      throw new Error("recVarType() requires exactly 1 argument (varName)");
+    }
+
+    const nameArg = stagingEvaluate(argExprs[0], env, ctx).svalue;
+
+    if (isLater(nameArg)) {
+      throw new StagingError("recVarType() requires a compile-time known variable name");
+    }
+
+    if (nameArg.value.tag !== "string") {
+      throw new TypeError(isString, nameArg.constraint, "recVarType() argument");
+    }
+
+    const varName = nameArg.value.value;
+    const resultConstraint = recVar(varName);
+    return { svalue: now(typeVal(resultConstraint), isType(resultConstraint)) };
+  }
+
   return null;
 }
 
@@ -1995,6 +2072,8 @@ function builtinClosure(params: string[], resultConstraint: Constraint): SBindin
  * These enable type inference to work on function bodies that call builtins.
  */
 const builtinBindings: Record<string, SBinding> = {
+  // typeOf(value) -> Type (returns the compile-time type of any value)
+  "typeOf": builtinClosure(["value"], isTypeC),
   // print(value) -> null
   "print": builtinClosure(["value"], isNull),
   // fields(Type) -> array of strings
@@ -2025,6 +2104,10 @@ const builtinBindings: Record<string, SBinding> = {
   "functionType": builtinClosure(["paramTypes", "resultType"], isTypeC),
   // objectTypeFromEntries([[name, Type], ...]) -> Type
   "objectTypeFromEntries": builtinClosure(["entries"], isTypeC),
+  // recType(varName, bodyType) -> Type (recursive type)
+  "recType": builtinClosure(["varName", "bodyType"], isTypeC),
+  // recVarType(varName) -> Type (reference to recursive type variable)
+  "recVarType": builtinClosure(["varName"], isTypeC),
 
   // Array operations
   // map(fn, array) -> array
