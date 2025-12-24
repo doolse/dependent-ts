@@ -293,3 +293,50 @@ describe("exprToString for Method Calls", () => {
     expect(exprToString(expr)).toBe('"hello".trim().toUpperCase()');
   });
 });
+
+describe("Array HOF Method Calls", () => {
+  describe("map as method", () => {
+    it("evaluates map at compile time", () => {
+      expect(evalTo('[1, 2, 3].map(fn(x) => x * 2)')).toEqual([2, 4, 6]);
+    });
+
+    it("maps over array of strings", () => {
+      expect(evalTo('["a", "b", "c"].map(fn(s) => s.toUpperCase())')).toEqual(["A", "B", "C"]);
+    });
+
+    it("generates residual for runtime array", () => {
+      const code = parseAndCompile('let arr = runtime(arr: []) in arr.map(fn(x) => x * 2)');
+      expect(code).toContain(".map(");
+    });
+
+    it("generates residual for runtime function", () => {
+      const code = parseAndCompile('let f = runtime(f: fn(x) => x) in [1, 2, 3].map(f)');
+      expect(code).toContain(".map(");
+    });
+  });
+
+  describe("filter as method", () => {
+    it("evaluates filter at compile time", () => {
+      expect(evalTo('[1, 2, 3, 4, 5].filter(fn(x) => x > 2)')).toEqual([3, 4, 5]);
+    });
+
+    it("filters array of strings", () => {
+      expect(evalTo('["hello", "hi", "hey"].filter(fn(s) => s.startsWith("he"))')).toEqual(["hello", "hey"]);
+    });
+
+    it("generates residual for runtime array", () => {
+      const code = parseAndCompile('let arr = runtime(arr: []) in arr.filter(fn(x) => x > 0)');
+      expect(code).toContain(".filter(");
+    });
+  });
+
+  describe("chained HOFs", () => {
+    it("chains map and filter", () => {
+      expect(evalTo('[1, 2, 3, 4].map(fn(x) => x * 2).filter(fn(x) => x > 4)')).toEqual([6, 8]);
+    });
+
+    it("chains filter and map", () => {
+      expect(evalTo('[1, 2, 3, 4].filter(fn(x) => x > 2).map(fn(x) => x * 10)')).toEqual([30, 40]);
+    });
+  });
+});

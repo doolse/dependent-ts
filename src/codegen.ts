@@ -778,5 +778,8 @@ function exprFromValue(value: import("./value").Value): Expr {
       // Types are meta-level values that don't have a runtime representation
       // They're only used at compile time, so this shouldn't normally be called
       throw new Error("Cannot convert type value to expression");
+    case "builtin":
+      // Builtins are referenced by their name
+      return { tag: "var", name: value.name };
   }
 }

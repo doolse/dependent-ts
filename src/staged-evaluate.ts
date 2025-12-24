@@ -14,7 +14,8 @@
 
 import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr, methodCall } from "./expr";
 import { lookupMethod } from "./methods";
-import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
+import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
+import { getBuiltin, getAllBuiltins, BuiltinDef, StagedBuiltinContext } from "./builtin-registry";
 import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate, equals, rec, recVar, constraintToString } from "./constraint";
 import { inferFunction, InferredFunction } from "./inference";
 import { Env, Binding, RefinementContext } from "./env";
@@ -1336,19 +1337,102 @@ function tryStagedReflectionBuiltin(
   return null;
 }
 
+/**
+ * Evaluate a call to a builtin function.
+ */
+function evalBuiltinCall(
+  builtinDef: BuiltinDef,
+  argExprs: Expr[],
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult {
+  // Evaluate arguments
+  const args = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
+
+  // Check argument count
+  if (args.length !== builtinDef.params.length) {
+    throw new Error(`${builtinDef.name}() requires exactly ${builtinDef.params.length} arguments, got ${args.length}`);
+  }
+
+  // Check argument constraints
+  for (let i = 0; i < args.length; i++) {
+    requireConstraint(args[i].constraint, builtinDef.params[i].constraint, `argument ${i + 1} of ${builtinDef.name}()`);
+  }
+
+  if (builtinDef.evaluate.kind === "pure") {
+    // Pure builtin - check if all args are Now
+    if (args.every(isNow)) {
+      const values = args.map(sv => (sv as Now).value);
+      const result = builtinDef.evaluate.impl(values);
+      const resultConstraint = builtinDef.resultType(args.map(sv => sv.constraint));
+      return { svalue: now(result, and(resultConstraint, constraintOf(result))) };
+    }
+
+    // Generate residual for pure builtin with Later args
+    const argResiduals = args.map(sv => isNow(sv) ? valueToExpr(sv.value) : sv.residual);
+    const resultConstraint = builtinDef.resultType(args.map(sv => sv.constraint));
+
+    // If it's a method-style builtin, generate method call syntax
+    if (builtinDef.isMethod && args.length >= 1) {
+      return {
+        svalue: later(resultConstraint, methodCall(argResiduals[0], builtinDef.name, argResiduals.slice(1)))
+      };
+    }
+
+    return {
+      svalue: later(resultConstraint, call(varRef(builtinDef.name), ...argResiduals))
+    };
+  } else {
+    // Staged builtin - create context and call handler
+    const builtinCtx: StagedBuiltinContext = {
+      env,
+      refinementCtx: ctx,
+      invokeClosure: (closure, closureArgs) => {
+        const sclosure = stagedClosures.get(closure);
+        if (!sclosure) {
+          throw new Error("Staged closure info not found for builtin invocation");
+        }
+        let callEnv = sclosure.env;
+        if (sclosure.name) {
+          callEnv = callEnv.set(sclosure.name, { svalue: now(closure, isFunction) });
+        }
+        for (let i = 0; i < sclosure.params.length; i++) {
+          callEnv = callEnv.set(sclosure.params[i], { svalue: closureArgs[i] });
+        }
+        return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
+      },
+      valueToExpr,
+      now,
+      later,
+      isNow,
+    };
+
+    return builtinDef.evaluate.handler(args, argExprs, builtinCtx);
+  }
+}
+
 function evalCall(
   funcExpr: Expr,
   argExprs: Expr[],
   env: SEnv,
   ctx: RefinementContext
 ): SEvalResult {
-  // Try reflection builtins first
+  // Try reflection builtins first (legacy - will be removed)
   const reflectionResult = tryStagedReflectionBuiltin(funcExpr, argExprs, env, ctx);
   if (reflectionResult !== null) {
     return reflectionResult;
   }
 
   const func = stagingEvaluate(funcExpr, env, ctx).svalue;
+
+  // Check if it's a builtin function
+  if (isNow(func) && func.value.tag === "builtin") {
+    const builtinDef = getBuiltin(func.value.name);
+    if (builtinDef) {
+      return evalBuiltinCall(builtinDef, argExprs, env, ctx);
+    }
+    throw new Error(`Unknown builtin: ${func.value.name}`);
+  }
 
   requireConstraint(func.constraint, isFunction, "function call");
 
@@ -1431,7 +1515,11 @@ function evalCall(
 
 /**
  * Evaluate a method call on a receiver.
- * Looks up the method in the method registry based on receiver constraint.
+ *
+ * For builtins marked as methods (like map, filter), desugars to a function call
+ * with receiver-first argument order: arr.map(fn) -> map(arr, fn)
+ *
+ * For pure methods in the method registry, executes directly.
  */
 function evalMethodCall(
   receiverExpr: Expr,
@@ -1443,7 +1531,19 @@ function evalMethodCall(
   // Evaluate the receiver
   const recv = stagingEvaluate(receiverExpr, env, ctx).svalue;
 
-  // Look up the method based on receiver constraint
+  // Check if this method is a builtin (like map, filter)
+  const builtinDef = getBuiltin(methodName);
+  if (builtinDef && builtinDef.isMethod) {
+    // Verify receiver matches first param constraint
+    requireConstraint(recv.constraint, builtinDef.params[0].constraint, `receiver of .${methodName}()`);
+
+    // Desugar to builtin call with receiver-first argument order
+    // arr.map(fn) -> evalBuiltinCall(map, [receiverExpr, ...argExprs])
+    const allArgExprs = [receiverExpr, ...argExprs];
+    return evalBuiltinCall(builtinDef, allArgExprs, env, ctx);
+  }
+
+  // Look up the method based on receiver constraint (pure methods)
   const methodDef = lookupMethod(recv.constraint, methodName);
 
   if (!methodDef) {
@@ -1976,6 +2076,9 @@ function valueToExpr(v: Value): Expr {
       // For now, just convert to the constraint representation
       // This is a simplified approach - could be improved
       throw new Error("Cannot convert type value to expression directly");
+    case "builtin":
+      // Builtins are referenced by name in the environment
+      return varRef(v.name);
   }
 }
 
@@ -2189,12 +2292,31 @@ const builtinBindings: Record<string, SBinding> = {
  */
 function createInitialSEnv(): SEnv {
   let env = SEnv.empty();
+
+  // Add type bindings
   for (const [name, binding] of Object.entries(typeBindings)) {
     env = env.set(name, binding);
   }
-  for (const [name, binding] of Object.entries(builtinBindings)) {
-    env = env.set(name, binding);
+
+  // Add builtins from the registry as BuiltinValue
+  for (const builtin of getAllBuiltins()) {
+    const paramConstraints = builtin.params.map(p => p.constraint);
+    // Use a placeholder result constraint - actual result type comes from resultType()
+    const resultConstraint = builtin.resultType(paramConstraints);
+    const builtinFnType = fnType(paramConstraints, resultConstraint);
+    env = env.set(builtin.name, {
+      svalue: now(builtinVal(builtin.name), builtinFnType)
+    });
   }
+
+  // Add legacy builtins (not yet migrated to registry)
+  for (const [name, binding] of Object.entries(builtinBindings)) {
+    // Only add if not already in environment (registry takes precedence)
+    if (!env.has(name)) {
+      env = env.set(name, binding);
+    }
+  }
+
   return env;
 }
 

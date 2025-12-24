@@ -497,5 +497,8 @@ function valueEquals(a: Value, b: Value): boolean {
     case "type":
       // Compare types by structural equality of their constraints
       return constraintEquals(a.constraint, (b as typeof a).constraint);
+    case "builtin":
+      // Compare builtins by name
+      return a.name === (b as typeof a).name;
   }
 }

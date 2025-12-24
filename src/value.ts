@@ -18,7 +18,8 @@ export type Value =
   | ObjectValue
   | ArrayValue
   | ClosureValue
-  | TypeValue;
+  | TypeValue
+  | BuiltinValue;
 
 export interface NumberValue {
   tag: "number";
@@ -62,6 +63,15 @@ export interface TypeValue {
   constraint: Constraint;  // The constraint set this type represents
 }
 
+/**
+ * A built-in function value.
+ * References a function in the builtin registry by name.
+ */
+export interface BuiltinValue {
+  tag: "builtin";
+  name: string;
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -92,6 +102,11 @@ export const closureVal = (params: string[], body: Expr, env: Env, name?: string
 export const typeVal = (constraint: Constraint): TypeValue => ({
   tag: "type",
   constraint,
+});
+
+export const builtinVal = (name: string): BuiltinValue => ({
+  tag: "builtin",
+  name,
 });
 
 // ============================================================================
@@ -153,6 +168,10 @@ export function constraintOf(value: Value): Constraint {
     case "type":
       // A type value has the isType constraint wrapping what it represents
       return isType(value.constraint);
+
+    case "builtin":
+      // Builtins are functions
+      return isFunction;
   }
 }
 
@@ -214,7 +233,7 @@ export function valueSatisfies(value: Value, constraint: Constraint): boolean {
       return value.tag === "array";
 
     case "isFunction":
-      return value.tag === "closure";
+      return value.tag === "closure" || value.tag === "builtin";
 
     case "equals":
       return valueEqualsRaw(value, constraint.value);
@@ -342,6 +361,9 @@ export function valueToString(value: Value): string {
 
     case "type":
       return `Type<${constraintToString(value.constraint)}>`;
+
+    case "builtin":
+      return `<builtin ${value.name}>`;
   }
 }
 
@@ -386,5 +408,9 @@ export function valueToRaw(value: Value): unknown {
       return value.elements.map(valueToRaw);
     case "closure":
       throw new Error("Cannot convert closure to raw value");
+    case "type":
+      throw new Error("Cannot convert type to raw value");
+    case "builtin":
+      throw new Error("Cannot convert builtin to raw value");
   }
 }
