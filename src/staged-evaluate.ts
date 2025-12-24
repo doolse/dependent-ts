@@ -12,9 +12,10 @@
  * - `runtime` marks a value as runtime-only (Later)
  */
 
-import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr } from "./expr";
+import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr, methodCall } from "./expr";
+import { lookupMethod } from "./methods";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies } from "./value";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate, equals, rec, recVar } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, extractAllFieldNames, extractFieldConstraint as extractFieldConstraintFromConstraint, unify, fnType, instantiate, equals, rec, recVar, constraintToString } from "./constraint";
 import { inferFunction, InferredFunction } from "./inference";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
@@ -181,6 +182,9 @@ export function stagingEvaluate(
 
     case "trust":
       return evalTrust(expr.expr, expr.constraint, env, ctx);
+
+    case "methodCall":
+      return evalMethodCall(expr.receiver, expr.method, expr.args, env, ctx);
   }
 }
 
@@ -1425,6 +1429,61 @@ function evalCall(
   return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
 }
 
+/**
+ * Evaluate a method call on a receiver.
+ * Looks up the method in the method registry based on receiver constraint.
+ */
+function evalMethodCall(
+  receiverExpr: Expr,
+  methodName: string,
+  argExprs: Expr[],
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult {
+  // Evaluate the receiver
+  const recv = stagingEvaluate(receiverExpr, env, ctx).svalue;
+
+  // Look up the method based on receiver constraint
+  const methodDef = lookupMethod(recv.constraint, methodName);
+
+  if (!methodDef) {
+    throw new Error(`No method '${methodName}' on type ${constraintToString(recv.constraint)}`);
+  }
+
+  // Evaluate arguments
+  const args = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
+
+  // Check argument constraints
+  if (args.length !== methodDef.params.length) {
+    throw new Error(`Method '${methodName}' expects ${methodDef.params.length} arguments, got ${args.length}`);
+  }
+
+  for (let i = 0; i < methodDef.params.length; i++) {
+    requireConstraint(args[i].constraint, methodDef.params[i], `argument ${i + 1} of .${methodName}()`);
+  }
+
+  // If receiver or any argument is Later, generate residual
+  if (isLater(recv) || args.some(isLater)) {
+    const recvResidual = isNow(recv) ? valueToExpr(recv.value) : recv.residual;
+    const argResiduals = args.map(sv => isNow(sv) ? valueToExpr(sv.value) : sv.residual);
+
+    const resultConstraint = methodDef.result(recv.constraint, args.map(a => a.constraint));
+
+    return {
+      svalue: later(resultConstraint, methodCall(recvResidual, methodName, argResiduals))
+    };
+  }
+
+  // All Now - execute at compile time
+  const resultValue = methodDef.impl(recv.value, args.map(a => (a as Now).value));
+  const resultConstraint = methodDef.result(recv.constraint, args.map(a => a.constraint));
+
+  // Refine constraint with actual value if possible
+  const refinedConstraint = and(resultConstraint, constraintOf(resultValue));
+
+  return { svalue: now(resultValue, simplify(refinedConstraint)) };
+}
+
 function evalObject(
   fields: { name: string; value: Expr }[],
   env: SEnv,
@@ -1968,6 +2027,8 @@ function usesVar(expr: Expr, name: string): boolean {
       return usesVar(expr.condition, name);
     case "trust":
       return usesVar(expr.expr, name) || (expr.constraint ? usesVar(expr.constraint, name) : false);
+    case "methodCall":
+      return usesVar(expr.receiver, name) || expr.args.some(a => usesVar(a, name));
   }
 }
 
@@ -2034,7 +2095,6 @@ function constraintEquals(a: Constraint, b: Constraint): boolean {
 
 // Import for error messages
 import { exprToString } from "./expr";
-import { constraintToString } from "./constraint";
 
 // ============================================================================
 // Type Bindings

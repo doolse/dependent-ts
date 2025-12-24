@@ -144,9 +144,21 @@ export {
   assertExpr,
   assertCondExpr,
   trustExpr,
+  methodCall,
   exprToString,
   AssertCondExpr,
+  MethodCallExpr,
 } from "./expr";
+
+// Method Registry
+export {
+  MethodDef,
+  stringMethods,
+  arrayMethods,
+  numberMethods,
+  lookupMethod,
+  getMethodNames,
+} from "./methods";
 
 // Environment
 export {

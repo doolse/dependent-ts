@@ -26,7 +26,8 @@ export type Expr =
   | RuntimeExpr
   | AssertExpr
   | AssertCondExpr
-  | TrustExpr;
+  | TrustExpr
+  | MethodCallExpr;
 
 export interface LitExpr {
   tag: "lit";
@@ -189,6 +190,18 @@ export interface AssertCondExpr {
   message?: string;     // Optional error message
 }
 
+/**
+ * Method call on a receiver.
+ * Represents `receiver.method(args)` syntax for built-in methods on primitives.
+ * Examples: str.startsWith("foo"), arr.includes(x), str.toUpperCase()
+ */
+export interface MethodCallExpr {
+  tag: "methodCall";
+  receiver: Expr;       // The object/value to call the method on
+  method: string;       // The method name
+  args: Expr[];         // Method arguments (not including receiver)
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -278,6 +291,9 @@ export const assertCondExpr = (condition: Expr, message?: string): AssertCondExp
 export const trustExpr = (expr: Expr, constraint?: Expr): TrustExpr =>
   ({ tag: "trust", expr, constraint });
 
+export const methodCall = (receiver: Expr, method: string, args: Expr[]): MethodCallExpr =>
+  ({ tag: "methodCall", receiver, method, args });
+
 // ============================================================================
 // Pretty Printing
 // ============================================================================
@@ -350,5 +366,8 @@ export function exprToString(expr: Expr): string {
       return expr.constraint
         ? `trust(${exprToString(expr.expr)}, ${exprToString(expr.constraint)})`
         : `trust(${exprToString(expr.expr)})`;
+
+    case "methodCall":
+      return `${exprToString(expr.receiver)}.${expr.method}(${expr.args.map(exprToString).join(", ")})`;
   }
 }

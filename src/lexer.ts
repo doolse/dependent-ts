@@ -255,7 +255,7 @@ export class Lexer {
       value += this.advance();
     }
 
-    const type = KEYWORDS[value] ?? "IDENT";
+    const type = Object.prototype.hasOwnProperty.call(KEYWORDS, value) ? KEYWORDS[value] : "IDENT";
     return { type, value, line: this.line, column: startCol };
   }
 

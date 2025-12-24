@@ -146,6 +146,9 @@ function genExpr(expr: Expr, opts: Required<CodeGenOptions>, depth: number): str
     case "trust":
       // trust is purely a type-level operation - just generate the inner expression
       return genExpr(expr.expr, opts, depth);
+
+    case "methodCall":
+      return genMethodCall(expr.receiver, expr.method, expr.args, opts, depth);
   }
 }
 
@@ -395,6 +398,27 @@ function genCall(
   const funcWrapped = func.tag === "fn" ? `(${funcCode})` : funcCode;
 
   return `${funcWrapped}(${argsCode})`;
+}
+
+/**
+ * Generate method call: receiver.method(args)
+ */
+function genMethodCall(
+  receiver: Expr,
+  method: string,
+  args: Expr[],
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string {
+  const recvCode = genExpr(receiver, opts, depth);
+  const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
+
+  // Wrap complex receiver expressions in parentheses
+  const needsWrap = receiver.tag === "binop" || receiver.tag === "unary" ||
+                    receiver.tag === "if" || receiver.tag === "let";
+  const recvWrapped = needsWrap ? `(${recvCode})` : recvCode;
+
+  return `${recvWrapped}.${method}(${argsCode})`;
 }
 
 // ============================================================================
@@ -696,6 +720,10 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
       case "trust":
         visit(e.expr, b);
         if (e.constraint) visit(e.constraint, b);
+        break;
+      case "methodCall":
+        visit(e.receiver, b);
+        for (const a of e.args) visit(a, b);
         break;
     }
   }

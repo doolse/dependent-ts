@@ -47,6 +47,7 @@ import {
   assertExpr,
   assertCondExpr,
   trustExpr,
+  methodCall,
   BinOp,
   UnaryOp,
 } from "./expr";
@@ -300,9 +301,24 @@ export class Parser {
         this.expect("RPAREN", "Expected ')' after arguments");
         expr = call(expr, ...args);
       } else if (this.match("DOT")) {
-        // Field access
+        // Field access or method call
         const name = this.expect("IDENT", "Expected field name after '.'").value;
-        expr = field(expr, name);
+
+        // Check if this is a method call (followed by LPAREN)
+        if (this.match("LPAREN")) {
+          // Method call: receiver.method(args)
+          const args: Expr[] = [];
+          if (!this.check("RPAREN")) {
+            do {
+              args.push(this.parseExpr());
+            } while (this.match("COMMA"));
+          }
+          this.expect("RPAREN", "Expected ')' after method arguments");
+          expr = methodCall(expr, name, args);
+        } else {
+          // Plain field access
+          expr = field(expr, name);
+        }
       } else if (this.match("LBRACKET")) {
         // Index access
         const indexExpr = this.parseExpr();
