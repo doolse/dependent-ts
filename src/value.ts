@@ -291,10 +291,6 @@ export function valueSatisfies(value: Value, constraint: Constraint): boolean {
       // Value must be a type
       return value.tag === "type";
 
-    case "fnType":
-      // Value must be a closure
-      return value.tag === "closure";
-
     case "rec":
       // Recursive types - check by unrolling
       // For now, assume satisfied if it could be part of the union
@@ -308,14 +304,6 @@ export function valueSatisfies(value: Value, constraint: Constraint): boolean {
       // Note: value.ts doesn't have an "undefined" tag, so this is currently unsatisfied
       // This will need to be addressed when undefined values are added
       return false;
-
-    case "typeParam":
-      // Type parameters can satisfy anything within their bound
-      return valueSatisfies(value, constraint.bound);
-
-    case "genericFnType":
-      // Value must be a closure (generic functions are still closures)
-      return value.tag === "closure";
   }
 }
 

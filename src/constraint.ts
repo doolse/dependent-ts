@@ -50,25 +50,7 @@ export type Constraint =
 
   // Recursive types (μ types)
   | { tag: "rec", var: string, body: Constraint }    // μX. body (recursive type binder)
-  | { tag: "recVar", var: string }                   // X (reference to recursive binder)
-
-  // Function type constraint (for type inference)
-  | { tag: "fnType", params: Constraint[], result: Constraint }
-
-  // Generic type parameter (for parametric polymorphism)
-  | { tag: "typeParam"; name: string; id: number; bound: Constraint }
-
-  // Generic function type (polymorphic function)
-  | { tag: "genericFnType"; typeParams: TypeParam[]; params: Constraint[]; result: Constraint };
-
-/**
- * Type parameter for generic functions.
- */
-export interface TypeParam {
-  name: string;
-  id: number;
-  bound: Constraint;  // Upper bound (default: any)
-}
+  | { tag: "recVar", var: string };
 
 // ============================================================================
 // Constructors
@@ -134,52 +116,6 @@ export const rec = (varName: string, body: Constraint): Constraint =>
 
 export const recVar = (varName: string): Constraint =>
   ({ tag: "recVar", var: varName });
-
-// Function type constraint
-export const fnType = (params: Constraint[], result: Constraint): Constraint =>
-  ({ tag: "fnType", params, result });
-
-// Type parameter counter for generating unique IDs
-let typeParamCounter = 0;
-
-/**
- * Reset the type parameter counter (for testing).
- */
-export function resetTypeParamCounter(): void {
-  typeParamCounter = 0;
-}
-
-/**
- * Create a fresh type parameter ID.
- */
-export function freshTypeParamId(): number {
-  return typeParamCounter++;
-}
-
-/**
- * Type parameter constraint - represents a named generic type variable.
- * @param name - The name of the type parameter (e.g., "T", "U")
- * @param bound - Upper bound constraint (default: any)
- * @param id - Optional ID; if not provided, a fresh one is generated
- */
-export const typeParam = (name: string, bound: Constraint = anyC, id?: number): Constraint =>
-  ({ tag: "typeParam", name, id: id ?? freshTypeParamId(), bound });
-
-/**
- * Create a TypeParam object for use in genericFnType.
- */
-export const makeTypeParam = (name: string, bound: Constraint = anyC, id?: number): TypeParam =>
-  ({ name, id: id ?? freshTypeParamId(), bound });
-
-/**
- * Generic function type - a polymorphic function with type parameters.
- * Example: <T>(x: T) => T
- */
-export const genericFnType = (
-  typeParams: TypeParam[],
-  params: Constraint[],
-  result: Constraint
-): Constraint => ({ tag: "genericFnType", typeParams, params, result });
 
 // ============================================================================
 // Classification Helpers
@@ -330,34 +266,6 @@ export function constraintEquals(a: Constraint, b: Constraint): boolean {
 
     case "recVar":
       return a.var === (b as typeof a).var;
-
-    case "fnType": {
-      const bFn = b as typeof a;
-      if (a.params.length !== bFn.params.length) return false;
-      return a.params.every((p, i) => constraintEquals(p, bFn.params[i])) &&
-             constraintEquals(a.result, bFn.result);
-    }
-
-    case "typeParam": {
-      const bTp = b as typeof a;
-      return a.name === bTp.name && a.id === bTp.id &&
-             constraintEquals(a.bound, bTp.bound);
-    }
-
-    case "genericFnType": {
-      const bGfn = b as typeof a;
-      if (a.typeParams.length !== bGfn.typeParams.length) return false;
-      if (a.params.length !== bGfn.params.length) return false;
-      // Check type params match
-      const typeParamsMatch = a.typeParams.every((tp, i) =>
-        tp.name === bGfn.typeParams[i].name &&
-        tp.id === bGfn.typeParams[i].id &&
-        constraintEquals(tp.bound, bGfn.typeParams[i].bound)
-      );
-      if (!typeParamsMatch) return false;
-      return a.params.every((p, i) => constraintEquals(p, bGfn.params[i])) &&
-             constraintEquals(a.result, bGfn.result);
-    }
   }
 }
 
@@ -521,7 +429,6 @@ export function simplify(c: Constraint): Constraint {
     case "never":
     case "any":
     case "var":
-    case "typeParam":  // Type params are atomic, don't simplify
       return c;
 
     case "hasField":
@@ -589,16 +496,6 @@ export function simplify(c: Constraint): Constraint {
       if (flat.length === 1) return flat[0];
       return { tag: "or", constraints: flat };
     }
-
-    case "fnType":
-      return fnType(c.params.map(simplify), simplify(c.result));
-
-    case "genericFnType":
-      return genericFnType(
-        c.typeParams.map(tp => ({ ...tp, bound: simplify(tp.bound) })),
-        c.params.map(simplify),
-        simplify(c.result)
-      );
   }
 }
 
@@ -736,60 +633,6 @@ export function implies(a: Constraint, b: Constraint): boolean {
     return implies(unrolled, sb);
   }
 
-  // fnType implication: contravariant params, covariant result
-  // fnType(A, R) implies fnType(A', R') if A' implies A and R implies R'
-  if (sa.tag === "fnType" && sb.tag === "fnType") {
-    if (sa.params.length !== sb.params.length) return false;
-    // Check contravariant params: sb.params[i] implies sa.params[i]
-    const paramsOk = sa.params.every((_, i) => implies(sb.params[i], sa.params[i]));
-    // Check covariant result: sa.result implies sb.result
-    return paramsOk && implies(sa.result, sb.result);
-  }
-
-  // fnType implies isFunction
-  if (sa.tag === "fnType" && sb.tag === "isFunction") {
-    return true;
-  }
-
-  // genericFnType implies isFunction
-  if (sa.tag === "genericFnType" && sb.tag === "isFunction") {
-    return true;
-  }
-
-  // typeParam implication: typeParam(n, id, bound) implies its bound
-  // and typeParam implies itself (handled by constraintEquals above)
-  if (sa.tag === "typeParam") {
-    // A type param implies its bound
-    if (implies(sa.bound, sb)) return true;
-  }
-
-  // Something implies typeParam only if it implies its bound
-  // This is conservative - we require the constraint to satisfy the bound
-  if (sb.tag === "typeParam") {
-    return implies(sa, sb.bound);
-  }
-
-  // genericFnType implication is complex - we'd need to check if one is more general
-  // For now, rely on constraintEquals for structural equality
-  if (sa.tag === "genericFnType" && sb.tag === "genericFnType") {
-    // Same number of type params
-    if (sa.typeParams.length !== sb.typeParams.length) return false;
-    if (sa.params.length !== sb.params.length) return false;
-    // For now, require structural equality of type params (bounds must match)
-    for (let i = 0; i < sa.typeParams.length; i++) {
-      const aTp = sa.typeParams[i];
-      const bTp = sb.typeParams[i];
-      // Bounds should be related: sb's bound should imply sa's bound (contravariant)
-      if (!implies(bTp.bound, aTp.bound)) return false;
-    }
-    // Params are contravariant
-    for (let i = 0; i < sa.params.length; i++) {
-      if (!implies(sb.params[i], sa.params[i])) return false;
-    }
-    // Result is covariant
-    return implies(sa.result, sb.result);
-  }
-
   // recVar only implies itself (handled by constraintEquals above)
 
   return false;
@@ -856,28 +699,6 @@ function substituteRecVar(c: Constraint, varName: string, replacement: Constrain
 
     case "isType":
       return isType(substituteRecVar(c.constraint, varName, replacement));
-
-    case "fnType":
-      return fnType(
-        c.params.map(p => substituteRecVar(p, varName, replacement)),
-        substituteRecVar(c.result, varName, replacement)
-      );
-
-    case "typeParam":
-      return {
-        ...c,
-        bound: substituteRecVar(c.bound, varName, replacement)
-      };
-
-    case "genericFnType":
-      return genericFnType(
-        c.typeParams.map(tp => ({
-          ...tp,
-          bound: substituteRecVar(tp.bound, varName, replacement)
-        })),
-        c.params.map(p => substituteRecVar(p, varName, replacement)),
-        substituteRecVar(c.result, varName, replacement)
-      );
 
     default:
       return c;
@@ -1026,25 +847,6 @@ export function constraintToString(c: Constraint): string {
 
     case "recVar":
       return c.var;
-
-    case "fnType": {
-      const params = c.params.map(constraintToString).join(", ");
-      return `(${params}) -> ${constraintToString(c.result)}`;
-    }
-
-    case "typeParam":
-      return c.name;
-
-    case "genericFnType": {
-      const typeParamStr = c.typeParams.map(tp => {
-        if (tp.bound.tag === "any") {
-          return tp.name;
-        }
-        return `${tp.name} extends ${constraintToString(tp.bound)}`;
-      }).join(", ");
-      const params = c.params.map(constraintToString).join(", ");
-      return `<${typeParamStr}>(${params}) -> ${constraintToString(c.result)}`;
-    }
   }
 }
 
@@ -1112,29 +914,6 @@ function applySubstitutionImpl(c: Constraint, sub: Substitution, seen: Set<numbe
     case "rec":
       return rec(c.var, applySubstitutionImpl(c.body, sub, seen));
 
-    case "fnType":
-      return fnType(
-        c.params.map(p => applySubstitutionImpl(p, sub, seen)),
-        applySubstitutionImpl(c.result, sub, seen)
-      );
-
-    case "typeParam":
-      // Also apply substitution to type param bounds
-      return {
-        ...c,
-        bound: applySubstitutionImpl(c.bound, sub, seen)
-      };
-
-    case "genericFnType":
-      return genericFnType(
-        c.typeParams.map(tp => ({
-          ...tp,
-          bound: applySubstitutionImpl(tp.bound, sub, seen)
-        })),
-        c.params.map(p => applySubstitutionImpl(p, sub, seen)),
-        applySubstitutionImpl(c.result, sub, seen)
-      );
-
     default:
       return c;
   }
@@ -1169,18 +948,6 @@ export function freeConstraintVars(c: Constraint): Set<number> {
         break;
       case "rec":
         collect(c.body);
-        break;
-      case "fnType":
-        for (const p of c.params) collect(p);
-        collect(c.result);
-        break;
-      case "typeParam":
-        collect(c.bound);
-        break;
-      case "genericFnType":
-        for (const tp of c.typeParams) collect(tp.bound);
-        for (const p of c.params) collect(p);
-        collect(c.result);
         break;
     }
   }
@@ -1321,38 +1088,6 @@ function solveInto(a: Constraint, b: Constraint, sub: Substitution): boolean {
 
       case "not":
         return solveInto(a.constraint, (b as typeof a).constraint, sub);
-
-      case "fnType": {
-        const bFn = b as typeof a;
-        if (a.params.length !== bFn.params.length) return false;
-        for (let i = 0; i < a.params.length; i++) {
-          if (!solveInto(a.params[i], bFn.params[i], sub)) return false;
-        }
-        return solveInto(a.result, bFn.result, sub);
-      }
-
-      case "typeParam": {
-        const bTp = b as typeof a;
-        // Type params unify if they have the same id, or if bounds unify
-        if (a.id === bTp.id) return true;
-        // Otherwise, try to unify their bounds
-        return solveInto(a.bound, bTp.bound, sub);
-      }
-
-      case "genericFnType": {
-        const bGfn = b as typeof a;
-        if (a.typeParams.length !== bGfn.typeParams.length) return false;
-        if (a.params.length !== bGfn.params.length) return false;
-        // Unify type param bounds
-        for (let i = 0; i < a.typeParams.length; i++) {
-          if (!solveInto(a.typeParams[i].bound, bGfn.typeParams[i].bound, sub)) return false;
-        }
-        // Unify params
-        for (let i = 0; i < a.params.length; i++) {
-          if (!solveInto(a.params[i], bGfn.params[i], sub)) return false;
-        }
-        return solveInto(a.result, bGfn.result, sub);
-      }
     }
   }
 

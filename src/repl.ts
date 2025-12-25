@@ -109,7 +109,6 @@ function showHelp(): void {
   console.log("  unionType(T1, T2, ...)        Create union type (T1 | T2)");
   console.log("  intersectionType(T1, T2, ...) Create intersection (T1 & T2)");
   console.log("  nullable(Type)                Create nullable (Type | null)");
-  console.log("  functionType([Params], Result) Create function type");
   console.log("\nExamples:");
   console.log("  1 + 2 * 3");
   console.log("  let x = 5 in x + 1");

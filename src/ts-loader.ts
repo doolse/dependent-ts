@@ -12,19 +12,17 @@
  * - undefined -> isUndefined
  * - any -> anyC
  * - never -> neverC
- * - T (type param) -> typeParam("T", id)
  * - { x: T } -> and(isObject, hasField("x", T))
  * - T[] -> and(isArray, elements(T))
  * - [T, U] -> and(isArray, elementAt(0,T), elementAt(1,U), length(equals(2)))
  * - A | B -> or(A, B)
- * - (x: A) => B -> fnType([A], B)
- * - <T>(x: T) => T -> genericFnType([...], [...], ...)
+ * - (x: A) => B -> isFunction (body-based type derivation at call sites)
+ * - <T>(x: T) => T -> isFunction (body-based type derivation at call sites)
  */
 
 import * as ts from "typescript";
 import {
   Constraint,
-  TypeParam,
   isNumber,
   isString,
   isBool,
@@ -42,11 +40,6 @@ import {
   elementAt,
   length,
   equals,
-  fnType,
-  typeParam,
-  makeTypeParam,
-  genericFnType,
-  freshTypeParamId,
 } from "./constraint";
 
 /**
@@ -60,11 +53,10 @@ export interface ModuleDeclarations {
 }
 
 /**
- * Context for type conversion, tracking type parameters in scope.
+ * Context for type conversion.
+ * Note: Type parameters are resolved to `any` since we use body-based type derivation.
  */
 interface ConversionContext {
-  /** Map from TypeScript type parameter symbol to our TypeParam */
-  typeParams: Map<ts.Symbol, TypeParam>;
   /** The TypeScript type checker */
   checker: ts.TypeChecker;
   /** Set of type IDs currently being converted (for cycle detection) */
@@ -146,7 +138,6 @@ export class TSDeclarationLoader {
     }
 
     const ctx: ConversionContext = {
-      typeParams: new Map(),
       checker: this.checker,
       converting: new Set(),
       depth: 0,
@@ -194,7 +185,6 @@ export class TSDeclarationLoader {
     };
 
     const ctx: ConversionContext = {
-      typeParams: new Map(),
       checker: this.checker,
       converting: new Set(),
       depth: 0,
@@ -250,7 +240,6 @@ export class TSDeclarationLoader {
     };
 
     const ctx: ConversionContext = {
-      typeParams: new Map(),
       checker: this.checker,
       converting: new Set(),
       depth: 0,
@@ -464,16 +453,9 @@ export class TSDeclarationLoader {
       return isObject;
     }
 
-    // Type parameters
+    // Type parameters -> return any (body-based type derivation handles this at call sites)
     if (flags & ts.TypeFlags.TypeParameter) {
-      const symbol = type.getSymbol();
-      if (symbol && ctx.typeParams.has(symbol)) {
-        const tp = ctx.typeParams.get(symbol)!;
-        return typeParam(tp.name, tp.bound, tp.id);
-      }
-      // Unknown type parameter - create a fresh one
-      const name = symbol?.getName() || "T";
-      return typeParam(name, anyC);
+      return anyC;
     }
 
     // Union types
@@ -545,64 +527,17 @@ export class TSDeclarationLoader {
   }
 
   /**
-   * Convert a TypeScript call signature to a function type constraint.
+   * Convert a TypeScript call signature to a function constraint.
+   * With body-based type derivation, we return simple isFunction constraint.
+   * Actual types are derived at call sites when we have the function body.
    */
   private convertSignature(
-    signature: ts.Signature,
-    ctx: ConversionContext
+    _signature: ts.Signature,
+    _ctx: ConversionContext
   ): Constraint {
-    const typeParams = signature.getTypeParameters();
-
-    // Check if this is a generic function
-    if (typeParams && typeParams.length > 0) {
-      // Create fresh type parameters and update context
-      const newCtx: ConversionContext = {
-        ...ctx,
-        typeParams: new Map(ctx.typeParams),
-      };
-
-      const ourTypeParams: TypeParam[] = [];
-      for (const tp of typeParams) {
-        const symbol = tp.getSymbol();
-        const name = symbol?.getName() || "T";
-
-        // Get the constraint (bound) of the type parameter
-        const constraint = tp.getConstraint();
-        const bound = constraint ? this.convertType(constraint, ctx) : anyC;
-
-        const ourTp = makeTypeParam(name, bound);
-        ourTypeParams.push(ourTp);
-
-        if (symbol) {
-          newCtx.typeParams.set(symbol, ourTp);
-        }
-      }
-
-      // Convert parameters
-      const params: Constraint[] = [];
-      for (const param of signature.getParameters()) {
-        const paramType = ctx.checker.getTypeOfSymbol(param);
-        params.push(this.convertType(paramType, newCtx));
-      }
-
-      // Convert return type
-      const returnType = signature.getReturnType();
-      const result = this.convertType(returnType, newCtx);
-
-      return genericFnType(ourTypeParams, params, result);
-    }
-
-    // Non-generic function
-    const params: Constraint[] = [];
-    for (const param of signature.getParameters()) {
-      const paramType = ctx.checker.getTypeOfSymbol(param);
-      params.push(this.convertType(paramType, ctx));
-    }
-
-    const returnType = signature.getReturnType();
-    const result = this.convertType(returnType, ctx);
-
-    return fnType(params, result);
+    // All functions get isFunction constraint
+    // Type derivation happens at call sites with body analysis
+    return isFunction;
   }
 }
 

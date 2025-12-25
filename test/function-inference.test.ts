@@ -8,13 +8,8 @@ import { describe, it, expect } from "vitest";
 
 import {
   // Constraints
-  isNumber,
-  isString,
-  isBool,
   isFunction,
-  fnType,
   implies,
-  constraintToString,
 
   // Expressions
   num,
@@ -39,26 +34,6 @@ describe("Function Type Inference", () => {
       // With body-based type derivation, functions have simple isFunction constraint
       // Types are derived from body analysis at call sites
       expect(result.constraint.tag).toBe("isFunction");
-    });
-
-    it("fnType implies isFunction", () => {
-      const fnConstraint = fnType([isNumber], isNumber);
-      expect(implies(fnConstraint, isFunction)).toBe(true);
-    });
-
-    it("fnType with matching params/result implies another fnType", () => {
-      // (number) -> number implies (number) -> number
-      const a = fnType([isNumber], isNumber);
-      const b = fnType([isNumber], isNumber);
-      expect(implies(a, b)).toBe(true);
-    });
-
-    it("fnType subtyping is contravariant in params", () => {
-      // (any) -> number implies (number) -> number
-      // because if a function accepts anything, it can accept numbers
-      const acceptsAny = fnType([{ tag: "any" } as any], isNumber);
-      const acceptsNumber = fnType([isNumber], isNumber);
-      expect(implies(acceptsAny, acceptsNumber)).toBe(true);
     });
   });
 
@@ -90,26 +65,6 @@ describe("Function Type Inference", () => {
       const result = run(expr);
       expect(result.value.tag).toBe("number");
       expect((result.value as any).value).toBe(5); // (1+1) + (2+1) = 5
-    });
-  });
-
-  describe("Constraint String Representation", () => {
-    it("fnType has readable string format", () => {
-      const c = fnType([isNumber, isNumber], isNumber);
-      const str = constraintToString(c);
-      expect(str).toBe("(number, number) -> number");
-    });
-
-    it("fnType with single param", () => {
-      const c = fnType([isString], isBool);
-      const str = constraintToString(c);
-      expect(str).toBe("(string) -> boolean");
-    });
-
-    it("fnType with no params", () => {
-      const c = fnType([], isNumber);
-      const str = constraintToString(c);
-      expect(str).toBe("() -> number");
     });
   });
 

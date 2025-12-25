@@ -1,3 +1,10 @@
+/**
+ * TypeScript Declaration Loader Tests
+ *
+ * Note: With body-based type derivation, function signatures return `isFunction`
+ * instead of detailed fnType/genericFnType constraints. Type information is
+ * derived at call sites from body analysis.
+ */
 import { describe, it, expect, beforeEach } from "vitest";
 import {
   loadFromSource,
@@ -18,13 +25,11 @@ import {
   or,
   hasField,
   elements,
-  resetTypeParamCounter,
   resetConstraintVarCounter,
 } from "../src/index";
 
 describe("TypeScript Declaration Loader", () => {
   beforeEach(() => {
-    resetTypeParamCounter();
     resetConstraintVarCounter();
   });
 
@@ -206,106 +211,64 @@ describe("TypeScript Declaration Loader", () => {
   });
 
   describe("function types", () => {
-    it("loads simple function declaration", () => {
+    it("loads simple function declaration as isFunction", () => {
       const result = loadFromSource(`
         export function add(a: number, b: number): number;
       `);
       expect(result).not.toBeNull();
       const c = result!.exports.get("add")!;
-      expect(c.tag).toBe("fnType");
-      if (c.tag === "fnType") {
-        expect(c.params.length).toBe(2);
-        expect(implies(c.result, isNumber)).toBe(true);
-      }
+      // With body-based type derivation, functions return isFunction
+      expect(c.tag).toBe("isFunction");
     });
 
-    it("loads function type alias", () => {
+    it("loads function type alias as isFunction", () => {
       const result = loadFromSource(`
         export const greet: (name: string) => string = (n) => n;
       `);
       expect(result).not.toBeNull();
       const c = result!.exports.get("greet")!;
-      expect(c.tag).toBe("fnType");
-      if (c.tag === "fnType") {
-        expect(c.params.length).toBe(1);
-        expect(implies(c.params[0], isString)).toBe(true);
-        expect(implies(c.result, isString)).toBe(true);
-      }
+      // With body-based type derivation, functions return isFunction
+      expect(c.tag).toBe("isFunction");
     });
   });
 
   describe("generic function types", () => {
-    it("loads identity function", () => {
+    it("loads identity function as isFunction", () => {
       const result = loadFromSource(`
         export function identity<T>(x: T): T;
       `);
       expect(result).not.toBeNull();
       const c = result!.exports.get("identity")!;
-      expect(c.tag).toBe("genericFnType");
-      if (c.tag === "genericFnType") {
-        expect(c.typeParams.length).toBe(1);
-        expect(c.typeParams[0].name).toBe("T");
-        expect(c.params.length).toBe(1);
-        // Param and result should reference the type param
-        expect(c.params[0].tag).toBe("typeParam");
-        expect(c.result.tag).toBe("typeParam");
-      }
+      // With body-based type derivation, generic functions also return isFunction
+      expect(c.tag).toBe("isFunction");
     });
 
-    it("loads map function", () => {
+    it("loads map function as isFunction", () => {
       const result = loadFromSource(`
         export function map<T, U>(arr: T[], fn: (x: T) => U): U[];
       `);
       expect(result).not.toBeNull();
       const c = result!.exports.get("map")!;
-      expect(c.tag).toBe("genericFnType");
-      if (c.tag === "genericFnType") {
-        expect(c.typeParams.length).toBe(2);
-        expect(c.typeParams[0].name).toBe("T");
-        expect(c.typeParams[1].name).toBe("U");
-      }
+      expect(c.tag).toBe("isFunction");
     });
 
-    it("loads bounded generic function", () => {
-      const result = loadFromSource(`
-        export function first<T extends object>(obj: T): T;
-      `);
-      expect(result).not.toBeNull();
-      const c = result!.exports.get("first")!;
-      expect(c.tag).toBe("genericFnType");
-      if (c.tag === "genericFnType") {
-        expect(c.typeParams.length).toBe(1);
-        // The bound should be isObject
-        expect(implies(c.typeParams[0].bound, isObject)).toBe(true);
-      }
-    });
-
-    it("loads useState-like function", () => {
+    it("loads useState-like function as isFunction", () => {
       const result = loadFromSource(`
         export function useState<T>(initial: T): [T, (value: T) => void];
       `);
       expect(result).not.toBeNull();
       const c = result!.exports.get("useState")!;
-      expect(c.tag).toBe("genericFnType");
-      if (c.tag === "genericFnType") {
-        expect(c.typeParams.length).toBe(1);
-        expect(c.typeParams[0].name).toBe("T");
-        // Result should be a tuple
-        expect(implies(c.result, isArray)).toBe(true);
-      }
+      expect(c.tag).toBe("isFunction");
     });
-  });
 
-  describe("constraint to string", () => {
     it("prints loaded generic function type", () => {
       const result = loadFromSource(`
         export function identity<T>(x: T): T;
       `);
       expect(result).not.toBeNull();
       const c = result!.exports.get("identity")!;
-      const str = constraintToString(c);
-      expect(str).toContain("<T>");
-      expect(str).toContain("T");
+      // Should just be "function" now
+      expect(constraintToString(c)).toBe("function");
     });
   });
 
@@ -321,6 +284,9 @@ describe("TypeScript Declaration Loader", () => {
       expect(result).not.toBeNull();
       expect(result!.exports.has("Props")).toBe(true);
       expect(result!.exports.has("Component")).toBe(true);
+      // Component should be isFunction
+      const componentC = result!.exports.get("Component")!;
+      expect(componentC.tag).toBe("isFunction");
     });
   });
 });

@@ -1,8 +1,8 @@
 # Refactoring Progress: Body-Based Type Derivation
 
-## Status: Phases 1-2, 4 Complete
+## Status: Phases 1-5 Complete ✅
 
-The core refactoring is done. Functions now use body-based type derivation at call sites instead of upfront inference.
+The core refactoring is done. Functions now use body-based type derivation at call sites instead of upfront inference. The `fnType` and `genericFnType` constraint types have been removed.
 
 ---
 
@@ -33,93 +33,51 @@ The core refactoring is done. Functions now use body-based type derivation at ca
 - Cycle detection uses `any` for recursive calls
 - `requireConstraint()` allows `any` to pass (defers to runtime)
 
+### Phase 3: Remove fnType from constraint.ts ✅
+
+**Files changed:**
+- `src/constraint.ts` - Removed fnType type, constructor, and all cases in implies/simplify/etc.
+- `src/builtin-registry.ts` - Removed `functionType` builtin
+- `src/repl.ts` - Removed functionType from help text
+- `src/value.ts` - Removed fnType case from valueSatisfies
+- `src/index.ts` - Removed fnType exports
+- `test/function-inference.test.ts` - Removed tests that used fnType
+- `test/types-as-values.test.ts` - Removed functionType test
+
+**Key changes:**
+- `fnType` no longer exists in the constraint system
+- Functions have simple `isFunction` constraint
+- Function types are derived from body analysis at call sites
+
 ### Phase 4: Delete inference.ts ✅
 
 **Files changed:**
 - `src/inference.ts` - DELETED
 - `src/index.ts` - Removed inference exports
 
----
+### Phase 5: Handle genericFnType and ts-loader ✅
 
-## What Remains
+**Files changed:**
+- `src/generic-inference.ts` - DELETED
+- `src/ts-loader.ts` - Simplified to return `isFunction` for all function signatures
+- `src/constraint.ts` - Removed genericFnType, typeParam, TypeParam, and all related functions
+- `src/index.ts` - Removed generic-inference exports
+- `test/generics.test.ts` - Rewrote to test constraint operations only
+- `test/ts-loader.test.ts` - Updated to expect `isFunction` for functions
 
-### Phase 3: Remove fnType from constraint.ts
-
-The `fnType` constraint type still exists and is used by:
-
-| File | Usage | Action Needed |
-|------|-------|---------------|
-| `src/constraint.ts` | Core definition, implies(), simplify(), etc. | Remove type and all cases |
-| `src/builtin-registry.ts` | `functionType` builtin (line 542) | Remove or change to return `isFunction` |
-| `src/index.ts` | Exports `fnType` | Remove export |
-| `test/function-inference.test.ts` | 3 tests use fnType | Remove these tests |
-| `test/generics.test.ts` | Uses fnType | Update or remove tests |
-| `test/ts-loader.test.ts` | Expects fnType | Update expectations |
-| `test/types-as-values.test.ts` | Uses fnType | Update or remove |
-
-**Steps to complete Phase 3:**
-
-1. **Update builtin-registry.ts** (line 542):
-   ```typescript
-   // OLD:
-   const resultConstraint = fnType(paramConstraints, resultArg.value.constraint);
-
-   // NEW: Either remove functionType builtin or return isFunction
-   return { svalue: ctx.now(typeVal(isFunction), isType(isFunction)) };
-   ```
-
-2. **Update tests** that use `fnType`:
-   - Remove tests that check for `fnType` constraints
-   - Update tests that create `fnType` for testing
-
-3. **Remove from constraint.ts**:
-   - Delete type definition (line ~55-56)
-   - Delete constructor (line ~139-140)
-   - Delete `implies()` cases (lines ~740-757)
-   - Delete `simplify()` case (line ~593-594)
-   - Delete `applySubstitution()` case (lines ~1115-1119)
-   - Delete `solveInto()` case (lines ~1325-1332)
-   - Delete `constraintEquals()` case
-   - Delete `constraintToString()` case (lines ~1030-1033)
-   - Delete `freeConstraintVars()` case
-
-4. **Update index.ts** - Remove `fnType` export
-
-### Phase 5: Handle genericFnType and ts-loader
-
-Similar to fnType, but for generic functions:
-
-| File | Usage | Action Needed |
-|------|-------|---------------|
-| `src/constraint.ts` | `genericFnType` definition and cases | Remove entirely |
-| `src/generic-inference.ts` | Generic instantiation | DELETE file |
-| `src/ts-loader.ts` | Creates fnType/genericFnType | Return `isFunction` instead |
-| `src/index.ts` | Exports generic-inference | Remove exports |
-| `test/generics.test.ts` | Tests generic functions | Major rewrite |
-
-**Steps to complete Phase 5:**
-
-1. **Update ts-loader.ts**:
-   - `convertSignature()` should return `isFunction` instead of `fnType`
-   - Remove `fnType` and `genericFnType` imports
-
-2. **Delete generic-inference.ts**
-
-3. **Update index.ts** - Remove generic-inference exports
-
-4. **Remove genericFnType from constraint.ts**:
-   - Delete type definition
-   - Delete all cases in implies, simplify, etc.
-
-5. **Update/rewrite generics.test.ts**
+**Key changes:**
+- `genericFnType` and `typeParam` no longer exist in the constraint system
+- TypeScript declarations for functions now return `isFunction`
+- Type parameters in TS declarations resolve to `any` (body-based derivation handles types at call sites)
+- Removed ~50 tests that relied on fnType/genericFnType, added ~20 constraint operation tests
 
 ---
 
 ## Test Status
 
-Current: **713 tests pass** (2 pre-existing React import failures)
+Current: **693 tests pass** (2 pre-existing React import failures)
 
-After removing fnType/genericFnType, expect to remove ~15-20 tests that specifically test function type constraints.
+The test count decreased from 713 to 693 because we removed tests that specifically tested fnType/genericFnType constraints, which are no longer part of the system.
 
 ---
 
@@ -160,16 +118,27 @@ File to modify:
 
 ---
 
+## Summary of Removed Code
+
+| File | What was removed |
+|------|------------------|
+| `src/inference.ts` | Entire file (function type inference) |
+| `src/generic-inference.ts` | Entire file (generic instantiation) |
+| `src/constraint.ts` | fnType, genericFnType, typeParam, TypeParam, makeTypeParam, freshTypeParamId, resetTypeParamCounter |
+| `src/builtin-registry.ts` | functionType builtin |
+| `src/value.ts` | fnType, typeParam, genericFnType cases in valueSatisfies |
+
+---
+
 ## Quick Reference: Key Code Locations
 
-| Concept | File | Lines |
+| Concept | File | Notes |
 |---------|------|-------|
-| Args binding | `src/staged-evaluate.ts` | 788-789, 809-810 |
-| createArraySValue | `src/staged-evaluate.ts` | 965-994 |
-| evalFn (simplified) | `src/staged-evaluate.ts` | 560-569 |
-| evalRecFn (simplified) | `src/staged-evaluate.ts` | 576-585 |
-| Cycle detection | `src/staged-evaluate.ts` | 735-756 |
-| requireConstraint (lenient) | `src/builtins.ts` | 77-87 |
-| Args tests | `test/staging.test.ts` | 436-495 |
-| fnType definition | `src/constraint.ts` | ~55-56, ~139-140 |
-| functionType builtin | `src/builtin-registry.ts` | ~530-545 |
+| Args binding | `src/staged-evaluate.ts` | evalCall binds `args` array |
+| createArraySValue | `src/staged-evaluate.ts` | Helper for args array creation |
+| evalFn (simplified) | `src/staged-evaluate.ts` | Returns isFunction, no inference |
+| evalRecFn (simplified) | `src/staged-evaluate.ts` | Same as evalFn |
+| Cycle detection | `src/staged-evaluate.ts` | Returns `any` for recursive calls |
+| requireConstraint (lenient) | `src/builtins.ts` | Allows `any` to pass |
+| Args tests | `test/staging.test.ts` | "Args Array Binding" section |
+| Constraint tests | `test/generics.test.ts` | Constraint operations (no more generic types) |

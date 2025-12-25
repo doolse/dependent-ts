@@ -5,7 +5,7 @@
  * Each builtin has a name, type signature, and evaluation handler.
  */
 
-import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, fnType, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar } from "./constraint";
 import { Value, numberVal, stringVal, boolVal, nullVal, arrayVal, typeVal, BuiltinValue, StringValue, NumberValue, ArrayValue, ClosureValue, constraintOf, valueToString } from "./value";
 import { Expr, methodCall, call, varRef } from "./expr";
 import type { SValue, Now, Later } from "./svalue";
@@ -501,45 +501,6 @@ registerBuiltin({
         throw new Error("recVarType() argument must be a string");
       }
       const resultConstraint = recVar(nameArg.value.value);
-      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
-    }
-  }
-});
-
-registerBuiltin({
-  name: "functionType",
-  params: [
-    { name: "paramTypes", constraint: isArray },
-    { name: "resultType", constraint: isTypeC }
-  ],
-  resultType: () => isTypeC,
-  isMethod: false,
-  evaluate: {
-    kind: "staged",
-    handler: (args, argExprs, ctx) => {
-      const paramsArg = args[0];
-      const resultArg = args[1];
-      if (!ctx.isNow(paramsArg)) {
-        throw new Error("functionType() requires compile-time known param types");
-      }
-      if (!ctx.isNow(resultArg)) {
-        throw new Error("functionType() requires a compile-time known result type");
-      }
-      if (paramsArg.value.tag !== "array") {
-        throw new Error("functionType() first argument must be an array");
-      }
-      if (resultArg.value.tag !== "type") {
-        throw new Error("functionType() second argument must be a type");
-      }
-      const paramConstraints: Constraint[] = [];
-      for (let i = 0; i < paramsArg.value.elements.length; i++) {
-        const param = paramsArg.value.elements[i];
-        if (param.tag !== "type") {
-          throw new Error(`functionType() param ${i + 1} must be a type`);
-        }
-        paramConstraints.push(param.constraint);
-      }
-      const resultConstraint = fnType(paramConstraints, resultArg.value.constraint);
       return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
     }
   }

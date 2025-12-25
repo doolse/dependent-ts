@@ -45,14 +45,6 @@ export {
   extractFieldConstraint,
   rec,
   recVar,
-  fnType,
-  // Generic types
-  TypeParam,
-  typeParam,
-  makeTypeParam,
-  genericFnType,
-  freshTypeParamId,
-  resetTypeParamCounter,
   // Constraint solving
   Substitution,
   emptySubstitution,
@@ -271,15 +263,6 @@ export {
   parseAndRun,
   parseAndCompile,
 } from "./parser";
-
-// Generic Inference
-export {
-  InstantiationResult,
-  substituteTypeParams,
-  instantiateGenericCall,
-  tryInstantiateCall,
-  inferGenericCallResult,
-} from "./generic-inference";
 
 // TypeScript Declaration Loader
 export {

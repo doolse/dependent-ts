@@ -493,19 +493,6 @@ describe("Type-Level Programming", () => {
       expect(implies(isNull, typeVal.constraint)).toBe(true);
     });
 
-    it("functionType creates function type", () => {
-      const result = run(call(
-        varRef("functionType"),
-        array(varRef("number"), varRef("string")),
-        varRef("boolean")
-      ));
-      expect(result.value.tag).toBe("type");
-
-      const typeVal = result.value as any;
-      expect(typeVal.constraint.tag).toBe("fnType");
-      expect(typeVal.constraint.params.length).toBe(2);
-    });
-
     it("types created by objectType can be used with fields()", () => {
       const personType = call(varRef("objectType"), obj({
         name: varRef("string"),
