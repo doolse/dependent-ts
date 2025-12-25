@@ -68,12 +68,20 @@ export class AssertionError extends Error {
 /**
  * Check that a constraint satisfies a requirement.
  * Throws TypeError if not.
+ *
+ * Special case: if `got` is `any`, we allow it to pass.
+ * This supports body-based type derivation where recursive calls
+ * return `any` during cycle detection. The actual type checking
+ * happens at runtime in this case.
  */
 export function requireConstraint(
   got: Constraint,
   expected: Constraint,
   context: string
 ): void {
+  // If we have 'any', we don't have enough type info - allow and defer to runtime
+  if (got.tag === "any") return;
+
   if (!implies(got, expected)) {
     throw new TypeError(expected, got, context);
   }

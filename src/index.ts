@@ -272,12 +272,6 @@ export {
   parseAndCompile,
 } from "./parser";
 
-// Inference
-export {
-  InferredFunction,
-  inferFunction,
-} from "./inference";
-
 // Generic Inference
 export {
   InstantiationResult,

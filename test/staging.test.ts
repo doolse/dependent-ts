@@ -428,3 +428,68 @@ describe("typeof Operator (not yet implemented)", () => {
     }).toThrow();
   });
 });
+
+// ============================================================================
+// Args Array Binding (Body-Based Type Derivation Foundation)
+// ============================================================================
+
+describe("Args Array Binding", () => {
+  it("can access args[0] to get first argument", () => {
+    // fn(x, y) => args[0] should return first argument
+    const expr = letExpr("f", fn(["x", "y"], index(varRef("args"), num(0))),
+      call(varRef("f"), num(5), num(10))
+    );
+    const result = stage(expr);
+    expect(isNow(result.svalue)).toBe(true);
+    if (isNow(result.svalue)) {
+      expect((result.svalue.value as any).value).toBe(5);
+    }
+  });
+
+  it("can access args[1] to get second argument", () => {
+    // fn(x, y) => args[1] should return second argument
+    const expr = letExpr("f", fn(["x", "y"], index(varRef("args"), num(1))),
+      call(varRef("f"), num(5), num(10))
+    );
+    const result = stage(expr);
+    expect(isNow(result.svalue)).toBe(true);
+    if (isNow(result.svalue)) {
+      expect((result.svalue.value as any).value).toBe(10);
+    }
+  });
+
+  it("args has correct length constraint", () => {
+    // fn(x, y) => args should have length 2
+    const expr = letExpr("f", fn(["x", "y"], varRef("args")),
+      call(varRef("f"), num(5), num(10))
+    );
+    const result = stage(expr);
+    expect(isNow(result.svalue)).toBe(true);
+    if (isNow(result.svalue)) {
+      expect((result.svalue.value as any).elements.length).toBe(2);
+    }
+  });
+
+  it("args works with runtime arguments", () => {
+    // fn(x) => args[0] with runtime argument should produce Later
+    const expr = letExpr("f", fn(["x"], index(varRef("args"), num(0))),
+      call(varRef("f"), runtime(num(5), "x"))
+    );
+    const result = stage(expr);
+    // Result should be Later since argument is Later
+    expect(isLater(result.svalue)).toBe(true);
+  });
+
+  it("args coexists with named parameters", () => {
+    // fn(x) => x + args[0] should both work
+    const expr = letExpr("f", fn(["x"], add(varRef("x"), index(varRef("args"), num(0)))),
+      call(varRef("f"), num(5))
+    );
+    const result = stage(expr);
+    expect(isNow(result.svalue)).toBe(true);
+    if (isNow(result.svalue)) {
+      // x + args[0] = 5 + 5 = 10
+      expect((result.svalue.value as any).value).toBe(10);
+    }
+  });
+});

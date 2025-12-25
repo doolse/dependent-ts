@@ -17,8 +17,7 @@ import { TSDeclarationLoader } from "./ts-loader";
 import { lookupMethod } from "./methods";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
 import { getBuiltin, getAllBuiltins, BuiltinDef, StagedBuiltinContext } from "./builtin-registry";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, unify, fnType, constraintToString } from "./constraint";
-import { inferFunction, InferredFunction } from "./inference";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, unify, constraintToString } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
 import { extractAllRefinements, negateRefinement } from "./refinement";
@@ -557,31 +556,16 @@ function evalLetPattern(
   return { svalue: bodyResult };
 }
 
-// Cache for inferred types in staged evaluation
-const stagedInferredTypes = new WeakMap<Value, InferredFunction>();
-
 function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
   // Functions are always Now (the closure itself is known)
-  // But they may contain Later values when called
-  // We represent closures as Now values with fnType constraint
-  // The actual staged behavior happens at call time
-
-  // For staged evaluation, we need to track that this is a staged closure
-  // For now, we'll use a special representation
+  // The type emerges from body analysis at call sites - no upfront inference needed
   const closure = closureVal(params, body, Env.empty()); // Placeholder env
 
-  // Infer constraints from body
-  // Convert staged env to regular env for inference (use Now values, any for Later)
-  const regularEnv = stagedEnvToEnv(env);
-  const inferred = inferFunction(params, body, regularEnv);
-  stagedInferredTypes.set(closure, inferred);
-
-  // Store the staged env in a side channel (simplified approach)
+  // Store the staged env in a side channel for call-time evaluation
   stagedClosures.set(closure, { params, body, env });
 
-  // Return function with proper fnType constraint
-  const fnConstraint = fnType(inferred.paramConstraints, inferred.resultConstraint);
-  return { svalue: now(closure, fnConstraint) };
+  // Return function with simple isFunction constraint - types derived at call site
+  return { svalue: now(closure, isFunction) };
 }
 
 /**
@@ -592,41 +576,12 @@ function evalRecFn(name: string, params: string[], body: Expr, env: SEnv): SEval
   // Create a closure with the name for self-reference
   const closure = closureVal(params, body, Env.empty(), name); // Placeholder env
 
-  // For type inference, create env with function bound to itself
-  const regularEnv = stagedEnvToEnv(env);
-  const selfEnv = regularEnv.set(name, {
-    value: closure,
-    constraint: isFunction,  // Placeholder - will be refined
-  });
-
-  // Infer constraints from body with self-reference available
-  const inferred = inferFunction(params, body, selfEnv);
-  stagedInferredTypes.set(closure, inferred);
-
-  // Store the staged env in a side channel (with self-binding)
-  const fnConstraint = fnType(inferred.paramConstraints, inferred.resultConstraint);
-  const selfSEnv = env.set(name, { svalue: now(closure, fnConstraint) });
+  // Store the staged env in a side channel with self-binding
+  const selfSEnv = env.set(name, { svalue: now(closure, isFunction) });
   stagedClosures.set(closure, { params, body, env: selfSEnv, name });
 
-  return { svalue: now(closure, fnConstraint) };
-}
-
-/**
- * Convert a staged environment to a regular environment for inference.
- * Now values keep their value and constraint, Later values use placeholder with constraint.
- */
-function stagedEnvToEnv(senv: SEnv): Env {
-  let env = Env.empty();
-  for (const [name, binding] of senv.entries()) {
-    const sv = binding.svalue;
-    if (isNow(sv)) {
-      env = env.set(name, { value: sv.value, constraint: sv.constraint });
-    } else {
-      // Later - use placeholder value with the constraint
-      env = env.set(name, { value: nullVal, constraint: sv.constraint });
-    }
-  }
-  return env;
+  // Return function with simple isFunction constraint - types derived at call site
+  return { svalue: now(closure, isFunction) };
 }
 
 // Side channel for staged closures (maps closure value to staged closure info)
@@ -778,13 +733,14 @@ function evalCall(
     }
 
     // Not in a cycle yet - mark as in-progress and evaluate body
-    const inferred = stagedInferredTypes.get(func.value);
-    const resultConstraint = inferred?.resultConstraint ?? { tag: "any" };
-    inProgressRecursiveCalls.set(sclosure.name, resultConstraint);
+    // Use 'any' as result constraint for cycle detection - types derived from body
+    inProgressRecursiveCalls.set(sclosure.name, { tag: "any" });
 
     // Bind arguments to parameters in the closure's environment
     let callEnv = sclosure.env;
     callEnv = callEnv.set(sclosure.name, { svalue: func });
+    // Add args array binding for body-based type derivation
+    callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
     for (let i = 0; i < sclosure.params.length; i++) {
       callEnv = callEnv.set(sclosure.params[i], { svalue: args[i] });
     }
@@ -803,6 +759,9 @@ function evalCall(
   if (sclosure.name) {
     callEnv = callEnv.set(sclosure.name, { svalue: func });
   }
+
+  // Add args array binding for body-based type derivation
+  callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
 
   for (let i = 0; i < sclosure.params.length; i++) {
     callEnv = callEnv.set(sclosure.params[i], { svalue: args[i] });
@@ -956,6 +915,42 @@ function evalField(
   // Object is Later - generate residual field access
   const fieldConstraint = extractFieldConstraint(objResult.constraint, fieldName);
   return { svalue: later(fieldConstraint, field(objResult.residual, fieldName)) };
+}
+
+/**
+ * Create an array SValue from a list of SValues.
+ * Used for creating the `args` array binding in function calls.
+ */
+function createArraySValue(elements: SValue[]): SValue {
+  const allNow = elements.every(isNow);
+
+  const constraints: Constraint[] = [isArray];
+  constraints.push(length(and(isNumber, { tag: "equals", value: elements.length })));
+
+  for (let i = 0; i < elements.length; i++) {
+    constraints.push(elementAt(i, elements[i].constraint));
+  }
+
+  if (elements.length > 0) {
+    const elementConstraints = elements.map(sv => sv.constraint);
+    const unique = dedupeConstraints(elementConstraints);
+    if (unique.length === 1) {
+      constraints.push({ tag: "elements", constraint: unique[0] });
+    } else {
+      constraints.push({ tag: "elements", constraint: or(...unique) });
+    }
+  }
+
+  if (allNow) {
+    const values = elements.map(sv => (sv as Now).value);
+    return now(arrayVal(values), and(...constraints));
+  }
+
+  // At least one element is Later - create residual array
+  const residualElements = elements.map(sv =>
+    isNow(sv) ? valueToExpr(sv.value) : sv.residual
+  );
+  return later(and(...constraints), array(...residualElements));
 }
 
 function evalArray(
@@ -1626,13 +1621,10 @@ function createInitialSEnv(): SEnv {
   }
 
   // Add builtins from the registry as BuiltinValue
+  // Use simple isFunction constraint - types derived at call site
   for (const builtin of getAllBuiltins()) {
-    const paramConstraints = builtin.params.map(p => p.constraint);
-    // Use a placeholder result constraint - actual result type comes from resultType()
-    const resultConstraint = builtin.resultType(paramConstraints);
-    const builtinFnType = fnType(paramConstraints, resultConstraint);
     env = env.set(builtin.name, {
-      svalue: now(builtinVal(builtin.name), builtinFnType)
+      svalue: now(builtinVal(builtin.name), isFunction)
     });
   }
 

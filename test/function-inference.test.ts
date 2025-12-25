@@ -1,5 +1,8 @@
 /**
- * Tests for Challenge 6: Type Inference from Function Bodies
+ * Tests for Function Type Behavior
+ *
+ * Note: With body-based type derivation, function types are derived at call sites,
+ * not from upfront inference. Functions have simple `isFunction` constraint.
  */
 import { describe, it, expect } from "vitest";
 
@@ -10,7 +13,6 @@ import {
   isBool,
   isFunction,
   fnType,
-  and,
   implies,
   constraintToString,
 
@@ -20,68 +22,23 @@ import {
   varRef,
   add,
   mul,
-  ltExpr,
   fn,
   call,
   letExpr,
 
   // Evaluator
   run,
-  runValue,
-
-  // Inference
-  inferFunction,
 } from "../src/index";
 
-import { Env } from "../src/env";
-
 describe("Function Type Inference", () => {
-  describe("Basic Inference", () => {
-    it("infers number -> number for fn(x) => x + 1", () => {
-      const result = inferFunction(
-        ["x"],
-        add(varRef("x"), num(1)),
-        Env.empty()
-      );
-
-      expect(implies(result.paramConstraints[0], isNumber)).toBe(true);
-      expect(implies(result.resultConstraint, isNumber)).toBe(true);
-    });
-
-    it("infers (number, number) -> number for fn(x, y) => x + y", () => {
-      const result = inferFunction(
-        ["x", "y"],
-        add(varRef("x"), varRef("y")),
-        Env.empty()
-      );
-
-      expect(implies(result.paramConstraints[0], isNumber)).toBe(true);
-      expect(implies(result.paramConstraints[1], isNumber)).toBe(true);
-      expect(implies(result.resultConstraint, isNumber)).toBe(true);
-    });
-
-    it("infers number -> boolean for fn(x) => x < 10", () => {
-      const result = inferFunction(
-        ["x"],
-        ltExpr(varRef("x"), num(10)),
-        Env.empty()
-      );
-
-      expect(implies(result.paramConstraints[0], isNumber)).toBe(true);
-      expect(implies(result.resultConstraint, isBool)).toBe(true);
-    });
-  });
-
   describe("Function Constraints", () => {
-    it("function has fnType constraint", () => {
+    it("function has isFunction constraint (types derived at call site)", () => {
       const expr = fn(["x", "y"], add(varRef("x"), varRef("y")));
       const result = run(expr);
 
-      // The constraint should be fnType, not just isFunction
-      expect(result.constraint.tag).toBe("fnType");
-      if (result.constraint.tag === "fnType") {
-        expect(result.constraint.params.length).toBe(2);
-      }
+      // With body-based type derivation, functions have simple isFunction constraint
+      // Types are derived from body analysis at call sites
+      expect(result.constraint.tag).toBe("isFunction");
     });
 
     it("fnType implies isFunction", () => {
