@@ -52,27 +52,49 @@ This is exactly what we need. The `fnType` is just memoization of a less-precise
 
 ## Part 2: The Proposed Model
 
-### Functions Are Just Closures
+### Functions Use Implicit `args` Array
 
-A function value is:
+A function value is simply:
 ```typescript
 interface ClosureValue {
   tag: "closure";
-  params: string[];
   body: Expr;
   env: Env;
   name?: string;  // For recursion
 }
 ```
 
-No type attached. The "type" emerges from calling it.
+No parameter list, no type attached. Every function body has an implicit `args` binding that contains all arguments as an array.
+
+### Named Parameters Are Syntax Sugar
+
+```
+fn(x, y) => x + y
+```
+
+Desugars to:
+```
+fn => let [x, y] = args in x + y
+```
+
+This unifies the internal representation while keeping ergonomic syntax.
+
+**Variadic functions** become natural:
+```
+fn(first, ...rest) => first + sum(rest)
+```
+
+Desugars to:
+```
+fn => let [first, ...rest] = args in first + sum(rest)
+```
 
 ### Calling a Function
 
 ```typescript
 function evalCall(fnExpr, argExprs, ctx) {
   const fn = eval(fnExpr);
-  const args = argExprs.map(e => eval(e));
+  const argValues = argExprs.map(e => eval(e));
 
   if (fn.stage === "later") {
     // Can't analyze a body we don't have
@@ -82,8 +104,9 @@ function evalCall(fnExpr, argExprs, ctx) {
   // fn is Now - we have the closure
   const closure = fn.value;
 
-  // Bind params to argument constraints
-  const bodyEnv = bindParams(closure.params, args, closure.env);
+  // Bind args to array of argument staged values
+  const argsConstraint = arrayConstraintFrom(argValues);
+  const bodyEnv = bindVar("args", argsConstraint, closure.env);
 
   // Analyze/evaluate body - this IS the type derivation
   return evalExpr(closure.body, bodyEnv, ctx);
@@ -112,78 +135,87 @@ The result constraint naturally depends on input values.
 
 ---
 
-## Part 3: TypeScript-Style Generics Under This Model
+## Part 3: Trust, Assert, and Type Checking
 
-### Type Parameters Become Regular Parameters
+### Clarifying `trust` vs `assert`
 
-Instead of special `<T>` syntax, type parameters are just parameters with constraint `isType(...)`:
+Both refine constraints, but differ in when checks occur:
 
-**TypeScript:**
-```typescript
-function identity<T>(x: T): T {
-  return x;
-}
+| Operation | Compile-time | Runtime |
+|-----------|-------------|---------|
+| `assert(e, T)` | Emits check code | Verifies value satisfies T |
+| `trust(e, T)` | Checks via `implies` | No check emitted |
+
+**`trust` does compile-time verification but no runtime checking.**
+
+Example:
+```
+let x = 5
+trust(x, Number)  // OK: equals(5) implies isNumber ✓
+
+let y = "hello"
+trust(y, Number)  // Compile error: isString doesn't imply isNumber ✗
 ```
 
-**New model:**
-```
-let identity = fn(T, x) => x
-```
+`trust` means "I know this is true, and the compiler should catch obvious contradictions, but don't emit runtime verification code."
 
-Where `T` is expected to be a `TypeValue`.
+This is similar to TypeScript's `as` - you're asserting knowledge, but provably wrong assertions still fail.
 
-### The `: T` Annotation
+### When to Use Each
 
-To express "x must satisfy type T", we use `trust`:
+- **`assert`**: Validating external/untrusted data, runtime type guards
+- **`trust`**: Internal invariants the compiler can't infer, type parameter constraints
+
+---
+
+## Part 4: Type Parameters and Generics
+
+### Type Parameters Are Optional Arguments
+
+Instead of implicit inference (Idris-style), type parameters are simply optional arguments with computed defaults:
 
 ```
-let identity = fn(T, x) => trust(x, T)
-```
-
-Or with syntax sugar:
-```
-fn(T: Type, x: T) => x
-```
-
-Which desugars to:
-```
-fn(T, x) =>
-  let T = trust(T, isType(any)) in
-  let x = trust(x, T) in
+let identity = fn(x, T?) =>
+  let T = T ?? typeOf(x) in
+  trust(x, T)
   x
+
+identity(5)           // T computed as typeOf(5)
+identity(5, Number)   // T explicitly Number
 ```
 
-### How Calls Work
-
+With syntax sugar:
 ```
-identity(Number, 5)
-```
-
-1. Bind `T` → `TypeValue(isNumber)`, Now
-2. Bind `x` → `5`, constraint `and(isNumber, equals(5))`
-3. Body: `trust(x, T)`
-   - T is Now, extract inner constraint: `isNumber`
-   - Check: `and(isNumber, equals(5))` implies `isNumber`? ✓
-   - Result: `x` with constraint `and(isNumber, equals(5))`
-4. Return constraint: `and(isNumber, equals(5))`
-
-### Type Mismatch Detection
-
-```
-identity(Number, "hello")
+fn(x, T: Type = typeOf(x)) => trust(x, T); x
 ```
 
-1. Bind `T` → `TypeValue(isNumber)`
-2. Bind `x` → `"hello"`, constraint `and(isString, equals("hello"))`
-3. Body: `trust(x, T)`
-   - Check: `isString` implies `isNumber`? ✗
-   - **Error!**
+No magic inference - just optional parameters with default expressions.
 
-The trust check catches the mismatch - no declared parameter types needed.
+### Making Same-Type-ness Explicit
 
-### When Type Parameters Are Optional
+To enforce that two values have the same type:
 
-Many "generic" functions don't need explicit type parameters at all:
+```
+let pair = fn(x, y) =>
+  let _ = assert(y, typeOf(x)) in  // y must satisfy x's type
+  [x, y]
+
+pair(1, 2)      // OK: both numbers
+pair(1, "hi")   // Error: "hi" doesn't satisfy typeOf(1)
+```
+
+Or with an explicit type parameter:
+```
+let pair = fn(T, x, y) =>
+  let _ = trust(x, T) in
+  let _ = trust(y, T) in
+  [x, y]
+
+pair(Number, 1, 2)      // OK
+pair(Number, 1, "hi")   // Compile error
+```
+
+### Many "Generic" Functions Don't Need Type Parameters
 
 ```
 // TypeScript needs <T, U>:
@@ -211,31 +243,33 @@ The types are derived from the actual values - no `<T, U>` needed.
 
 ### When You DO Need Type Parameters
 
-Type parameters are still useful when:
-
 **1. The type isn't inferrable from values:**
 ```
-let empty = fn(T) => []  // Returns T[], but no T values to analyze
-empty(Number)  // Need to specify
+let empty = fn(T) => trust([], and(isArray, elements(T)))
+empty(Number)  // Need to specify element type
 ```
+
+Note: An empty array `[]` has constraint `and(isArray, length(0))`. Elements are vacuously `any` - they get constrained by later usage (bidirectional typing).
 
 **2. Constraining relationships:**
 ```
-let pair = fn(T: Type, x: T, y: T) => [x, y]
-pair(Number, 5, 6)      // OK
-pair(Number, 5, "hi")   // Error: "hi" doesn't satisfy Number
+let pair = fn(T, x, y) =>
+  let _ = trust(x, T) in
+  let _ = trust(y, T) in
+  [x, y]
 ```
 
 **3. Bounded type parameters:**
 ```
-let double = fn(T: Addable, x: T) => x + x
+let double = fn(T, x) =>
+  let T = trust(T, isType(Addable)) in
+  let x = trust(x, T) in
+  x + x
 ```
-
-Where `Addable` is a type that constrains what T can be.
 
 ---
 
-## Part 4: Handling Recursion
+## Part 5: Handling Recursion
 
 ### The Problem
 
@@ -285,7 +319,7 @@ For the first implementation, returning `any` for recursive calls is sufficient 
 
 ---
 
-## Part 5: Later Functions
+## Part 6: Later Functions
 
 ### The Edge Case
 
@@ -320,7 +354,104 @@ Users who need precision can ensure their functions are `comptime` or `Now`.
 
 ---
 
-## Part 6: Constraint System Changes
+## Part 7: JavaScript Codegen Optimization
+
+### The Problem
+
+Internally all functions are `fn => body` with implicit `args`, but we want to generate idiomatic JavaScript:
+
+```javascript
+// Want this:
+function(x, y) { return x + y; }
+
+// Not this:
+function(...args) { let [x, y] = args; return x + y; }
+```
+
+### Pattern Detection
+
+Codegen recognizes common patterns and optimizes:
+
+**Pattern 1: Fixed positional destructure**
+```
+fn => let [x, y] = args in x + y
+```
+Generates:
+```javascript
+function(x, y) { return x + y; }
+```
+
+**Pattern 2: Rest parameters**
+```
+fn => let [first, ...rest] = args in first + sum(rest)
+```
+Generates:
+```javascript
+function(first, ...rest) { return first + sum(rest); }
+```
+
+**Pattern 3: Dynamic access (no optimization possible)**
+```
+fn => args[n]  // n is Later
+```
+Generates:
+```javascript
+function(...args) { return args[n]; }
+```
+
+### Implementation
+
+```typescript
+function generateClosure(body: Expr): string {
+  const extracted = extractParamPattern(body);
+
+  if (extracted?.kind === 'fixed') {
+    const params = extracted.params.join(', ');
+    return `function(${params}) { return ${generate(extracted.body)}; }`;
+  }
+
+  if (extracted?.kind === 'rest') {
+    const fixed = extracted.params.slice(0, -1).join(', ');
+    const rest = extracted.params.at(-1);
+    const sep = fixed ? ', ' : '';
+    return `function(${fixed}${sep}...${rest}) { return ${generate(extracted.body)}; }`;
+  }
+
+  // Fallback: keep args array
+  return `function(...args) { return ${generate(body)}; }`;
+}
+
+function extractParamPattern(body: Expr): ParamPattern | null {
+  // Match: let [a, b, ...] = args in actualBody
+  if (body.tag !== 'let') return null;
+  if (body.value.tag !== 'varRef' || body.value.name !== 'args') return null;
+  if (usesArgsElsewhere(body.body)) return null;
+
+  const pattern = body.pattern;
+  if (pattern.tag !== 'arrayDestructure') return null;
+
+  const hasRest = pattern.elements.some(e => e.rest);
+  return {
+    kind: hasRest ? 'rest' : 'fixed',
+    params: pattern.elements.map(e => e.name),
+    body: body.body
+  };
+}
+```
+
+### What Blocks Optimization
+
+- `args.length` used in body
+- `args[i]` where `i` is not a literal
+- `args` passed to another function
+- Complex destructure patterns
+- Conditional access to args
+
+Most normal functions optimize to standard JS; dynamic patterns fall back to `...args`.
+
+---
+
+## Part 8: Constraint System Changes
 
 ### Remove These Constraints
 
@@ -340,9 +471,9 @@ isFunction  // Simple classification - "this is callable"
 // KEEP:
 isType(bound: Constraint)  // For type-valued parameters
 
-// MAYBE ADD:
-satisfiesParam(paramRef: string | number)  // Reference another param's type
-// (Only needed if we want declared dependencies, may not be necessary)
+// ADD:
+typeOf(expr)  // Returns the constraint of expr as a Type value
+// Used for: assert(y, typeOf(x)) to enforce same-type-ness
 ```
 
 ### Implication Changes
@@ -361,24 +492,23 @@ This is more like behavioral subtyping than structural.
 
 ---
 
-## Part 7: Implementation Steps
+## Part 9: Implementation Steps
 
-### Phase 1: Parallel Implementation
+### Phase 1: Unified Function Representation
 
-Keep existing `fnType` working while adding body-based derivation:
+1. **Add implicit `args` binding**
+   - Modify closure creation to not store params
+   - Bind `args` in function body environment
+   - Parser desugars `fn(x, y) => E` to `fn => let [x, y] = args in E`
 
-1. **Modify `evalCall` to derive results from body**
-   - When closure is Now, analyze body with argument constraints
-   - Compare results with `fnType`-based approach (for validation)
-   - Flag any discrepancies
+2. **Update `evalCall` to use `args`**
+   - Create array constraint from arguments
+   - Bind `args` instead of individual params
+   - Analyze body with this binding
 
-2. **Add cycle detection for recursive calls**
-   - Extend `inProgressRecursiveCalls` to return `any` instead of cached type
-   - Test with recursive functions
-
-3. **Handle Later functions**
-   - Return `any` constraint when calling Later functions
-   - Add tests for this case
+3. **Test basic function calls**
+   - Simple functions work as before
+   - Variadic functions work naturally
 
 ### Phase 2: Remove fnType
 
@@ -397,21 +527,36 @@ Keep existing `fnType` working while adding body-based derivation:
    - Remove tests that check for `fnType` constraints
    - Add tests for body-derived constraints
 
-### Phase 3: Add Type Parameter Syntax
+### Phase 3: Add `typeOf` and Related
 
-1. **Parser changes**
-   - Add `: T` syntax for parameter annotations
-   - Desugar to `trust` calls in the body
+1. **Implement `typeOf(expr)`**
+   - Returns the constraint of expr wrapped as a TypeValue
+   - Used for explicit same-type enforcement
 
-2. **Add `T: Type` shorthand**
-   - `fn(T: Type, x: T)` means T has constraint `isType(any)`
+2. **Update trust/assert semantics**
+   - `trust` does compile-time `implies` check
+   - `assert` emits runtime check code
 
-3. **Test TypeScript-style patterns**
-   - Identity, map, filter, reduce
-   - Bounded type parameters
-   - Multiple type parameters
+3. **Add optional parameter syntax**
+   - `fn(x, T = typeOf(x))` for optional type params
+   - Desugar to body-computed defaults
 
-### Phase 4: Clean Up
+### Phase 4: Codegen Optimization
+
+1. **Implement pattern extraction**
+   - Detect `let [...] = args in body` patterns
+   - Classify as fixed, rest, or dynamic
+
+2. **Generate optimized JS**
+   - Fixed params: `function(a, b, c)`
+   - Rest params: `function(a, ...rest)`
+   - Dynamic: `function(...args)`
+
+3. **Test generated code**
+   - Ensure correct behavior
+   - Check performance matches hand-written
+
+### Phase 5: Clean Up
 
 1. **Remove dead code**
    - Any remaining fnType references
@@ -420,12 +565,12 @@ Keep existing `fnType` working while adding body-based derivation:
 
 2. **Update documentation**
    - Explain the new model
-   - Document trust/assert for type parameters
+   - Document trust/assert/typeOf
    - Update examples
 
 ---
 
-## Part 8: Migration Examples
+## Part 10: Migration Examples
 
 ### Before: Current Code
 
@@ -456,24 +601,27 @@ function evalCall(fn, args) {
 
 ```typescript
 // staged-evaluate.ts (inference.ts deleted)
-function evalFn(params, body, env) {
-  // Just create the closure - no type inference
-  return now(closureValue(params, body, env), isFunction);
+function evalFn(body, env) {
+  // Just create the closure - no type inference, no params
+  return now(closureValue(body, env), isFunction);
 }
 
 function evalCall(fnExpr, argExprs, ctx) {
   const fn = eval(fnExpr);
-  const args = argExprs.map(e => eval(e));
+  const argValues = argExprs.map(e => eval(e));
 
   if (fn.stage === "later") {
-    return later(any, residualCall(fn.residual, args));
+    return later(any, residualCall(fn.residual, argValues));
   }
 
   const closure = fn.value;
-  const bodyEnv = bindParams(closure.params, args, closure.env);
+
+  // Create args array binding
+  const argsValue = createArrayValue(argValues);
+  const bodyEnv = bind("args", argsValue, closure.env);
 
   // Cycle detection for recursion
-  const cycleKey = getCycleKey(closure, args);
+  const cycleKey = getCycleKey(closure, argValues);
   if (inProgress.has(cycleKey)) {
     return later(any, residualCall(...));
   }
@@ -489,12 +637,13 @@ function evalCall(fnExpr, argExprs, ctx) {
 
 ---
 
-## Part 9: What We Gain
+## Part 11: What We Gain
 
 ### Simplicity
 - One mechanism (staged eval) instead of two (inference + eval)
 - ~200-400 lines of code removed
 - Fewer concepts to understand
+- Uniform function representation (just body + env)
 
 ### Precision
 - Result constraints are call-site specific
@@ -504,7 +653,8 @@ function evalCall(fnExpr, argExprs, ctx) {
 ### Uniformity
 - Types are always derived from behavior
 - No declared vs. inferred type distinction
-- Generic functions are just functions taking type arguments
+- Generic functions are just functions with optional type arguments
+- Variadic functions work naturally
 
 ### Alignment
 - Fits "constraints as types" philosophy
@@ -513,7 +663,7 @@ function evalCall(fnExpr, argExprs, ctx) {
 
 ---
 
-## Part 10: What We Lose
+## Part 12: What We Lose
 
 ### Early Error Detection
 - Errors found at call sites, not definitions
@@ -537,7 +687,7 @@ function evalCall(fnExpr, argExprs, ctx) {
 
 ---
 
-## Part 11: Open Questions
+## Part 13: Open Questions
 
 ### Q1: Should we keep any function type annotation?
 
@@ -572,6 +722,15 @@ Re-analyzing on each call could be slow. Options:
 - Only re-analyze if arg constraints differ from cached
 - Profile and optimize hot paths
 
+### Q5: How does `typeOf` work at runtime?
+
+`typeOf(x)` needs to return the constraint of x as a TypeValue. Options:
+- Compile-time only: `typeOf` is evaluated during staging, result is a literal Type
+- Runtime reflection: Values carry their constraints at runtime
+- Hybrid: Use compile-time when possible, runtime otherwise
+
+For now, compile-time only is simplest - `typeOf(x)` where x is Later returns `any`.
+
 ---
 
 ## Summary
@@ -579,16 +738,21 @@ Re-analyzing on each call could be slow. Options:
 This refactoring removes the `fnType`/`genericFnType` abstraction in favor of deriving function behavior from body analysis at call sites.
 
 **Core changes:**
-1. Functions are just closures (no type attached)
-2. Calling a function analyzes its body with argument constraints
-3. Type parameters become regular parameters with `isType` constraint
-4. Parameter annotations (`: T`) desugar to `trust` calls
+1. Functions are just closures with body + env (no param list, no type)
+2. All function bodies have implicit `args` binding
+3. Named parameters are syntax sugar for destructuring `args`
+4. Calling a function analyzes its body with `args` bound to argument constraints
+5. Type parameters are optional arguments with computed defaults
+6. Same-type constraints use explicit `typeOf()` and `trust`/`assert`
+7. Codegen optimizes to normal JS parameters when possible
 
 **Benefits:**
 - Simpler architecture (one mechanism, not two)
 - More precise results (call-site specific)
 - Natural dependent types
+- Natural variadic functions
 - Uniform "constraints as types" philosophy
+- Idiomatic JS output
 
 **Costs:**
 - Errors at call sites, not definitions
