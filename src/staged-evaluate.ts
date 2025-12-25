@@ -13,11 +13,11 @@
  */
 
 import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, letPatternExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr, methodCall, importExpr, Pattern, patternVars } from "./expr";
-import { TSDeclarationLoader } from "./ts-loader";
+import { TSDeclarationLoader, FunctionSignatureInfo, buildSyntheticBody, getRegisteredConstraint } from "./ts-loader";
 import { lookupMethod } from "./methods";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
 import { getBuiltin, getAllBuiltins, BuiltinDef, StagedBuiltinContext } from "./builtin-registry";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, unify, constraintToString } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, unify, constraintToString, tupleConstraint, arrayOfConstraint, anyC, neverC, indexSig } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
 import { extractAllRefinements, negateRefinement } from "./refinement";
@@ -863,6 +863,8 @@ function evalObject(
     }
 
     const value = objectVal(objFields);
+    // Mark as closed object - no unlisted fields allowed
+    fieldConstraints.push(indexSig(neverC));
     const constraint = and(...fieldConstraints);
     return { svalue: now(value, constraint) };
   }
@@ -879,6 +881,8 @@ function evalObject(
     });
   }
 
+  // Mark as closed object - no unlisted fields allowed
+  fieldConstraints.push(indexSig(neverC));
   const constraint = and(...fieldConstraints);
   return { svalue: later(constraint, obj(Object.fromEntries(residualFields.map(f => [f.name, f.value])))) };
 }
@@ -904,11 +908,22 @@ function evalField(
     }
 
     const fieldConstraint = extractFieldConstraint(objResult.constraint, fieldName);
-    return { svalue: now(fieldValue, fieldConstraint) };
+    // fieldConstraint can't be null here since we just verified the field exists
+    return { svalue: now(fieldValue, fieldConstraint!) };
   }
 
   // Object is Later - generate residual field access
   const fieldConstraint = extractFieldConstraint(objResult.constraint, fieldName);
+
+  // If object has known fields but this field isn't among them, throw type error
+  if (fieldConstraint === null) {
+    throw new TypeError(
+      hasField(fieldName, anyC),
+      objResult.constraint,
+      `field access .${fieldName}`
+    );
+  }
+
   return { svalue: later(fieldConstraint, field(objResult.residual, fieldName)) };
 }
 
@@ -1207,11 +1222,8 @@ function evalTrust(
     throw new StagingError("trust requires a compile-time known type constraint");
   }
 
-  if (constraintResult.value.tag !== "type") {
-    throw new TypeError(isTypeC, constraintResult.constraint, "trust constraint");
-  }
-
-  const targetConstraint = constraintResult.value.constraint;
+  // Extract constraint from result - handles TypeValue, array (tuple), and object (__arrayOf)
+  const targetConstraint = extractConstraintFromValue(constraintResult.value);
 
   // Refine the constraint based on trust (no runtime check)
   const refinedConstraint = unify(valueResult.constraint, targetConstraint);
@@ -1223,6 +1235,55 @@ function evalTrust(
   // Value is Later - trust is purely a type-level operation, no residual
   // The trust "disappears" and just affects the constraint
   return { svalue: later(refinedConstraint, valueResult.residual) };
+}
+
+/**
+ * Extract a Constraint from a value used as a type annotation.
+ * Handles:
+ * - TypeValue: return its constraint directly
+ * - Array of TypeValues: interpret as tuple type
+ * - Object with __arrayOf: interpret as Array<T> type
+ * - Object with __constraintId: look up registered constraint
+ */
+function extractConstraintFromValue(v: Value): Constraint {
+  // Direct TypeValue
+  if (v.tag === "type") {
+    return v.constraint;
+  }
+
+  // Array of types -> tuple constraint
+  if (v.tag === "array") {
+    const elementConstraints: Constraint[] = [];
+    for (const elem of v.elements) {
+      elementConstraints.push(extractConstraintFromValue(elem));
+    }
+    return tupleConstraint(elementConstraints);
+  }
+
+  // Object markers
+  if (v.tag === "object") {
+    // Object with __constraintId -> look up registered constraint
+    const constraintIdValue = v.fields.get("__constraintId");
+    if (constraintIdValue !== undefined) {
+      if (constraintIdValue.tag !== "number") {
+        throw new Error("Invalid constraint ID");
+      }
+      const constraint = getRegisteredConstraint(constraintIdValue.value);
+      if (!constraint) {
+        throw new Error(`Constraint ID ${constraintIdValue.value} not found`);
+      }
+      return constraint;
+    }
+
+    // Object with __arrayOf -> Array<T> constraint
+    const arrayOfValue = v.fields.get("__arrayOf");
+    if (arrayOfValue !== undefined) {
+      const elementConstraint = extractConstraintFromValue(arrayOfValue);
+      return arrayOfConstraint(elementConstraint);
+    }
+  }
+
+  throw new TypeError(isTypeC, constraintOf(v), "trust constraint");
 }
 
 /**
@@ -1249,12 +1310,16 @@ function evalTypeOf(
 // Key: "module:export" -> Constraint
 const exportCache = new Map<string, Constraint>();
 
+// Cache for function signatures (for creating synthetic closures)
+// Key: "module:export" -> FunctionSignatureInfo
+const signatureCache = new Map<string, FunctionSignatureInfo>();
+
 /**
- * Staged import - loads TypeScript declarations and creates Later bindings.
+ * Staged import - loads TypeScript declarations and creates bindings.
  *
- * Imported values are always Later because they represent external code
- * that cannot be executed at compile time. The constraints come from
- * the .d.ts type declarations.
+ * For functions with type parameters, creates synthetic closures that
+ * preserve type information. For other values, creates Later bindings
+ * with constraints from the .d.ts type declarations.
  *
  * Syntax: import { name1, name2 } from "module" in body
  */
@@ -1270,23 +1335,48 @@ function evalImport(
 
   if (uncachedNames.length > 0) {
     const loader = new TSDeclarationLoader();
-    const loadedExports = loader.loadExports(modulePath, uncachedNames);
+    const { constraints, signatures } = loader.loadExportsWithSignatures(modulePath, uncachedNames);
 
-    // Cache the loaded exports
-    for (const [name, constraint] of loadedExports) {
+    // Cache the loaded exports and signatures
+    for (const [name, constraint] of constraints) {
       exportCache.set(`${modulePath}:${name}`, constraint);
+    }
+    for (const [name, sig] of signatures) {
+      signatureCache.set(`${modulePath}:${name}`, sig);
     }
   }
 
-  // Create Later bindings for each imported name
+  // Create bindings for each imported name
   let newEnv = env;
   for (const name of names) {
     const constraint = exportCache.get(`${modulePath}:${name}`);
     if (!constraint) {
       throw new Error(`Module "${modulePath}" has no export named "${name}"`);
     }
-    // Imported values are Later - they exist at runtime only
-    newEnv = newEnv.set(name, { svalue: later(constraint, varRef(name)) });
+
+    const sig = signatureCache.get(`${modulePath}:${name}`);
+
+    // For functions with type parameters, create synthetic closures
+    if (sig && sig.typeParamCount > 0) {
+      // Create the impl binding (the actual imported function)
+      const implName = `__${name}_impl`;
+      newEnv = newEnv.set(implName, {
+        svalue: later(isFunction, varRef(name))
+      });
+
+      // Create synthetic closure with type-preserving body
+      const syntheticBody = buildSyntheticBody(sig, implName, sig.paramTypes.length);
+      const closure = closureVal(syntheticBody, Env.empty());
+
+      // Register with stagedClosures so it can be evaluated
+      stagedClosures.set(closure, { body: syntheticBody, env: newEnv });
+
+      // Bind the name to the synthetic closure (Now - closures are always Now)
+      newEnv = newEnv.set(name, { svalue: now(closure, isFunction) });
+    } else {
+      // Non-generic imports: keep as Later binding
+      newEnv = newEnv.set(name, { svalue: later(constraint, varRef(name)) });
+    }
   }
 
   // Evaluate the body with imports in scope
@@ -1551,7 +1641,28 @@ function usesVar(expr: Expr, name: string): boolean {
   }
 }
 
-function extractFieldConstraint(objConstraint: Constraint, fieldName: string): Constraint {
+/**
+ * Extract the index constraint from an object constraint.
+ * Returns the constraint for unlisted fields, or null if no index constraint found.
+ */
+function extractIndexConstraint(c: Constraint): Constraint | null {
+  if (c.tag === "index") return c.constraint;
+  if (c.tag === "and") {
+    for (const sub of c.constraints) {
+      if (sub.tag === "index") return sub.constraint;
+    }
+  }
+  return null;
+}
+
+/**
+ * Extract the constraint for a specific field from an object constraint.
+ * Returns null if the object is closed (has index(never)) but this field isn't among hasField.
+ * Returns the index constraint if the field isn't in hasField but index exists.
+ * Returns anyC if the object type is completely unknown (no index constraint).
+ */
+function extractFieldConstraint(objConstraint: Constraint, fieldName: string): Constraint | null {
+  // First, look for an explicit hasField for this field
   if (objConstraint.tag === "hasField" && objConstraint.name === fieldName) {
     return objConstraint.constraint;
   }
@@ -1562,7 +1673,20 @@ function extractFieldConstraint(objConstraint: Constraint, fieldName: string): C
       }
     }
   }
-  return { tag: "any" };
+
+  // Field not found in hasField constraints. Check for index constraint.
+  const indexConstraint = extractIndexConstraint(objConstraint);
+  if (indexConstraint !== null) {
+    // If index is never, no unlisted fields are allowed - return null (error)
+    if (indexConstraint.tag === "never") {
+      return null;
+    }
+    // Otherwise, unlisted fields have this type
+    return indexConstraint;
+  }
+
+  // No index constraint - object is "open" (unknown structure), allow any field
+  return anyC;
 }
 
 function extractElementConstraint(arrConstraint: Constraint, idx: number): Constraint {

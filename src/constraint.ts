@@ -34,6 +34,7 @@ export type Constraint =
   | { tag: "elements", constraint: Constraint }    // homogeneous array elements
   | { tag: "length", constraint: Constraint }      // array/string length
   | { tag: "elementAt", index: number, constraint: Constraint }  // tuple element
+  | { tag: "index", constraint: Constraint }  // constraint for unlisted fields (like TS index signature)
 
   // Logical constraints
   | { tag: "and", constraints: Constraint[] }
@@ -86,6 +87,28 @@ export const length = (constraint: Constraint): Constraint =>
 
 export const elementAt = (index: number, constraint: Constraint): Constraint =>
   ({ tag: "elementAt", index, constraint });
+
+export const indexSig = (constraint: Constraint): Constraint =>
+  ({ tag: "index", constraint });
+
+/**
+ * Create a tuple type constraint.
+ * Combines isArray with element constraints at each position and length constraint.
+ */
+export const tupleConstraint = (elementConstraints: Constraint[]): Constraint => {
+  const constraints: Constraint[] = [isArray];
+  for (let i = 0; i < elementConstraints.length; i++) {
+    constraints.push(elementAt(i, elementConstraints[i]));
+  }
+  constraints.push(length(equals(elementConstraints.length)));
+  return and(...constraints);
+};
+
+/**
+ * Create an array type constraint with a specific element type.
+ */
+export const arrayOfConstraint = (elementConstraint: Constraint): Constraint =>
+  and(isArray, elements(elementConstraint));
 
 export const and = (...constraints: Constraint[]): Constraint => {
   if (constraints.length === 0) return anyC;
@@ -243,6 +266,9 @@ export function constraintEquals(a: Constraint, b: Constraint): boolean {
     case "elementAt":
       return a.index === (b as typeof a).index &&
              constraintEquals(a.constraint, (b as typeof a).constraint);
+
+    case "index":
+      return constraintEquals(a.constraint, (b as typeof a).constraint);
 
     case "and":
     case "or": {
@@ -443,6 +469,9 @@ export function simplify(c: Constraint): Constraint {
     case "elementAt":
       return elementAt(c.index, simplify(c.constraint));
 
+    case "index":
+      return indexSig(simplify(c.constraint));
+
     case "isType":
       return isType(simplify(c.constraint));
 
@@ -607,6 +636,11 @@ export function implies(a: Constraint, b: Constraint): boolean {
     return sa.index === sb.index && implies(sa.constraint, sb.constraint);
   }
 
+  // index implication: index(A) implies index(B) if A implies B
+  if (sa.tag === "index" && sb.tag === "index") {
+    return implies(sa.constraint, sb.constraint);
+  }
+
   // isType implication: isType(A) implies isType(B) if A implies B
   if (sa.tag === "isType" && sb.tag === "isType") {
     return implies(sa.constraint, sb.constraint);
@@ -696,6 +730,9 @@ function substituteRecVar(c: Constraint, varName: string, replacement: Constrain
 
     case "elementAt":
       return elementAt(c.index, substituteRecVar(c.constraint, varName, replacement));
+
+    case "index":
+      return indexSig(substituteRecVar(c.constraint, varName, replacement));
 
     case "isType":
       return isType(substituteRecVar(c.constraint, varName, replacement));
@@ -806,6 +843,9 @@ export function constraintToString(c: Constraint): string {
     case "elementAt":
       return `[${c.index}]: ${constraintToString(c.constraint)}`;
 
+    case "index":
+      return `[string]: ${constraintToString(c.constraint)}`;
+
     case "and": {
       // Try to format nicely for common cases
       const parts = c.constraints;
@@ -822,9 +862,24 @@ export function constraintToString(c: Constraint): string {
       // Check if it's an object type
       const hasObject = parts.find(p => p.tag === "isObject");
       const fields = parts.filter(p => p.tag === "hasField") as { tag: "hasField", name: string, constraint: Constraint }[];
-      if (hasObject && fields.length > 0 && fields.length === parts.length - 1) {
-        const fieldStrs = fields.map(f => `${f.name}: ${constraintToString(f.constraint)}`);
-        return `{ ${fieldStrs.join(", ")} }`;
+      const indexConstraint = parts.find(p => p.tag === "index") as { tag: "index", constraint: Constraint } | undefined;
+      const isClosedEmpty = indexConstraint && indexConstraint.constraint.tag === "never";
+
+      // Object with fields (possibly with index(never) for closed objects)
+      if (hasObject && fields.length > 0) {
+        const expectedParts = 1 + fields.length + (indexConstraint ? 1 : 0);
+        if (parts.length === expectedParts) {
+          const fieldStrs = fields.map(f => `${f.name}: ${constraintToString(f.constraint)}`);
+          if (indexConstraint && !isClosedEmpty) {
+            fieldStrs.push(`[string]: ${constraintToString(indexConstraint.constraint)}`);
+          }
+          return `{ ${fieldStrs.join(", ")} }`;
+        }
+      }
+
+      // Empty closed object: { }
+      if (hasObject && fields.length === 0 && isClosedEmpty && parts.length === 2) {
+        return "{ }";
       }
 
       return parts.map(constraintToString).join(" & ");
@@ -908,6 +963,9 @@ function applySubstitutionImpl(c: Constraint, sub: Substitution, seen: Set<numbe
     case "elementAt":
       return elementAt(c.index, applySubstitutionImpl(c.constraint, sub, seen));
 
+    case "index":
+      return indexSig(applySubstitutionImpl(c.constraint, sub, seen));
+
     case "isType":
       return isType(applySubstitutionImpl(c.constraint, sub, seen));
 
@@ -938,6 +996,7 @@ export function freeConstraintVars(c: Constraint): Set<number> {
       case "elements":
       case "length":
       case "isType":
+      case "index":
         collect(c.constraint);
         break;
       case "hasField":
@@ -1034,6 +1093,9 @@ function solveInto(a: Constraint, b: Constraint, sub: Substitution): boolean {
       case "elementAt":
         return a.index === (b as typeof a).index &&
                solveInto(a.constraint, (b as typeof a).constraint, sub);
+
+      case "index":
+        return solveInto(a.constraint, (b as typeof a).constraint, sub);
 
       case "isType":
         return solveInto(a.constraint, (b as typeof a).constraint, sub);

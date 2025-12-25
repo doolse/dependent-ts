@@ -2,7 +2,7 @@
  * Runtime values for the interpreter.
  */
 
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, equals, hasField, elements, length, elementAt, isType, constraintToString } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, equals, hasField, elements, length, elementAt, indexSig, neverC, isType, constraintToString } from "./constraint";
 import type { Expr } from "./expr";
 import type { Env } from "./env";
 
@@ -135,6 +135,8 @@ export function constraintOf(value: Value): Constraint {
       for (const [name, val] of value.fields) {
         fieldConstraints.push(hasField(name, constraintOf(val)));
       }
+      // Mark as closed object - no unlisted fields allowed
+      fieldConstraints.push(indexSig(neverC));
       return and(...fieldConstraints);
     }
 
@@ -303,6 +305,14 @@ export function valueSatisfies(value: Value, constraint: Constraint): boolean {
       // Note: value.ts doesn't have an "undefined" tag, so this is currently unsatisfied
       // This will need to be addressed when undefined values are added
       return false;
+
+    case "index":
+      // Index constraint specifies the type of unlisted fields
+      // For concrete values created by our system, they have exactly the fields we know about
+      // index(never) means "closed object" - no extra fields, which is always satisfied
+      // For other index constraints, we'd need to check all fields not covered by hasField
+      // For simplicity, assume satisfied (our values don't have extra fields)
+      return true;
   }
 }
 

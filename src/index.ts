@@ -28,6 +28,7 @@ export {
   elements,
   length,
   elementAt,
+  indexSig,
   and,
   or,
   not,

@@ -93,9 +93,27 @@ describe("Import Expression", () => {
       expect(exports.size).toBe(1);
       const useStateType = exports.get("useState");
       expect(useStateType).toBeDefined();
-      // useState is a generic function
+      // useState is a function - type info is derived at call sites via synthetic closures
       const typeStr = constraintToString(useStateType!);
-      expect(typeStr).toContain("->");  // It's a function
+      expect(typeStr).toBe("function");
+    });
+
+    it("derives useState return type from argument type", () => {
+      // When we call useState with a number, the return type should be a tuple
+      // with the first element being the same type as the argument (number)
+      // Note: the exact constraint might be equals(0) rather than just isNumber
+      const code = `
+        import { useState } from "react" in
+        let [count, setCount] = useState(0) in
+        count
+      `;
+      const expr = parse(code);
+      const result = stage(expr);
+      expect(isLater(result.svalue)).toBe(true);
+      // The count should have a number-related constraint (from the 0 argument)
+      // It could be "number", "0", or "number & 0" depending on how the type is derived
+      const typeStr = constraintToString(result.svalue.constraint);
+      expect(typeStr.includes("number") || typeStr.includes("0")).toBe(true);
     });
 
     it("generates React counter component", () => {

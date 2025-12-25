@@ -41,6 +41,18 @@ import {
   length,
   equals,
 } from "./constraint";
+import {
+  Expr,
+  varRef,
+  call,
+  index,
+  num,
+  trustExpr,
+  typeOfExpr,
+  array,
+  obj,
+} from "./expr";
+import { typeVal, Value } from "./value";
 
 /**
  * Result of loading a module's declarations.
@@ -54,7 +66,6 @@ export interface ModuleDeclarations {
 
 /**
  * Context for type conversion.
- * Note: Type parameters are resolved to `any` since we use body-based type derivation.
  */
 interface ConversionContext {
   /** The TypeScript type checker */
@@ -63,10 +74,38 @@ interface ConversionContext {
   converting: Set<number>;
   /** Current depth of type conversion */
   depth: number;
+  /** Maps type parameter names to argument indices (for signature extraction) */
+  typeParamToArgIndex?: Map<string, number>;
 }
 
 /** Maximum depth for type conversion to prevent stack overflow */
 const MAX_CONVERSION_DEPTH = 8;
+
+/**
+ * Specification for how to compute a return type constraint.
+ * Used in synthetic closure bodies to derive return types from argument types.
+ */
+export type ReturnTypeSpec =
+  | { tag: "static"; constraint: Constraint }           // Fixed return type: () => string
+  | { tag: "paramType"; index: number }                 // Returns type param: <T>(x: T) => T
+  | { tag: "tuple"; elements: ReturnTypeSpec[] }        // Tuple: <S>(x: S) => [S, Fn]
+  | { tag: "arrayOf"; element: ReturnTypeSpec }         // Array: <T>(x: T) => T[]
+  | { tag: "functionReturning"; returnSpec: ReturnTypeSpec }  // Function type: () => (() => T)
+
+/**
+ * Information about a function's type signature.
+ * Used to create synthetic closures that preserve type information for imports.
+ */
+export interface FunctionSignatureInfo {
+  /** Constraints for parameter types (for type checking arguments) */
+  paramTypes: Constraint[];
+  /** How to compute the return type constraint */
+  returnType: ReturnTypeSpec;
+  /** Number of type parameters (0 for non-generic functions) */
+  typeParamCount: number;
+  /** Maps type parameter names to their first occurrence in parameters */
+  typeParamToArgIndex: Map<string, number>;
+}
 
 /**
  * TypeScript Declaration Loader.
@@ -165,6 +204,78 @@ export class TSDeclarationLoader {
     }
 
     return result;
+  }
+
+  /**
+   * Load specific exports from a module, including function signature info.
+   * Returns both constraints and signature info for creating synthetic closures.
+   */
+  loadExportsWithSignatures(
+    moduleName: string,
+    exportNames: string[],
+    basePath?: string
+  ): {
+    constraints: Map<string, Constraint>;
+    signatures: Map<string, FunctionSignatureInfo>;
+  } {
+    const resolvedModule = ts.resolveModuleName(
+      moduleName,
+      basePath || process.cwd() + "/index.ts",
+      this.compilerOptions,
+      ts.sys
+    );
+
+    if (!resolvedModule.resolvedModule) {
+      return { constraints: new Map(), signatures: new Map() };
+    }
+
+    const resolvedPath = resolvedModule.resolvedModule.resolvedFileName;
+
+    // Create a program with just this file
+    this.program = ts.createProgram([resolvedPath], this.compilerOptions);
+    this.checker = this.program.getTypeChecker();
+
+    const sourceFile = this.program.getSourceFile(resolvedPath);
+    if (!sourceFile) {
+      return { constraints: new Map(), signatures: new Map() };
+    }
+
+    const ctx: ConversionContext = {
+      checker: this.checker,
+      converting: new Set(),
+      depth: 0,
+    };
+
+    const constraints = new Map<string, Constraint>();
+    const signatures = new Map<string, FunctionSignatureInfo>();
+
+    // Get the module symbol
+    const moduleSymbol = this.checker.getSymbolAtLocation(sourceFile);
+    if (!moduleSymbol) {
+      return { constraints, signatures };
+    }
+
+    // Get the exports of the module
+    const moduleExports = this.checker.getExportsOfModule(moduleSymbol);
+
+    // Only process the requested exports
+    for (const exportName of exportNames) {
+      const symbol = moduleExports.find(s => s.getName() === exportName);
+      if (symbol) {
+        const type = this.checker.getTypeOfSymbolAtLocation(symbol, sourceFile);
+        const constraint = this.convertType(type, ctx);
+        constraints.set(exportName, constraint);
+
+        // If it's a function type, extract signature info
+        const callSignatures = type.getCallSignatures();
+        if (callSignatures.length > 0) {
+          const sigInfo = this.extractSignatureInfo(callSignatures[0], ctx);
+          signatures.set(exportName, sigInfo);
+        }
+      }
+    }
+
+    return { constraints, signatures };
   }
 
   /**
@@ -538,6 +649,260 @@ export class TSDeclarationLoader {
     // All functions get isFunction constraint
     // Type derivation happens at call sites with body analysis
     return isFunction;
+  }
+
+  /**
+   * Extract full signature information from a TypeScript call signature.
+   * This is used to create synthetic closures for imported functions.
+   */
+  extractSignatureInfo(
+    signature: ts.Signature,
+    ctx: ConversionContext
+  ): FunctionSignatureInfo {
+    // Get type parameters
+    const typeParams = signature.getTypeParameters() || [];
+    const typeParamToArgIndex = new Map<string, number>();
+
+    // Get parameters and build mapping from type params to arg indices
+    const params = signature.getParameters();
+    const paramTypes: Constraint[] = [];
+
+    for (let i = 0; i < params.length; i++) {
+      const param = params[i];
+      const paramType = ctx.checker.getTypeOfSymbol(param);
+
+      // Check if this parameter is a type parameter
+      if (paramType.flags & ts.TypeFlags.TypeParameter) {
+        const typeParam = paramType as ts.TypeParameter;
+        const symbol = typeParam.getSymbol();
+        if (symbol && !typeParamToArgIndex.has(symbol.getName())) {
+          typeParamToArgIndex.set(symbol.getName(), i);
+        }
+      }
+
+      // Also check if the parameter type contains type parameters
+      this.collectTypeParamIndices(paramType, i, typeParamToArgIndex, ctx);
+
+      // Convert the parameter type to constraint
+      paramTypes.push(this.convertType(paramType, ctx));
+    }
+
+    // Convert return type to ReturnTypeSpec
+    const returnType = signature.getReturnType();
+    const returnTypeSpec = this.convertToReturnTypeSpec(
+      returnType,
+      { ...ctx, typeParamToArgIndex }
+    );
+
+    return {
+      paramTypes,
+      returnType: returnTypeSpec,
+      typeParamCount: typeParams.length,
+      typeParamToArgIndex,
+    };
+  }
+
+  /**
+   * Collect type parameter occurrences and map them to argument indices.
+   */
+  private collectTypeParamIndices(
+    type: ts.Type,
+    argIndex: number,
+    mapping: Map<string, number>,
+    ctx: ConversionContext
+  ): void {
+    if (type.flags & ts.TypeFlags.TypeParameter) {
+      const symbol = type.getSymbol();
+      if (symbol && !mapping.has(symbol.getName())) {
+        mapping.set(symbol.getName(), argIndex);
+      }
+      return;
+    }
+
+    // For union/intersection types, check all constituent types
+    if (type.isUnion() || type.isIntersection()) {
+      for (const t of type.types) {
+        this.collectTypeParamIndices(t, argIndex, mapping, ctx);
+      }
+      return;
+    }
+
+    // For array types, check element type
+    if (ctx.checker.isArrayType(type)) {
+      const typeArgs = ctx.checker.getTypeArguments(type as ts.TypeReference);
+      if (typeArgs.length > 0) {
+        this.collectTypeParamIndices(typeArgs[0], argIndex, mapping, ctx);
+      }
+      return;
+    }
+
+    // For tuple types, check all element types
+    if (ctx.checker.isTupleType(type)) {
+      const typeArgs = ctx.checker.getTypeArguments(type as ts.TypeReference);
+      for (const arg of typeArgs) {
+        this.collectTypeParamIndices(arg, argIndex, mapping, ctx);
+      }
+      return;
+    }
+
+    // For function types, check parameter and return types
+    const callSignatures = type.getCallSignatures();
+    if (callSignatures.length > 0) {
+      const sig = callSignatures[0];
+      for (const param of sig.getParameters()) {
+        const paramType = ctx.checker.getTypeOfSymbol(param);
+        this.collectTypeParamIndices(paramType, argIndex, mapping, ctx);
+      }
+      this.collectTypeParamIndices(sig.getReturnType(), argIndex, mapping, ctx);
+    }
+  }
+
+  /**
+   * Convert a TypeScript type to a ReturnTypeSpec.
+   * This captures the structure of the return type including type parameter references.
+   */
+  private convertToReturnTypeSpec(
+    type: ts.Type,
+    ctx: ConversionContext
+  ): ReturnTypeSpec {
+    const mapping = ctx.typeParamToArgIndex;
+
+    // Type parameter -> reference to arg type
+    if (type.flags & ts.TypeFlags.TypeParameter) {
+      const symbol = type.getSymbol();
+      if (symbol && mapping?.has(symbol.getName())) {
+        return { tag: "paramType", index: mapping.get(symbol.getName())! };
+      }
+      // Unknown type parameter - fall back to static any
+      return { tag: "static", constraint: anyC };
+    }
+
+    // Tuple types
+    if (ctx.checker.isTupleType(type)) {
+      const typeArgs = ctx.checker.getTypeArguments(type as ts.TypeReference);
+      const elements = typeArgs.map(arg => this.convertToReturnTypeSpec(arg, ctx));
+      return { tag: "tuple", elements };
+    }
+
+    // Array types (non-tuple)
+    if (ctx.checker.isArrayType(type)) {
+      const typeArgs = ctx.checker.getTypeArguments(type as ts.TypeReference);
+      if (typeArgs.length > 0) {
+        const element = this.convertToReturnTypeSpec(typeArgs[0], ctx);
+        return { tag: "arrayOf", element };
+      }
+      return { tag: "static", constraint: and(isArray, elements(anyC)) };
+    }
+
+    // Function types
+    const callSignatures = type.getCallSignatures();
+    if (callSignatures.length > 0) {
+      const sig = callSignatures[0];
+      const returnSpec = this.convertToReturnTypeSpec(sig.getReturnType(), ctx);
+      return { tag: "functionReturning", returnSpec };
+    }
+
+    // Union types - if all branches are type params pointing to same arg, use that
+    if (type.isUnion()) {
+      // For now, convert to static constraint
+      return { tag: "static", constraint: this.convertType(type, ctx) };
+    }
+
+    // All other types - convert to static constraint
+    return { tag: "static", constraint: this.convertType(type, ctx) };
+  }
+}
+
+/**
+ * Build a synthetic closure body for an imported function.
+ * The body calls the impl function and trusts the result with the computed return type.
+ *
+ * @param sig - The function signature info
+ * @param implName - The name of the variable holding the actual import
+ * @param paramCount - Number of parameters the function takes
+ * @returns An expression that can be used as the closure body
+ */
+export function buildSyntheticBody(
+  sig: FunctionSignatureInfo,
+  implName: string,
+  paramCount: number
+): Expr {
+  // Build argument expressions: args[0], args[1], etc.
+  const argExprs: Expr[] = [];
+  for (let i = 0; i < paramCount; i++) {
+    argExprs.push(index(varRef("args"), num(i)));
+  }
+
+  // Build the call to the impl function
+  const callExpr = call(varRef(implName), ...argExprs);
+
+  // Build the return type expression
+  const returnTypeExpr = buildReturnTypeExpr(sig.returnType);
+
+  // Wrap in trust
+  return trustExpr(callExpr, returnTypeExpr);
+}
+
+/**
+ * Registry for static constraints that need to be referenced from synthetic bodies.
+ * Maps constraint ID to the constraint itself.
+ */
+const staticConstraintRegistry = new Map<number, Constraint>();
+let nextConstraintId = 0;
+
+/**
+ * Register a static constraint and return its ID.
+ */
+function registerConstraint(c: Constraint): number {
+  const id = nextConstraintId++;
+  staticConstraintRegistry.set(id, c);
+  return id;
+}
+
+/**
+ * Look up a constraint by ID (called by evaluator).
+ */
+export function getRegisteredConstraint(id: number): Constraint | undefined {
+  return staticConstraintRegistry.get(id);
+}
+
+/**
+ * Build an expression that evaluates to a TypeValue for the return type.
+ * Uses array literals to represent tuple types, which the evaluator handles specially.
+ * Static constraints are registered and referenced by ID.
+ */
+function buildReturnTypeExpr(spec: ReturnTypeSpec): Expr {
+  switch (spec.tag) {
+    case "static": {
+      // Register the constraint and create a reference to it
+      const id = registerConstraint(spec.constraint);
+      // Use a special object marker that the evaluator will recognize
+      return obj({ __constraintId: num(id) });
+    }
+
+    case "paramType":
+      // Return typeOf(args[index]) to get the type of the argument
+      return typeOfExpr(index(varRef("args"), num(spec.index)));
+
+    case "tuple": {
+      // Create an array of type expressions - evaluator interprets as tuple type
+      // Each element evaluates to a TypeValue, combined into tuple constraint
+      const elementExprs = spec.elements.map(el => buildReturnTypeExpr(el));
+      return array(...elementExprs);
+    }
+
+    case "arrayOf": {
+      // For Array<T>, we need to wrap the element type in an array constraint
+      // Use a special marker object that the evaluator recognizes
+      const elementExpr = buildReturnTypeExpr(spec.element);
+      return obj({ __arrayOf: elementExpr });
+    }
+
+    case "functionReturning": {
+      // For function types, register isFunction constraint
+      const id = registerConstraint(isFunction);
+      return obj({ __constraintId: num(id) });
+    }
   }
 }
 
