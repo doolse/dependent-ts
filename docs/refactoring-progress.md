@@ -1,8 +1,10 @@
 # Refactoring Progress: Body-Based Type Derivation
 
-## Status: Phases 1-7 Complete ✅
+## Status: Phases 1-7 Complete ✅ (Phase 8 Deferred)
 
 The core refactoring is done. Functions now use body-based type derivation at call sites instead of upfront inference. The `fnType` and `genericFnType` constraint types have been removed. The `typeOf()` expression has been added for explicit type reflection. Codegen now optimizes args destructuring to named params.
+
+Phase 8 (optional cleanup) is deferred as it involves significant structural changes to the parser and internal representation without adding new functionality.
 
 ---
 
@@ -117,11 +119,15 @@ The test count decreased from 713 to 693 after removing fnType/genericFnType tes
 
 ## Future Phases (from original plan)
 
-### Phase 8: Optional Cleanup
+### Phase 8: Optional Cleanup (Deferred)
+
+Low priority structural cleanup that can be done in the future:
 
 - Remove `params` from ClosureValue (src/value.ts)
 - Parser-level desugaring of `fn(x, y) => E` to `fn => let [x, y] = args in E`
 - Cache body analysis results
+
+These changes would make the internal representation cleaner but don't add new functionality. The current implementation is fully working.
 
 ---
 
