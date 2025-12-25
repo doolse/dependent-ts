@@ -431,12 +431,59 @@ function genFunctionBodyStatements(
   return statements.join("\n");
 }
 
+/**
+ * Check if a pattern is a simple array destructuring of consecutive elements.
+ * Returns the list of variable names if it's a simple pattern, null otherwise.
+ */
+function extractSimpleArrayPattern(pattern: Pattern): string[] | null {
+  if (pattern.tag === "arrayPattern") {
+    const names: string[] = [];
+    for (const elem of pattern.elements) {
+      if (elem.tag === "varPattern") {
+        names.push(elem.name);
+      } else {
+        // Nested patterns not supported for this optimization
+        return null;
+      }
+    }
+    return names;
+  }
+  return null;
+}
+
+/**
+ * Check if a function body starts with `let [a, b, ...] = args in rest`
+ * and extract the parameter names and the inner body.
+ * This allows us to generate proper JavaScript function parameters.
+ */
+function extractArgsDestructuring(body: Expr): { params: string[]; innerBody: Expr } | null {
+  if (body.tag === "letPattern") {
+    // Check if the value is the 'args' variable
+    if (body.value.tag === "var" && body.value.name === "args") {
+      const params = extractSimpleArrayPattern(body.pattern);
+      if (params) {
+        return { params, innerBody: body.body };
+      }
+    }
+  }
+  return null;
+}
+
 function genFunction(
   params: string[],
   body: Expr,
   opts: Required<CodeGenOptions>,
   depth: number
 ): string {
+  // Check for args destructuring optimization: fn => let [x, y] = args in body
+  // transforms to (x, y) => body
+  if (params.length === 0) {
+    const argsDestructuring = extractArgsDestructuring(body);
+    if (argsDestructuring) {
+      return genFunction(argsDestructuring.params, argsDestructuring.innerBody, opts, depth);
+    }
+  }
+
   const safeParams = params.map(genIdentifier).join(", ");
 
   // If body is a let chain, generate as block with statements
@@ -462,6 +509,14 @@ function genRecFunction(
   opts: Required<CodeGenOptions>,
   depth: number
 ): string {
+  // Check for args destructuring optimization
+  if (params.length === 0) {
+    const argsDestructuring = extractArgsDestructuring(body);
+    if (argsDestructuring) {
+      return genRecFunction(name, argsDestructuring.params, argsDestructuring.innerBody, opts, depth);
+    }
+  }
+
   const safeName = genIdentifier(name);
   const safeParams = params.map(genIdentifier).join(", ");
 

@@ -370,6 +370,107 @@ describe("Integration Tests", () => {
 });
 
 // ============================================================================
+// Args Destructuring Optimization
+// ============================================================================
+
+import { letPatternExpr, arrayPattern, varPattern, recfn } from "../src/index";
+
+describe("Args Destructuring Optimization", () => {
+  it("transforms fn() with args destructuring to named params", () => {
+    // fn() => let [x, y] = args in x + y
+    // should generate (x, y) => x + y
+    const expr = fn(
+      [],
+      letPatternExpr(
+        arrayPattern(varPattern("x"), varPattern("y")),
+        varRef("args"),
+        add(varRef("x"), varRef("y"))
+      )
+    );
+    expect(generateJS(expr).trim()).toBe("(x, y) => x + y");
+  });
+
+  it("transforms with more complex body", () => {
+    // fn() => let [a, b] = args in let c = a + b in c * 2
+    const expr = fn(
+      [],
+      letPatternExpr(
+        arrayPattern(varPattern("a"), varPattern("b")),
+        varRef("args"),
+        letExpr("c", add(varRef("a"), varRef("b")), mul(varRef("c"), num(2)))
+      )
+    );
+    const code = generateJS(expr);
+    expect(code).toContain("(a, b)");
+    expect(code).toContain("const c = a + b");
+    expect(code).toContain("return c * 2");
+  });
+
+  it("does not transform if value is not args", () => {
+    // fn() => let [x, y] = someArray in x + y
+    const expr = fn(
+      [],
+      letPatternExpr(
+        arrayPattern(varPattern("x"), varPattern("y")),
+        varRef("someArray"),
+        add(varRef("x"), varRef("y"))
+      )
+    );
+    const code = generateJS(expr);
+    expect(code).toContain("const [x, y] = someArray");
+    expect(code).not.toMatch(/^\(x, y\)/);
+  });
+
+  it("does not transform if params are already specified", () => {
+    // fn(a) => let [x, y] = args in x + y
+    const expr = fn(
+      ["a"],
+      letPatternExpr(
+        arrayPattern(varPattern("x"), varPattern("y")),
+        varRef("args"),
+        add(varRef("x"), varRef("y"))
+      )
+    );
+    const code = generateJS(expr);
+    expect(code).toContain("(a)");
+    expect(code).toContain("const [x, y] = args");
+  });
+
+  it("transforms recursive functions", () => {
+    // fn fac() => let [n] = args in if n == 0 then 1 else n * fac(n - 1)
+    const expr = recfn(
+      "fac",
+      [],
+      letPatternExpr(
+        arrayPattern(varPattern("n")),
+        varRef("args"),
+        ifExpr(
+          eq(varRef("n"), num(0)),
+          num(1),
+          mul(varRef("n"), call(varRef("fac"), sub(varRef("n"), num(1))))
+        )
+      )
+    );
+    const code = generateJS(expr);
+    expect(code).toContain("function fac(n)");
+    expect(code).not.toContain("args");
+  });
+
+  it("handles single param optimization", () => {
+    // fn() => let [x] = args in x * 2
+    const expr = fn(
+      [],
+      letPatternExpr(
+        arrayPattern(varPattern("x")),
+        varRef("args"),
+        mul(varRef("x"), num(2))
+      )
+    );
+    expect(generateJS(expr).trim()).toBe("(x) => x * 2");
+  });
+});
+
+// ============================================================================
 // Code Generation for Complex Cases
 // ============================================================================
 

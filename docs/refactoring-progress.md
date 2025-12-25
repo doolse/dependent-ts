@@ -1,8 +1,8 @@
 # Refactoring Progress: Body-Based Type Derivation
 
-## Status: Phases 1-6 Complete ✅
+## Status: Phases 1-7 Complete ✅
 
-The core refactoring is done. Functions now use body-based type derivation at call sites instead of upfront inference. The `fnType` and `genericFnType` constraint types have been removed. The `typeOf()` expression has been added for explicit type reflection.
+The core refactoring is done. Functions now use body-based type derivation at call sites instead of upfront inference. The `fnType` and `genericFnType` constraint types have been removed. The `typeOf()` expression has been added for explicit type reflection. Codegen now optimizes args destructuring to named params.
 
 ---
 
@@ -75,9 +75,9 @@ The core refactoring is done. Functions now use body-based type derivation at ca
 
 ## Test Status
 
-Current: **700 tests pass** (2 pre-existing React import failures)
+Current: **706 tests pass** (2 pre-existing React import failures)
 
-The test count decreased from 713 to 693 after removing fnType/genericFnType tests, then increased to 700 after adding Phase 6 tests.
+The test count decreased from 713 to 693 after removing fnType/genericFnType tests, then increased to 700 after adding Phase 6 tests, and to 706 after adding Phase 7 tests.
 
 ---
 
@@ -101,18 +101,21 @@ The test count decreased from 713 to 693 after removing fnType/genericFnType tes
 
 ---
 
+### Phase 7: Codegen Optimization ✅
+
+**Files changed:**
+- `src/codegen.ts` - Added extractArgsDestructuring and extractSimpleArrayPattern functions
+- `test/codegen.test.ts` - Added 6 tests for args destructuring optimization
+
+**Key changes:**
+- When generating a function with empty params and body `let [a, b, ...] = args in rest`, transforms to `(a, b, ...) => rest`
+- Works for both regular and recursive functions
+- Eliminates broken references to `args` variable in generated JS
+- Produces cleaner, more idiomatic JavaScript output
+
+---
+
 ## Future Phases (from original plan)
-
-### Phase 7: Codegen Optimization
-
-Generate normal JS params when possible:
-```typescript
-// Input: fn => let [x, y] = args in x + y
-// Output: function(x, y) { return x + y; }
-```
-
-File to modify:
-- `src/codegen.ts` - Add pattern detection
 
 ### Phase 8: Optional Cleanup
 
@@ -145,6 +148,8 @@ File to modify:
 | Cycle detection | `src/staged-evaluate.ts` | Returns `any` for recursive calls |
 | requireConstraint (lenient) | `src/builtins.ts` | Allows `any` to pass |
 | evalTypeOf | `src/staged-evaluate.ts` | Returns constraint as TypeValue |
+| extractArgsDestructuring | `src/codegen.ts` | Detects args destructuring pattern |
 | Args tests | `test/staging.test.ts` | "Args Array Binding" section |
 | Constraint tests | `test/generics.test.ts` | Constraint operations (no more generic types) |
 | typeOf tests | `test/comptime-reflection.test.ts` | "typeOf() expression syntax" section |
+| Args opt tests | `test/codegen.test.ts` | "Args Destructuring Optimization" section |
