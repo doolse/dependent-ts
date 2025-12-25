@@ -71,10 +71,21 @@ export function generateFunction(
     throw new Error("generateFunction requires a function expression");
   }
 
-  const params = expr.params.join(", ");
-  const body = genExpr(expr.body, opts, 1);
+  // Check for args destructuring optimization
+  let params = expr.params;
+  let body = expr.body;
+  if (params.length === 0) {
+    const argsDestructuring = extractArgsDestructuring(body);
+    if (argsDestructuring) {
+      params = argsDestructuring.params;
+      body = argsDestructuring.innerBody;
+    }
+  }
 
-  return `function ${name}(${params}) {\n${opts.indent}return ${body};\n}`;
+  const paramsStr = params.join(", ");
+  const bodyCode = genExpr(body, opts, 1);
+
+  return `function ${name}(${paramsStr}) {\n${opts.indent}return ${bodyCode};\n}`;
 }
 
 // ============================================================================
@@ -1149,11 +1160,15 @@ function exprFromValue(value: import("./value").Value): Expr {
       return { tag: "array", elements: value.elements.map(exprFromValue) };
     case "closure": {
       // Convert closure back to expression by wrapping captured variables in let bindings
-      const funcExpr: Expr = { tag: "fn", params: value.params, body: value.body };
+      // With desugaring, params is always empty and args are in the body
+      const funcExpr: Expr = value.name
+        ? { tag: "recfn", name: value.name, params: [], body: value.body }
+        : { tag: "fn", params: [], body: value.body };
 
       // Find free variables in the body that need to be captured
-      const paramSet = new Set(value.params);
-      const freeInBody = freeVars(value.body, paramSet);
+      // args is bound by the function call, so exclude it
+      const boundVars = new Set<string>(["args"]);
+      const freeInBody = freeVars(value.body, boundVars);
 
       // Build let bindings for captured variables from the closure's environment
       let result: Expr = funcExpr;

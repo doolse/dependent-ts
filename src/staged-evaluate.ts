@@ -75,10 +75,10 @@ export class SEnv {
  * A staged closure captures the staged environment.
  */
 export interface SClosure {
-  params: string[];
   body: Expr;
   env: SEnv;
   name?: string;  // Optional name for recursive self-reference
+  // Note: params have been removed - all functions use args array with desugaring
 }
 
 // ============================================================================
@@ -562,10 +562,11 @@ function evalLetPattern(
 function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
   // Functions are always Now (the closure itself is known)
   // The type emerges from body analysis at call sites - no upfront inference needed
-  const closure = closureVal(params, body, Env.empty()); // Placeholder env
+  // Note: params is ignored here - body already contains let [params] = args in ... desugaring
+  const closure = closureVal(body, Env.empty()); // Placeholder env
 
   // Store the staged env in a side channel for call-time evaluation
-  stagedClosures.set(closure, { params, body, env });
+  stagedClosures.set(closure, { body, env });
 
   // Return function with simple isFunction constraint - types derived at call site
   return { svalue: now(closure, isFunction) };
@@ -577,11 +578,12 @@ function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
  */
 function evalRecFn(name: string, params: string[], body: Expr, env: SEnv): SEvalResult {
   // Create a closure with the name for self-reference
-  const closure = closureVal(params, body, Env.empty(), name); // Placeholder env
+  // Note: params is ignored here - body already contains let [params] = args in ... desugaring
+  const closure = closureVal(body, Env.empty(), name); // Placeholder env
 
   // Store the staged env in a side channel with self-binding
   const selfSEnv = env.set(name, { svalue: now(closure, isFunction) });
-  stagedClosures.set(closure, { params, body, env: selfSEnv, name });
+  stagedClosures.set(closure, { body, env: selfSEnv, name });
 
   // Return function with simple isFunction constraint - types derived at call site
   return { svalue: now(closure, isFunction) };
@@ -659,9 +661,8 @@ function evalBuiltinCall(
         if (sclosure.name) {
           callEnv = callEnv.set(sclosure.name, { svalue: now(closure, isFunction) });
         }
-        for (let i = 0; i < sclosure.params.length; i++) {
-          callEnv = callEnv.set(sclosure.params[i], { svalue: closureArgs[i] });
-        }
+        // All functions use args array (params are desugared at parse time)
+        callEnv = callEnv.set("args", { svalue: createArraySValue(closureArgs) });
         return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
       },
       valueToExpr,
@@ -713,9 +714,7 @@ function evalCall(
     throw new Error("Staged closure info not found");
   }
 
-  if (argExprs.length !== sclosure.params.length) {
-    throw new Error(`Expected ${sclosure.params.length} arguments, got ${argExprs.length}`);
-  }
+  // With parser desugaring, all functions use args array - no param count check needed
 
   // Evaluate arguments
   const args = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
@@ -739,14 +738,11 @@ function evalCall(
     // Use 'any' as result constraint for cycle detection - types derived from body
     inProgressRecursiveCalls.set(sclosure.name, { tag: "any" });
 
-    // Bind arguments to parameters in the closure's environment
+    // Bind args array in the closure's environment
     let callEnv = sclosure.env;
     callEnv = callEnv.set(sclosure.name, { svalue: func });
-    // Add args array binding for body-based type derivation
+    // All functions use args array (params are desugared at parse time)
     callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
-    for (let i = 0; i < sclosure.params.length; i++) {
-      callEnv = callEnv.set(sclosure.params[i], { svalue: args[i] });
-    }
 
     try {
       return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
@@ -763,12 +759,8 @@ function evalCall(
     callEnv = callEnv.set(sclosure.name, { svalue: func });
   }
 
-  // Add args array binding for body-based type derivation
+  // All functions use args array (params are desugared at parse time)
   callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
-
-  for (let i = 0; i < sclosure.params.length; i++) {
-    callEnv = callEnv.set(sclosure.params[i], { svalue: args[i] });
-  }
 
   // Evaluate body
   return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
@@ -1460,11 +1452,15 @@ function valueToExpr(v: Value): Expr {
       return array(...v.elements.map(valueToExpr));
     case "closure": {
       // Convert closure back to expression by wrapping captured variables in let bindings
-      const funcExpr = fn(v.params, v.body);
+      // With desugaring, params is always empty and args are in the body
+      const funcExpr: Expr = v.name
+        ? { tag: "recfn", name: v.name, params: [], body: v.body }
+        : { tag: "fn", params: [], body: v.body };
 
       // Find free variables in the body that need to be captured
-      const paramSet = new Set(v.params);
-      const freeInBody = freeVars(v.body, paramSet);
+      // args is bound by the function call, so exclude it
+      const boundVars = new Set<string>(["args"]);
+      const freeInBody = freeVars(v.body, boundVars);
 
       // Build let bindings for captured variables from the closure's environment
       let result: Expr = funcExpr;

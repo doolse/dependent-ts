@@ -259,13 +259,20 @@ export class Parser {
 
     this.expect("RPAREN", "Expected ')' after parameters");
     this.expect("ARROW", "Expected '=>' after parameters");
-    const body = this.parseExpr();
+    let body = this.parseExpr();
+
+    // Desugar fn(x, y) => body to fn() => let [x, y] = args in body
+    // This unifies the internal representation - all functions use args array
+    if (params.length > 0) {
+      const pattern = arrayPattern(...params.map(p => varPattern(p)));
+      body = letPatternExpr(pattern, varRef("args"), body);
+    }
 
     // Named functions are recursive, anonymous functions are not
     if (name) {
-      return recfn(name, params, body);
+      return recfn(name, [], body);
     }
-    return fn(params, body);
+    return fn([], body);
   }
 
   // Binary operators with precedence climbing

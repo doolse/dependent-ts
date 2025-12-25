@@ -96,7 +96,10 @@ describe("Recursive Functions", () => {
       expect(expr.tag).toBe("recfn");
       if (expr.tag === "recfn") {
         expect(expr.name).toBe("factorial");
-        expect(expr.params).toEqual(["n"]);
+        // With desugaring, params is always empty - args are destructured in body
+        expect(expr.params).toEqual([]);
+        // Body should be a letPattern destructuring args
+        expect(expr.body.tag).toBe("letPattern");
       }
     });
 
@@ -138,7 +141,9 @@ describe("Recursive Functions", () => {
         )
       );
       const str = exprToString(factorial);
-      expect(str).toContain("fn fact(n)");
+      // With desugaring, the format is: fn fact() => let [n] = args in ...
+      expect(str).toContain("fn fact()");
+      expect(str).toContain("let [n] = args in");
     });
   });
 

@@ -1,10 +1,8 @@
 # Refactoring Progress: Body-Based Type Derivation
 
-## Status: Phases 1-7 Complete ✅ (Phase 8 Deferred)
+## Status: Phases 1-8 Complete ✅
 
-The core refactoring is done. Functions now use body-based type derivation at call sites instead of upfront inference. The `fnType` and `genericFnType` constraint types have been removed. The `typeOf()` expression has been added for explicit type reflection. Codegen now optimizes args destructuring to named params.
-
-Phase 8 (optional cleanup) is deferred as it involves significant structural changes to the parser and internal representation without adding new functionality.
+The refactoring is fully complete. Functions now use body-based type derivation at call sites instead of upfront inference. The `fnType` and `genericFnType` constraint types have been removed. The `typeOf()` expression has been added for explicit type reflection. All functions now use args array with parser-level desugaring.
 
 ---
 
@@ -117,17 +115,22 @@ The test count decreased from 713 to 693 after removing fnType/genericFnType tes
 
 ---
 
-## Future Phases (from original plan)
+### Phase 8: Optional Cleanup ✅
 
-### Phase 8: Optional Cleanup (Deferred)
+**Files changed:**
+- `src/parser.ts` - Desugar `fn(x, y) => body` to `fn() => let [x, y] = args in body`
+- `src/expr.ts` - Updated `fn()` and `recfn()` constructors to do desugaring
+- `src/value.ts` - Removed `params` from ClosureValue, updated `closureVal()` and `valueToString()`
+- `src/staged-evaluate.ts` - Removed `params` from SClosure, updated eval functions and valueToExpr
+- `src/codegen.ts` - Updated generateFunction and exprFromValue
+- `src/builtin-registry.ts` - Removed params length check in comptimeFold
+- `test/recursive-functions.test.ts` - Updated tests to expect desugared format
 
-Low priority structural cleanup that can be done in the future:
-
-- Remove `params` from ClosureValue (src/value.ts)
-- Parser-level desugaring of `fn(x, y) => E` to `fn => let [x, y] = args in E`
-- Cache body analysis results
-
-These changes would make the internal representation cleaner but don't add new functionality. The current implementation is fully working.
+**Key changes:**
+- All functions now use args array internally - `fn(x, y) => body` becomes `fn() => let [x, y] = args in body`
+- `params` field removed from ClosureValue and SClosure - no longer stored
+- Desugaring happens at both parse time AND in `fn()`/`recfn()` constructors (for programmatic construction)
+- Codegen automatically detects args destructuring pattern and generates proper JS params
 
 ---
 

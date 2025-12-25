@@ -53,9 +53,9 @@ export interface ArrayValue {
 export interface ClosureValue {
   tag: "closure";
   name?: string;      // Optional name for recursive self-reference
-  params: string[];
   body: Expr;
   env: Env;
+  // Note: params have been removed - all functions use args array with desugaring
 }
 
 export interface TypeValue {
@@ -91,10 +91,9 @@ export const arrayVal = (elems: Value[]): ArrayValue => ({
   elements: elems,
 });
 
-export const closureVal = (params: string[], body: Expr, env: Env, name?: string): ClosureValue => ({
+export const closureVal = (body: Expr, env: Env, name?: string): ClosureValue => ({
   tag: "closure",
   name,
-  params,
   body,
   env,
 });
@@ -356,9 +355,8 @@ export function valueToString(value: Value): string {
       return `[${value.elements.map(valueToString).join(", ")}]`;
 
     case "closure":
-      return value.name
-        ? `<fn ${value.name}(${value.params.join(", ")})>`
-        : `<fn(${value.params.join(", ")})>`;
+      // With desugaring, params are embedded in the body, not stored separately
+      return value.name ? `<fn ${value.name}>` : `<fn>`;
 
     case "type":
       return `Type<${constraintToString(value.constraint)}>`;

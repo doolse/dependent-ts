@@ -371,11 +371,32 @@ export const letExpr = (name: string, value: Expr, body: Expr): LetExpr =>
 export const letPatternExpr = (pattern: Pattern, value: Expr, body: Expr): LetPatternExpr =>
   ({ tag: "letPattern", pattern, value, body });
 
-export const fn = (params: string[], body: Expr): FnExpr =>
-  ({ tag: "fn", params, body });
+/**
+ * Create a function expression.
+ * Desugars fn(x, y) => body to fn() => let [x, y] = args in body
+ * This unifies the internal representation - all functions use args array.
+ */
+export const fn = (params: string[], body: Expr): FnExpr => {
+  if (params.length > 0) {
+    const pattern = arrayPattern(...params.map(p => varPattern(p)));
+    const desugaredBody = letPatternExpr(pattern, varRef("args"), body);
+    return { tag: "fn", params: [], body: desugaredBody };
+  }
+  return { tag: "fn", params: [], body };
+};
 
-export const recfn = (name: string, params: string[], body: Expr): RecFnExpr =>
-  ({ tag: "recfn", name, params, body });
+/**
+ * Create a recursive function expression.
+ * Desugars fn name(x, y) => body to fn name() => let [x, y] = args in body
+ */
+export const recfn = (name: string, params: string[], body: Expr): RecFnExpr => {
+  if (params.length > 0) {
+    const pattern = arrayPattern(...params.map(p => varPattern(p)));
+    const desugaredBody = letPatternExpr(pattern, varRef("args"), body);
+    return { tag: "recfn", name, params: [], body: desugaredBody };
+  }
+  return { tag: "recfn", name, params: [], body };
+};
 
 export const call = (func: Expr, ...args: Expr[]): CallExpr =>
   ({ tag: "call", func, args });

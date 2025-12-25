@@ -608,9 +608,8 @@ registerBuiltin({
       const arr = arrArg.value;
       const fn = fnArg.value as ClosureValue;
 
-      if (fn.params.length !== 2) {
-        throw new Error("comptimeFold() function must have exactly 2 parameters (acc, elem)");
-      }
+      // With desugaring, all functions use args array - no param count check needed
+      // The function should destructure args to get (acc, elem)
 
       // Iterate and fold
       let acc: SValue = initArg;
