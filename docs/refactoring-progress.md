@@ -1,8 +1,8 @@
 # Refactoring Progress: Body-Based Type Derivation
 
-## Status: Phases 1-5 Complete ✅
+## Status: Phases 1-6 Complete ✅
 
-The core refactoring is done. Functions now use body-based type derivation at call sites instead of upfront inference. The `fnType` and `genericFnType` constraint types have been removed.
+The core refactoring is done. Functions now use body-based type derivation at call sites instead of upfront inference. The `fnType` and `genericFnType` constraint types have been removed. The `typeOf()` expression has been added for explicit type reflection.
 
 ---
 
@@ -75,29 +75,33 @@ The core refactoring is done. Functions now use body-based type derivation at ca
 
 ## Test Status
 
-Current: **693 tests pass** (2 pre-existing React import failures)
+Current: **700 tests pass** (2 pre-existing React import failures)
 
-The test count decreased from 713 to 693 because we removed tests that specifically tested fnType/genericFnType constraints, which are no longer part of the system.
+The test count decreased from 713 to 693 after removing fnType/genericFnType tests, then increased to 700 after adding Phase 6 tests.
+
+---
+
+### Phase 6: Add typeOf() Expression ✅
+
+**Files changed:**
+- `src/expr.ts` - Added TypeOfExpr interface and typeOfExpr constructor
+- `src/lexer.ts` - Added TYPEOF keyword and token type
+- `src/parser.ts` - Added parsing for typeOf(expr) syntax
+- `src/staged-evaluate.ts` - Added evalTypeOf function and helper updates
+- `src/codegen.ts` - Added error for typeOf in residual code
+- `src/index.ts` - Exported typeOfExpr and TypeOfExpr
+- `test/comptime-reflection.test.ts` - Added 7 new tests for typeOf expression syntax
+
+**Key changes:**
+- `typeOf(expr)` returns the constraint of an expression wrapped as a TypeValue
+- Works at compile time - always evaluates to a Now value
+- For known values, returns the exact constraint (e.g., `and(isNumber, equals(42))`)
+- For Later values, returns the constraint that was known at compile time
+- Errors if typeOf appears in residual code (codegen)
 
 ---
 
 ## Future Phases (from original plan)
-
-### Phase 6: Add typeOf() Expression
-
-For explicit same-type enforcement:
-```
-let pair = fn(x, y) =>
-  let _ = assert(y, typeOf(x)) in
-  [x, y]
-```
-
-Files to modify:
-- `src/expr.ts` - Add TypeOfExpr
-- `src/lexer.ts` - Add TYPEOF keyword
-- `src/parser.ts` - Parse typeOf(expr)
-- `src/staged-evaluate.ts` - Evaluate typeOf
-- `src/codegen.ts` - Error if typeOf in residual
 
 ### Phase 7: Codegen Optimization
 
@@ -140,5 +144,7 @@ File to modify:
 | evalRecFn (simplified) | `src/staged-evaluate.ts` | Same as evalFn |
 | Cycle detection | `src/staged-evaluate.ts` | Returns `any` for recursive calls |
 | requireConstraint (lenient) | `src/builtins.ts` | Allows `any` to pass |
+| evalTypeOf | `src/staged-evaluate.ts` | Returns constraint as TypeValue |
 | Args tests | `test/staging.test.ts` | "Args Array Binding" section |
 | Constraint tests | `test/generics.test.ts` | Constraint operations (no more generic types) |
+| typeOf tests | `test/comptime-reflection.test.ts` | "typeOf() expression syntax" section |

@@ -155,6 +155,11 @@ function genExpr(expr: Expr, opts: Required<CodeGenOptions>, depth: number): str
 
     case "import":
       return genImport(expr.names, expr.modulePath, expr.body, opts, depth);
+
+    case "typeOf":
+      // typeOf should have been evaluated at compile time
+      // If it appears in residual code, that's an error
+      throw new Error("typeOf cannot appear in residual code - it must be evaluated at compile time");
   }
 }
 
@@ -867,6 +872,9 @@ function collectImports(expr: Expr): Map<string, Set<string>> {
         visit(e.receiver);
         for (const a of e.args) visit(a);
         break;
+      case "typeOf":
+        visit(e.expr);
+        break;
       // lit, var don't need visiting
     }
   }
@@ -921,6 +929,8 @@ function stripImports(expr: Expr): Expr {
       return { ...expr, expr: stripImports(expr.expr), constraint: expr.constraint ? stripImports(expr.constraint) : undefined };
     case "methodCall":
       return { ...expr, receiver: stripImports(expr.receiver), args: expr.args.map(stripImports) };
+    case "typeOf":
+      return { ...expr, expr: stripImports(expr.expr) };
     default:
       return expr;
   }
@@ -1050,6 +1060,9 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.body, newBound);
         break;
       }
+      case "typeOf":
+        visit(e.expr, b);
+        break;
     }
   }
 

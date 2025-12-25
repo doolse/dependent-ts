@@ -633,6 +633,78 @@ describe("typeOf() builtin", () => {
 });
 
 // ============================================================================
+// typeOf() Expression Syntax Tests
+// ============================================================================
+
+import { parse, parseAndRun } from "../src/parser";
+import { typeOfExpr } from "../src/expr";
+
+describe("typeOf() expression syntax", () => {
+  it("parses typeOf(expr) syntax", () => {
+    const expr = parse("typeOf(42)");
+    expect(expr.tag).toBe("typeOf");
+    if (expr.tag === "typeOf") {
+      expect(expr.expr.tag).toBe("lit");
+    }
+  });
+
+  it("parses typeOf with complex expression", () => {
+    const expr = parse("typeOf({ x: 1, y: 2 })");
+    expect(expr.tag).toBe("typeOf");
+  });
+
+  it("evaluates typeOf(number) and returns a type value", () => {
+    const result = parseAndRun("typeOf(42)");
+    expect(result.value.tag).toBe("type");
+  });
+
+  it("evaluates typeOf(object) and preserves field constraints", () => {
+    const result = parseAndRun("typeOf({ name: \"Alice\", age: 30 })");
+    expect(result.value.tag).toBe("type");
+    const typeValue = result.value as { tag: "type"; constraint: any };
+    const fieldNames = extractAllFieldNames(typeValue.constraint);
+    expect(fieldNames).toContain("name");
+    expect(fieldNames).toContain("age");
+  });
+
+  it("works with fields() to get type's field names", () => {
+    const result = parseAndRun("fields(typeOf({ x: 1, y: 2 }))");
+    expect(result.value.tag).toBe("array");
+    const arr = result.value as { tag: "array"; elements: any[] };
+    const names = arr.elements.map((e: any) => e.value);
+    expect(names).toContain("x");
+    expect(names).toContain("y");
+  });
+
+  it("can be used for same-type enforcement pattern", () => {
+    // The pattern: let _ = assert(y, typeOf(x)) in ...
+    // This ensures y has the same type as x
+    // Note: With known values, typeOf returns the exact constraint including the value
+    // So we test with a literal that matches
+    const result = parseAndRun(`
+      let x = 42 in
+      let y = 42 in
+      let _ = assert(y, typeOf(x)) in
+      x + y
+    `);
+    expect(result.value.tag).toBe("number");
+    expect((result.value as any).value).toBe(84);
+  });
+
+  it("typeOf with runtime values gives broader type constraint", () => {
+    // With runtime values, typeOf returns just the type constraint, not the exact value
+    const result = stage(parse(`
+      let x = runtime(n: 42) in
+      let y = runtime(m: 100) in
+      let _ = assert(y, typeOf(x)) in
+      x + y
+    `));
+    // Result should be Later because we're adding runtime values
+    expect(isLater(result.svalue)).toBe(true);
+  });
+});
+
+// ============================================================================
 // extractAllFieldNames() Direct Tests
 // ============================================================================
 

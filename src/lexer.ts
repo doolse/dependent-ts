@@ -28,6 +28,7 @@ export type TokenType =
   | "TRUST"
   | "IMPORT"
   | "FROM"
+  | "TYPEOF"
   // Operators
   | "PLUS"
   | "MINUS"
@@ -87,6 +88,7 @@ const KEYWORDS: Record<string, TokenType> = {
   trust: "TRUST",
   import: "IMPORT",
   from: "FROM",
+  typeOf: "TYPEOF",
 };
 
 // ============================================================================

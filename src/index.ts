@@ -160,10 +160,12 @@ export {
   trustExpr,
   methodCall,
   importExpr,
+  typeOfExpr,
   exprToString,
   AssertCondExpr,
   MethodCallExpr,
   ImportExpr,
+  TypeOfExpr,
 } from "./expr";
 
 // Method Registry

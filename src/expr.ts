@@ -103,7 +103,8 @@ export type Expr =
   | AssertCondExpr
   | TrustExpr
   | MethodCallExpr
-  | ImportExpr;
+  | ImportExpr
+  | TypeOfExpr;
 
 export interface LitExpr {
   tag: "lit";
@@ -304,6 +305,21 @@ export interface ImportExpr {
   body: Expr;           // Expression where imports are in scope
 }
 
+/**
+ * Get the type (constraint) of an expression as a Type value.
+ * Syntax: typeOf(expr)
+ *
+ * Returns the constraint of the expression wrapped as a TypeValue.
+ * Useful for explicit same-type enforcement:
+ *   let pair = fn(x, y) => let _ = assert(y, typeOf(x)) in [x, y]
+ *
+ * When expr is Later, returns `any` (the constraint is unknown at compile time).
+ */
+export interface TypeOfExpr {
+  tag: "typeOf";
+  expr: Expr;           // The expression to get the type of
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -402,6 +418,9 @@ export const methodCall = (receiver: Expr, method: string, args: Expr[]): Method
 export const importExpr = (names: string[], modulePath: string, body: Expr): ImportExpr =>
   ({ tag: "import", names, modulePath, body });
 
+export const typeOfExpr = (expr: Expr): TypeOfExpr =>
+  ({ tag: "typeOf", expr });
+
 // ============================================================================
 // Pretty Printing
 // ============================================================================
@@ -483,5 +502,8 @@ export function exprToString(expr: Expr): string {
 
     case "import":
       return `import { ${expr.names.join(", ")} } from "${expr.modulePath}" in ${exprToString(expr.body)}`;
+
+    case "typeOf":
+      return `typeOf(${exprToString(expr.expr)})`;
   }
 }

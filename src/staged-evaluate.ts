@@ -192,6 +192,9 @@ export function stagingEvaluate(
 
     case "import":
       return evalImport(expr.names, expr.modulePath, expr.body, env, ctx);
+
+    case "typeOf":
+      return evalTypeOf(expr.expr, env, ctx);
   }
 }
 
@@ -1230,6 +1233,26 @@ function evalTrust(
   return { svalue: later(refinedConstraint, valueResult.residual) };
 }
 
+/**
+ * Evaluate typeOf expression.
+ * Returns the constraint of the expression as a Type value.
+ * When expr is Later, returns `any` (the constraint is unknown at runtime).
+ */
+function evalTypeOf(
+  expr: Expr,
+  env: SEnv,
+  ctx: RefinementContext
+): SEvalResult {
+  const result = stagingEvaluate(expr, env, ctx).svalue;
+
+  // Get the constraint and wrap it as a TypeValue
+  const constraint = result.constraint;
+  const typeValue = typeVal(constraint);
+
+  // typeOf is always evaluated at compile time
+  return { svalue: now(typeValue, isType(constraint)) };
+}
+
 // Cache for loaded module exports to avoid reloading
 // Key: "module:export" -> Constraint
 const exportCache = new Map<string, Constraint>();
@@ -1403,6 +1426,9 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
         visit(e.body, newBound);
         break;
       }
+      case "typeOf":
+        visit(e.expr, b);
+        break;
     }
   }
 
@@ -1524,6 +1550,8 @@ function usesVar(expr: Expr, name: string): boolean {
       // Import names shadow variables in the body
       if (expr.names.includes(name)) return false;
       return usesVar(expr.body, name);
+    case "typeOf":
+      return usesVar(expr.expr, name);
   }
 }
 

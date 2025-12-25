@@ -50,6 +50,7 @@ import {
   trustExpr,
   methodCall,
   importExpr,
+  typeOfExpr,
   BinOp,
   UnaryOp,
   Pattern,
@@ -490,6 +491,14 @@ export class Parser {
         this.expect("RPAREN", "Expected ')' after trust expression");
         return trustExpr(expr);
       }
+    }
+
+    // TypeOf: typeOf(expr)
+    if (this.match("TYPEOF")) {
+      this.expect("LPAREN", "Expected '(' after 'typeOf'");
+      const expr = this.parseExpr();
+      this.expect("RPAREN", "Expected ')' after typeOf expression");
+      return typeOfExpr(expr);
     }
 
     // Identifier
