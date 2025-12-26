@@ -8,12 +8,13 @@ This document provides a deep dive into implementing a dependent type system wit
 2. [The Constraint System](#2-the-constraint-system)
 3. [Values and Expressions](#3-values-and-expressions)
 4. [Staged Evaluation](#4-staged-evaluation)
-5. [Type Inference](#5-type-inference)
+5. [Body-Based Type Derivation](#5-body-based-type-derivation)
 6. [Control Flow Refinement](#6-control-flow-refinement)
 7. [Code Generation](#7-code-generation)
 8. [Parser and Lexer](#8-parser-and-lexer)
 9. [Known Issues and Limitations](#9-known-issues-and-limitations)
 10. [Future Work](#10-future-work)
+11. [Design Decisions](#11-design-decisions)
 
 ---
 
@@ -118,7 +119,6 @@ type Constraint =
 
   // Advanced
   | { tag: "isType"; constraint: Constraint }  // Meta: value IS a type
-  | { tag: "fnType"; params: Constraint[]; result: Constraint }
   | { tag: "rec"; var: string; body: Constraint }  // Recursive types
   | { tag: "recVar"; var: string }
   | { tag: "var"; name: string }  // Constraint variable (for inference)
@@ -333,7 +333,7 @@ const expr = letExpr("double",
 );
 
 console.log(exprToString(expr));
-// Output: let double = fn(x) => (x + x) in double(5)
+// Output: let double = fn() => let [x] = args in (x + x) in double(5)
 ```
 
 ---
@@ -477,82 +477,78 @@ if (isLater(result.svalue)) {
 
 ---
 
-## 5. Type Inference
+## 5. Body-Based Type Derivation
 
-**File: `src/constraint.ts` (constraint solving) and `src/inference.ts`**
+**File: `src/staged-evaluate.ts`**
 
-### Constraint Variables
+The system uses **body-based type derivation** rather than traditional function type inference. Function types are not declared or inferred upfront - instead, constraints are derived by analyzing the function body at each call site with the actual argument constraints.
 
-For type inference, we use constraint variables (`freshCVar()`) as placeholders:
+### How It Works
+
+When a function is called:
+1. The function body is analyzed with the argument constraints bound to the implicit `args` array
+2. Operations within the body constrain what types are valid (e.g., `+` requires numbers)
+3. If constraints are violated, an error is raised at the point of use
+4. The result constraint is derived from the body's evaluation
 
 ```typescript
 // @run
-import { freshCVar, constraintToString, resetConstraintVarCounter } from "../src/index";
+import { parse, stage, constraintToString, isNow } from "../src/index";
 
-resetConstraintVarCounter();
-const unknown = freshCVar();
-console.log(constraintToString(unknown));
-// Output: ?0
+// Calling with a specific value gives precise result constraint
+const precise = stage(parse("let f = fn(x) => x + 1 in f(5)"));
+console.log(constraintToString(precise.svalue.constraint));
+// Output: 6
+
+// Calling with runtime value - still precise because runtime(n: 0) has constraint equals(0)
+const general = stage(parse("let f = fn(x) => x + 1 in f(runtime(n: 0))"));
+console.log(constraintToString(general.svalue.constraint));
+// Output: 1
 ```
 
-### Solving Constraints
+### Higher-Order Functions and Error Detection
 
-`solve(a, b)` attempts to unify constraints, returning a substitution:
+Errors are caught when analyzing the body with actual argument types:
 
 ```typescript
 // @run
-import { solve, freshCVar, isNumber, gt, and, applySubstitution, constraintToString, resetConstraintVarCounter } from "../src/index";
+import { parse, stage } from "../src/index";
 
-resetConstraintVarCounter();
-// Solve ?0 = number & (> 0)
-const unknown = freshCVar();
-const target = and(isNumber, gt(0));
-
-const substitution = solve(unknown, target);
-if (substitution) {
-  const resolved = applySubstitution(unknown, substitution);
-  console.log(constraintToString(resolved));
+// This fails because toString returns string, but + 1 needs number
+try {
+  stage(parse(`
+    let apply = fn(f, x) => f(x) + 1
+    in apply(fn(x) => "hello", 5)
+  `));
+} catch (e: any) {
+  console.log(e.message);
 }
-// Output: number & > 0
+// Output: Type error in right of string +: expected string, got 1
 ```
 
-### Function Inference
+### Benefits of Body-Based Derivation
 
-`inferFunction` analyzes a function body to determine parameter and return types:
+1. **Per-call-site precision**: `f(5)` gives `equals(6)`, not just `isNumber`
+2. **Natural dependent types**: Result constraints depend on input values
+3. **Simpler architecture**: One mechanism (staged eval) instead of two
+4. **No function type declarations needed**: Types flow from behavior
 
-```typescript
-// @run
-import { inferFunction, add, varRef, Env, constraintToString } from "../src/index";
+### The Implicit `args` Binding
 
-// Infer type of: fn(x, y) => x + y
-const params = ["x", "y"];
-const body = add(varRef("x"), varRef("y"));
+Internally, all functions are represented as `fn => body` with an implicit `args` binding. Named parameters are syntax sugar:
 
-const inferred = inferFunction(params, body, Env.empty());
-console.log(inferred.paramConstraints.map(constraintToString).join(", "));
-// Output: number, number
-console.log(constraintToString(inferred.resultConstraint));
-// Output: number
+```
+fn(x, y) => x + y
 ```
 
-### Generalization and Instantiation
+Desugars to:
+```
+fn => let [x, y] = args in x + y
+```
 
-For let-polymorphism, constraint variables can be generalized:
-
-```typescript
-// @run
-import { generalize, instantiate, freshCVar, constraintToString, resetConstraintVarCounter } from "../src/index";
-
-resetConstraintVarCounter();
-// Generalize a constraint with free variables
-const scheme = generalize(freshCVar(), new Set());
-console.log(scheme.quantified.length > 0);
-// Output: true
-
-// Instantiate creates fresh variables
-const instance = instantiate(scheme);
-console.log(constraintToString(instance));
-// Output: ?1
+This enables variadic functions naturally:
+```
+fn(first, ...rest) => first + sum(rest)
 ```
 
 ---
@@ -766,7 +762,7 @@ console.log(exprToString(expr));
 
 const fn = parse("fn(a, b) => a + b");
 console.log(exprToString(fn));
-// Output: fn(a, b) => (a + b)
+// Output: fn() => let [a, b] = args in (a + b)
 ```
 
 ### Full Evaluation
@@ -1042,6 +1038,92 @@ register Eq(Array<T>) where Eq(T) = ...
 fn contains<T>(arr: Array<T>, item: T) where Eq(T) = ...
 ```
 No type class or trait system; no global registry mechanism.
+
+---
+
+## 11. Design Decisions
+
+This section documents key design decisions and their rationale.
+
+### 11.1 Type Annotations as Syntax Sugar
+
+**Decision:** Type annotations (when implemented) will be syntactic sugar, not stored declarations.
+
+**Rationale:** With body-based type derivation, explicit type annotations like:
+```
+fn add(a: number, b: number) -> number = a + b
+```
+
+Will desugar to `trust` at the definition site:
+```
+fn add(a, b) =
+  let _ = trust(a, number) in
+  let _ = trust(b, number) in
+  let result = a + b in
+  trust(result, number)
+```
+
+This provides early error detection (via `implies` checks in `trust`) while keeping the core model simple. The syntax will likely be TypeScript-like when implemented.
+
+### 11.2 Currying Should Be Explicit
+
+**Decision:** Automatic currying will NOT be supported. If you want a curried function, define it explicitly.
+
+**Rationale:** Implicit currying (Haskell-style) causes ambiguity with variadic functions and makes error messages harder to understand. Explicit currying is clearer:
+```
+// Explicit currying
+let add = fn(x) => fn(y) => x + y
+add(5)(3)  // 8
+
+// NOT: add(5, 3) automatically becoming add(5)(3)
+```
+
+### 11.3 typeOf() Is Compile-Time Only
+
+**Decision:** `typeOf(x)` returns the constraint of `x` as a type value. When `x` is Later, `typeOf(x)` returns `any`.
+
+**Rationale:** Runtime type reflection would require values to carry constraint metadata at runtime, adding overhead. Most use cases for `typeOf` work at compile time:
+
+```
+// Works: x is Now, typeOf gives precise constraint
+let x = 5
+assert(y, typeOf(x))  // Checks y satisfies equals(5)
+
+// Limited: x is Later, typeOf gives any
+let x = runtime(n: 0)
+assert(y, typeOf(x))  // Checks y satisfies any (always passes)
+```
+
+**Potential runtime use cases** (not currently supported):
+- Same-type enforcement across runtime values: `assert(y, typeOf(x))` where both are runtime
+- Type-indexed serialization: dispatch based on runtime type
+- Homogeneous collections: ensure all elements match first element's type
+
+These would require runtime type tags. For now, use `assert` with static types or JS `typeof` for basic runtime checks.
+
+### 11.4 Performance Optimization Is Deferred
+
+**Decision:** Body re-analysis on each call is accepted. Caching will be added if profiling shows it's needed.
+
+**Rationale:** Premature optimization. The current approach:
+- Analyzes function body each time it's called with different argument constraints
+- May re-do work for identical constraint patterns
+
+Potential optimization (not yet implemented):
+- Cache results keyed by `(closureId, argConstraintsHash)`
+- Only re-analyze if constraints differ from cached version
+
+This will be revisited when we have real-world usage to profile.
+
+### 11.5 Function Subtyping Is Behavioral
+
+**Decision:** Function "subtyping" is behavioral, not structural.
+
+**Rationale:** Without declared function types, we can't do traditional structural subtyping. Instead, to check "can f be used where g is expected":
+1. Analyze f's body with g's expected input constraints
+2. Check f's result implies g's expected result
+
+This is more like "can f behave as g?" than "does f's declared type match g's declared type?"
 
 ---
 
