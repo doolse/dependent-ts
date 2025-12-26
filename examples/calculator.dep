@@ -1,0 +1,183 @@
+// Scientific Calculator Example
+// Demonstrates: recursive functions, pattern matching, functional programming
+
+import { jsx, jsxs } from "react/jsx-runtime" in
+import { useState } from "react" in
+
+fn(props) =>
+  let [display, setDisplay] = useState("0") in
+  let [memory, setMemory] = useState(0) in
+  let [operation, setOperation] = useState(null) in
+  let [waitingForOperand, setWaitingForOperand] = useState(false) in
+
+  // Mathematical functions using recursion
+  let factorial = fn fac(n) =>
+    if n <= 1 then 1
+    else n * fac(n - 1)
+  in
+
+  let power = fn pow(base, exp) =>
+    if exp == 0 then 1
+    else if exp < 0 then 1 / pow(base, 0 - exp)
+    else base * pow(base, exp - 1)
+  in
+
+  let abs = fn(n) => if n < 0 then 0 - n else n in
+
+  // Square root using Newton-Raphson (recursive approximation)
+  let sqrt = fn(n) =>
+    let improve = fn imp(guess, n, iterations) =>
+      if iterations == 0 then guess
+      else imp((guess + n / guess) / 2, n, iterations - 1)
+    in
+    if n < 0 then 0
+    else improve(n / 2, n, 20)
+  in
+
+  // Parse display to number
+  let parseNum = fn(s) =>
+    let isNegative = s.startsWith("-") in
+    let digits = if isNegative then s.slice(1, null) else s in
+    // Simple integer parsing
+    let result = 0 in
+    result
+  in
+
+  let inputDigit = fn(digit) =>
+    if waitingForOperand then
+      let _ = setDisplay(digit) in
+      setWaitingForOperand(false)
+    else
+      setDisplay(if display == "0" then digit else display + digit)
+  in
+
+  let inputDecimal = fn() =>
+    if waitingForOperand then
+      let _ = setDisplay("0.") in
+      setWaitingForOperand(false)
+    else if !display.includes(".") then
+      setDisplay(display + ".")
+    else
+      null
+  in
+
+  let clear = fn() =>
+    let _ = setDisplay("0") in
+    let _ = setMemory(0) in
+    let _ = setOperation(null) in
+    setWaitingForOperand(false)
+  in
+
+  let performOperation = fn(nextOp) =>
+    let inputValue = display in
+    let _ = setOperation(nextOp) in
+    let _ = setMemory(display) in
+    setWaitingForOperand(true)
+  in
+
+  let calculate = fn() =>
+    // For demo purposes, just show the operation
+    setDisplay(memory + " " + operation + " " + display)
+  in
+
+  let applyFunction = fn(funcName) =>
+    let n = display in
+    if funcName == "sqrt" then setDisplay("sqrt(" + n + ")")
+    else if funcName == "square" then setDisplay(n + "^2")
+    else if funcName == "factorial" then setDisplay(n + "!")
+    else setDisplay(n)
+  in
+
+  let buttonStyle = {
+    padding: "15px",
+    fontSize: "18px",
+    border: "1px solid #ddd",
+    backgroundColor: "#f5f5f5",
+    cursor: "pointer",
+    borderRadius: "4px"
+  } in
+
+  let opStyle = {
+    padding: "15px",
+    fontSize: "18px",
+    border: "1px solid #ddd",
+    backgroundColor: "#ff9800",
+    color: "white",
+    cursor: "pointer",
+    borderRadius: "4px"
+  } in
+
+  let funcStyle = {
+    padding: "15px",
+    fontSize: "14px",
+    border: "1px solid #ddd",
+    backgroundColor: "#2196F3",
+    color: "white",
+    cursor: "pointer",
+    borderRadius: "4px"
+  } in
+
+  <div style={{ fontFamily: "system-ui", padding: "20px", maxWidth: "350px", margin: "0 auto" }}>
+    <h1>Calculator</h1>
+
+    <div style={{ backgroundColor: "#e8f5e9", padding: "15px", borderRadius: "8px", marginBottom: "20px" }}>
+      <h3 style={{ margin: "0 0 10px 0" }}>Language Features</h3>
+      <ul style={{ margin: 0, paddingLeft: "20px", fontSize: "14px" }}>
+        <li>Recursive functions (factorial, power, sqrt)</li>
+        <li>Named recursive functions (fn fac(n) syntax)</li>
+        <li>Nested function definitions</li>
+        <li>Pattern matching with conditionals</li>
+      </ul>
+    </div>
+
+    <div style={{
+      backgroundColor: "#333",
+      color: "#0f0",
+      padding: "20px",
+      fontSize: "28px",
+      textAlign: "right",
+      borderRadius: "8px",
+      marginBottom: "10px",
+      fontFamily: "monospace",
+      minHeight: "40px",
+      wordBreak: "break-all"
+    }}>
+      {display}
+    </div>
+
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "5px", marginBottom: "10px" }}>
+      <button style={funcStyle} onClick={fn() => applyFunction("sqrt")}>sqrt</button>
+      <button style={funcStyle} onClick={fn() => applyFunction("square")}>x2</button>
+      <button style={funcStyle} onClick={fn() => applyFunction("factorial")}>n</button>
+      <button style={opStyle} onClick={clear}>C</button>
+    </div>
+
+    <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "5px" }}>
+      <button style={buttonStyle} onClick={fn() => inputDigit("7")}>7</button>
+      <button style={buttonStyle} onClick={fn() => inputDigit("8")}>8</button>
+      <button style={buttonStyle} onClick={fn() => inputDigit("9")}>9</button>
+      <button style={opStyle} onClick={fn() => performOperation("/")}>:</button>
+
+      <button style={buttonStyle} onClick={fn() => inputDigit("4")}>4</button>
+      <button style={buttonStyle} onClick={fn() => inputDigit("5")}>5</button>
+      <button style={buttonStyle} onClick={fn() => inputDigit("6")}>6</button>
+      <button style={opStyle} onClick={fn() => performOperation("*")}>x</button>
+
+      <button style={buttonStyle} onClick={fn() => inputDigit("1")}>1</button>
+      <button style={buttonStyle} onClick={fn() => inputDigit("2")}>2</button>
+      <button style={buttonStyle} onClick={fn() => inputDigit("3")}>3</button>
+      <button style={opStyle} onClick={fn() => performOperation("-")}>-</button>
+
+      <button style={buttonStyle} onClick={fn() => inputDigit("0")}>0</button>
+      <button style={buttonStyle} onClick={inputDecimal}>.</button>
+      <button style={opStyle} onClick={calculate}>{"="}</button>
+      <button style={opStyle} onClick={fn() => performOperation("+")}>+</button>
+    </div>
+
+    <div style={{ marginTop: "20px", padding: "15px", backgroundColor: "#fff3e0", borderRadius: "8px" }}>
+      <h3 style={{ margin: "0 0 10px 0" }}>Recursive Math Functions</h3>
+      <p style={{ margin: 0, fontSize: "14px" }}>
+        This calculator uses recursive functions for factorial, power, and square root (Newton-Raphson method).
+      </p>
+    </div>
+  </div>

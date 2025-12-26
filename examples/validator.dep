@@ -1,0 +1,122 @@
+// Form Validation Example
+// Demonstrates: pattern matching, higher-order functions, conditional logic
+
+import { jsx, jsxs } from "react/jsx-runtime" in
+import { useState } from "react" in
+
+fn(props) =>
+  let [email, setEmail] = useState("") in
+  let [password, setPassword] = useState("") in
+  let [age, setAge] = useState("") in
+  let [errors, setErrors] = useState([]) in
+  let [success, setSuccess] = useState(false) in
+
+  // Validation functions - demonstrate functional composition
+  let isEmpty = fn(s) => s.length == 0 in
+  let isValidEmail = fn(s) => s.includes("@") && s.includes(".") in
+  let isNumber = fn(s) =>
+    if s.length == 0 then false
+    else s.split("").filter(fn(c) => c < "0" || c > "9").length == 0
+  in
+  let minLength = fn(n) => fn(s) => s.length >= n in
+
+  // Compose validators - returns array of error messages
+  let validate = fn() =>
+    let errs = [] in
+    let errs = if isEmpty(email) then errs.concat(["Email is required"])
+               else if !isValidEmail(email) then errs.concat(["Email must contain @ and ."])
+               else errs in
+    let errs = if isEmpty(password) then errs.concat(["Password is required"])
+               else if !minLength(8)(password) then errs.concat(["Password must be at least 8 characters"])
+               else errs in
+    let errs = if isEmpty(age) then errs.concat(["Age is required"])
+               else if !isNumber(age) then errs.concat(["Age must be a number"])
+               else errs in
+    errs
+  in
+
+  let handleSubmit = fn() =>
+    let validationErrors = validate() in
+    let _ = setErrors(validationErrors) in
+    if validationErrors.length == 0 then
+      setSuccess(true)
+    else
+      setSuccess(false)
+  in
+
+  <div style={{ fontFamily: "system-ui", padding: "20px", maxWidth: "400px", margin: "0 auto" }}>
+    <h1>Form Validation Demo</h1>
+
+    <div style={{ backgroundColor: "#e3f2fd", padding: "15px", borderRadius: "8px", marginBottom: "20px" }}>
+      <h3 style={{ margin: "0 0 10px 0" }}>Language Features</h3>
+      <ul style={{ margin: 0, paddingLeft: "20px", fontSize: "14px" }}>
+        <li>Higher-order functions (minLength returns a function)</li>
+        <li>Functional composition for validation</li>
+        <li>Pattern matching with if-then-else chains</li>
+        <li>Array methods: concat, filter, split</li>
+      </ul>
+    </div>
+
+    <div style={{ marginBottom: "15px" }}>
+      <label style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Email:</label>
+      <input
+        type="text"
+        value={email}
+        placeholder="user@example.com"
+        style={{ width: "100%", padding: "10px", border: "1px solid #ccc", borderRadius: "4px", boxSizing: "border-box" }}
+        onChange={fn(e) => setEmail(e.target.value)}
+      />
+    </div>
+
+    <div style={{ marginBottom: "15px" }}>
+      <label style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Password:</label>
+      <input
+        type="password"
+        value={password}
+        placeholder="Min 8 characters"
+        style={{ width: "100%", padding: "10px", border: "1px solid #ccc", borderRadius: "4px", boxSizing: "border-box" }}
+        onChange={fn(e) => setPassword(e.target.value)}
+      />
+    </div>
+
+    <div style={{ marginBottom: "15px" }}>
+      <label style={{ display: "block", marginBottom: "5px", fontWeight: "bold" }}>Age:</label>
+      <input
+        type="text"
+        value={age}
+        placeholder="Enter your age"
+        style={{ width: "100%", padding: "10px", border: "1px solid #ccc", borderRadius: "4px", boxSizing: "border-box" }}
+        onChange={fn(e) => setAge(e.target.value)}
+      />
+    </div>
+
+    <button
+      style={{
+        width: "100%",
+        padding: "12px",
+        backgroundColor: "#2196F3",
+        color: "white",
+        border: "none",
+        borderRadius: "4px",
+        fontSize: "16px",
+        cursor: "pointer"
+      }}
+      onClick={handleSubmit}>
+      Validate and Submit
+    </button>
+
+    {if errors.length > 0 then
+      <div style={{ marginTop: "15px", padding: "15px", backgroundColor: "#ffebee", borderRadius: "8px", border: "1px solid #ef9a9a" }}>
+        <h4 style={{ margin: "0 0 10px 0", color: "#c62828" }}>Validation Errors:</h4>
+        <ul style={{ margin: 0, paddingLeft: "20px", color: "#c62828" }}>
+          {errors.map(fn(err) => <li>{err}</li>)}
+        </ul>
+      </div>
+    else if success then
+      <div style={{ marginTop: "15px", padding: "15px", backgroundColor: "#e8f5e9", borderRadius: "8px", border: "1px solid #a5d6a7" }}>
+        <p style={{ margin: 0, color: "#2e7d32", fontWeight: "bold" }}>Form submitted successfully!</p>
+      </div>
+    else
+      <div />
+    }
+  </div>

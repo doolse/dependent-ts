@@ -1,0 +1,180 @@
+// Data Dashboard Example
+// Demonstrates: array methods (map, filter, reduce), higher-order functions, data transformation
+
+import { jsx, jsxs } from "react/jsx-runtime" in
+import { useState } from "react" in
+
+fn(props) =>
+  // Sample data - sales records
+  let salesData = [
+    { id: 1, product: "Widget A", category: "Electronics", amount: 150, quantity: 3 },
+    { id: 2, product: "Widget B", category: "Electronics", amount: 200, quantity: 2 },
+    { id: 3, product: "Gadget X", category: "Accessories", amount: 50, quantity: 10 },
+    { id: 4, product: "Gadget Y", category: "Accessories", amount: 75, quantity: 5 },
+    { id: 5, product: "Device Z", category: "Electronics", amount: 300, quantity: 1 },
+    { id: 6, product: "Tool A", category: "Hardware", amount: 25, quantity: 20 },
+    { id: 7, product: "Tool B", category: "Hardware", amount: 40, quantity: 15 }
+  ] in
+
+  let [filterCategory, setFilterCategory] = useState("All") in
+  let [sortBy, setSortBy] = useState("amount") in
+
+  // Functional data transformations
+  let categories = ["All", "Electronics", "Accessories", "Hardware"] in
+
+  // Filter function - higher order
+  let filterByCategory = fn(cat) => fn(item) =>
+    if cat == "All" then true
+    else item.category == cat
+  in
+
+  // Apply filter
+  let filteredData = salesData.filter(filterByCategory(filterCategory)) in
+
+  // Calculate totals using reduce pattern (simulated with recursion)
+  let sumField = fn sumRec(arr, field, idx) =>
+    if idx >= arr.length then 0
+    else
+      let item = arr[idx] in
+      let value = if field == "amount" then item.amount * item.quantity
+                  else item.quantity in
+      value + sumRec(arr, field, idx + 1)
+  in
+
+  let totalRevenue = sumField(filteredData, "amount", 0) in
+  let totalQuantity = sumField(filteredData, "quantity", 0) in
+
+  // Find max/min using recursion
+  let findMax = fn maxRec(arr, idx, currentMax) =>
+    if idx >= arr.length then currentMax
+    else
+      let item = arr[idx] in
+      let value = item.amount * item.quantity in
+      let newMax = if value > currentMax then value else currentMax in
+      maxRec(arr, idx + 1, newMax)
+  in
+
+  let maxSale = findMax(filteredData, 0, 0) in
+
+  // Calculate average
+  let avgSale = if filteredData.length > 0 then totalRevenue / filteredData.length else 0 in
+
+  let cardStyle = {
+    backgroundColor: "white",
+    padding: "20px",
+    borderRadius: "8px",
+    boxShadow: "0 2px 4px rgba(0,0,0,0.1)",
+    textAlign: "center"
+  } in
+
+  <div style={{ fontFamily: "system-ui", padding: "20px", backgroundColor: "#f5f5f5", minHeight: "100vh" }}>
+    <div style={{ maxWidth: "900px", margin: "0 auto" }}>
+      <h1>Sales Dashboard</h1>
+
+      <div style={{ backgroundColor: "#e8f5e9", padding: "15px", borderRadius: "8px", marginBottom: "20px" }}>
+        <h3 style={{ margin: "0 0 10px 0" }}>Language Features Demonstrated</h3>
+        <ul style={{ margin: 0, paddingLeft: "20px", fontSize: "14px" }}>
+          <li>Higher-order functions (filterByCategory returns a function)</li>
+          <li>Array methods: filter, map</li>
+          <li>Recursive sum/max calculations</li>
+          <li>Object destructuring and field access</li>
+          <li>Functional data transformation pipeline</li>
+        </ul>
+      </div>
+
+      <div style={{ marginBottom: "20px" }}>
+        <label style={{ marginRight: "10px", fontWeight: "bold" }}>Filter by Category:</label>
+        {categories.map(fn(cat) =>
+          <button
+            style={{
+              padding: "8px 16px",
+              marginRight: "5px",
+              border: "none",
+              borderRadius: "4px",
+              cursor: "pointer",
+              backgroundColor: if filterCategory == cat then "#2196F3" else "#e0e0e0",
+              color: if filterCategory == cat then "white" else "black"
+            }}
+            onClick={fn() => setFilterCategory(cat)}>
+            {cat}
+          </button>
+        )}
+      </div>
+
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "15px", marginBottom: "20px" }}>
+        <div style={cardStyle}>
+          <div style={{ fontSize: "14px", color: "#666" }}>Total Revenue</div>
+          <div style={{ fontSize: "28px", fontWeight: "bold", color: "#4CAF50" }}>
+            {"$" + totalRevenue.toString()}
+          </div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: "14px", color: "#666" }}>Total Items</div>
+          <div style={{ fontSize: "28px", fontWeight: "bold", color: "#2196F3" }}>
+            {totalQuantity.toString()}
+          </div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: "14px", color: "#666" }}>Largest Sale</div>
+          <div style={{ fontSize: "28px", fontWeight: "bold", color: "#FF9800" }}>
+            {"$" + maxSale.toString()}
+          </div>
+        </div>
+        <div style={cardStyle}>
+          <div style={{ fontSize: "14px", color: "#666" }}>Products</div>
+          <div style={{ fontSize: "28px", fontWeight: "bold", color: "#9C27B0" }}>
+            {filteredData.length.toString()}
+          </div>
+        </div>
+      </div>
+
+      <div style={{ backgroundColor: "white", borderRadius: "8px", overflow: "hidden", boxShadow: "0 2px 4px rgba(0,0,0,0.1)" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ backgroundColor: "#2196F3", color: "white" }}>
+              <th style={{ padding: "12px", textAlign: "left" }}>Product</th>
+              <th style={{ padding: "12px", textAlign: "left" }}>Category</th>
+              <th style={{ padding: "12px", textAlign: "right" }}>Price</th>
+              <th style={{ padding: "12px", textAlign: "right" }}>Qty</th>
+              <th style={{ padding: "12px", textAlign: "right" }}>Total</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredData.map(fn(item) =>
+              <tr style={{ borderBottom: "1px solid #eee" }}>
+                <td style={{ padding: "12px" }}>{item.product}</td>
+                <td style={{ padding: "12px" }}>
+                  <span style={{
+                    padding: "4px 8px",
+                    borderRadius: "4px",
+                    fontSize: "12px",
+                    backgroundColor: if item.category == "Electronics" then "#e3f2fd"
+                                     else if item.category == "Accessories" then "#fce4ec"
+                                     else "#fff3e0",
+                    color: if item.category == "Electronics" then "#1565c0"
+                           else if item.category == "Accessories" then "#c2185b"
+                           else "#e65100"
+                  }}>
+                    {item.category}
+                  </span>
+                </td>
+                <td style={{ padding: "12px", textAlign: "right" }}>{"$" + item.amount.toString()}</td>
+                <td style={{ padding: "12px", textAlign: "right" }}>{item.quantity.toString()}</td>
+                <td style={{ padding: "12px", textAlign: "right", fontWeight: "bold" }}>
+                  {"$" + (item.amount * item.quantity).toString()}
+                </td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div style={{ marginTop: "20px", padding: "15px", backgroundColor: "#fff3e0", borderRadius: "8px" }}>
+        <h3 style={{ margin: "0 0 10px 0" }}>Code Highlights</h3>
+        <p style={{ margin: 0, fontSize: "12px" }}>
+          This dashboard uses higher-order functions like filterByCategory which returns a function,
+          and recursive functions like sumField for calculating totals.
+        </p>
+      </div>
+    </div>
+  </div>

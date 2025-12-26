@@ -9,7 +9,7 @@
     "repl": "npx ts-node src/repl.ts",
     "compile": "npx ts-node src/cli.ts",
     "test": "vitest run",
-    "example:build": "npx ts-node src/cli.ts examples/counter.dep -o examples/counter.js && npx ts-node src/cli.ts examples/todo.dep -o examples/todo.js && npx ts-node src/cli.ts examples/reflection.dep -o examples/reflection.js",
+    "example:build": "npx ts-node src/cli.ts examples/counter.dep -o examples/counter.js && npx ts-node src/cli.ts examples/todo.dep -o examples/todo.js && npx ts-node src/cli.ts examples/reflection.dep -o examples/reflection.js && npx ts-node src/cli.ts examples/validator.dep -o examples/validator.js && npx ts-node src/cli.ts examples/calculator.dep -o examples/calculator.js && npx ts-node src/cli.ts examples/dashboard.dep -o examples/dashboard.js",
     "example:serve": "npx serve examples -p 3333",
     "example": "npm run example:build && npm run example:serve",
     "docs:verify": "npx ts-node docs/run-examples.ts"
