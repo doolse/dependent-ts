@@ -22,17 +22,16 @@ fn(props) =>
 
   // Compose validators - returns array of error messages
   let validate = fn() =>
-    let errs = [] in
-    let errs = if isEmpty(email) then errs.concat(["Email is required"])
-               else if !isValidEmail(email) then errs.concat(["Email must contain @ and ."])
-               else errs in
-    let errs = if isEmpty(password) then errs.concat(["Password is required"])
-               else if !minLength(8)(password) then errs.concat(["Password must be at least 8 characters"])
-               else errs in
-    let errs = if isEmpty(age) then errs.concat(["Age is required"])
-               else if !isNumber(age) then errs.concat(["Age must be a number"])
-               else errs in
-    errs
+    [if isEmpty(email) then "Email is required"
+     else if !isValidEmail(email) then "Email must contain @ and ."
+     else null,
+     if isEmpty(password) then "Password is required"
+     else if !minLength(8)(password) then "Password must be at least 8 characters"
+     else null,
+     if isEmpty(age) then "Age is required"
+     else if !isNumber(age) then "Age must be a number"
+     else null
+    ].filter(fn(x) => x != null)
   in
 
   let handleSubmit = fn() =>

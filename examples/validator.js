@@ -11,16 +11,14 @@ export default (props) => {
   const isValidEmail = (s) => s.includes("@") && s.includes(".");
   const isNumber = (s) => s.length === 0 ? false : s.split("").filter((c) => c < "0" || c > "9").length === 0;
   const minLength = (n) => (s) => s.length >= n;
-  const validate = () => {
-    const errs = [];
-    const errs = isEmpty(email) ? errs.concat(["Email is required"]) : !isValidEmail(email) ? errs.concat(["Email must contain @ and ."]) : errs;
-    const errs = isEmpty(password) ? errs.concat(["Password is required"]) : !minLength(8)(password) ? errs.concat(["Password must be at least 8 characters"]) : errs;
-    const errs = isEmpty(age) ? errs.concat(["Age is required"]) : !isNumber(age) ? errs.concat(["Age must be a number"]) : errs;
-    return errs;
-  };
+  const validate = () => [
+    isEmpty(email) ? "Email is required" : !isValidEmail(email) ? "Email must contain @ and ." : null,
+    isEmpty(password) ? "Password is required" : !minLength(8)(password) ? "Password must be at least 8 characters" : null,
+    isEmpty(age) ? "Age is required" : !isNumber(age) ? "Age must be a number" : null
+  ].filter((x) => x !== null);
   const handleSubmit = () => {
     const validationErrors = validate();
-    const _ = setErrors(validationErrors);
+    setErrors(validationErrors);
     return validationErrors.length === 0 ? setSuccess(true) : setSuccess(false);
   };
   return jsxs("div", {
