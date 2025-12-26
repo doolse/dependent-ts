@@ -337,7 +337,6 @@ function genLet(
   opts: Required<CodeGenOptions>,
   depth: number
 ): string {
-  const safeName = genIdentifier(name);
   const valueCode = genExpr(value, opts, depth + 1);
   const bodyCode = genExpr(body, opts, depth + 1);
 
@@ -345,6 +344,15 @@ function genLet(
   const indent = opts.indent.repeat(depth);
   const innerIndent = opts.indent.repeat(depth + 1);
 
+  if (name === "_") {
+    // Discard binding - just evaluate for side effect
+    return `(() => {
+${innerIndent}${valueCode};
+${innerIndent}return ${bodyCode};
+${indent}})()`;
+  }
+
+  const safeName = genIdentifier(name);
   return `(() => {
 ${innerIndent}const ${safeName} = ${valueCode};
 ${innerIndent}return ${bodyCode};
@@ -423,9 +431,14 @@ function genFunctionBodyStatements(
   let current = body;
   while (isLetChain(current)) {
     if (current.tag === "let") {
-      const safeName = genIdentifier(current.name);
       const valueCode = genExpr(current.value, opts, depth);
-      statements.push(`${indent}const ${safeName} = ${valueCode};`);
+      if (current.name === "_") {
+        // Discard binding - just emit the expression as a statement
+        statements.push(`${indent}${valueCode};`);
+      } else {
+        const safeName = genIdentifier(current.name);
+        statements.push(`${indent}const ${safeName} = ${valueCode};`);
+      }
       current = current.body;
     } else if (current.tag === "letPattern") {
       const patternCode = genPattern(current.pattern);

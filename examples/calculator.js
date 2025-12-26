@@ -7,23 +7,23 @@ export default (props) => {
   const [operation, setOperation] = useState(null);
   const [waitingForOperand, setWaitingForOperand] = useState(false);
   const inputDigit = (digit) => waitingForOperand ? (() => {
-    const _ = setDisplay(digit);
+    setDisplay(digit);
     return setWaitingForOperand(false);
   })() : setDisplay(display === "0" ? digit : display + digit);
   const inputDecimal = () => waitingForOperand ? (() => {
-    const _ = setDisplay("0.");
+    setDisplay("0.");
     return setWaitingForOperand(false);
   })() : !display.includes(".") ? setDisplay(display + ".") : null;
   const clear = () => {
-    const _ = setDisplay("0");
-    const _ = setMemory(0);
-    const _ = setOperation(null);
+    setDisplay("0");
+    setMemory(0);
+    setOperation(null);
     return setWaitingForOperand(false);
   };
   const performOperation = (nextOp) => {
     const inputValue = display;
-    const _ = setOperation(nextOp);
-    const _ = setMemory(display);
+    setOperation(nextOp);
+    setMemory(display);
     return setWaitingForOperand(true);
   };
   const calculate = () => setDisplay(memory + " " + operation + " " + display);
