@@ -284,6 +284,23 @@ function evalBinaryOp(
   }
 
   // At least one is Later - generate residual
+  const leftResidual = svalueToResidual(left);
+  const rightResidual = svalueToResidual(right);
+
+  // Special case: + can be string concatenation
+  if (op === "+") {
+    const leftIsString = implies(left.constraint, isString);
+    const rightIsString = implies(right.constraint, isString);
+
+    if (leftIsString || rightIsString) {
+      requireConstraint(left.constraint, isString, "left of string +");
+      requireConstraint(right.constraint, isString, "right of string +");
+
+      const resultConstraint = stringConcat.result([left.constraint, right.constraint]);
+      return { svalue: later(resultConstraint, binop(op, leftResidual, rightResidual)) };
+    }
+  }
+
   const builtin = getBinaryOp(op);
 
   // Still check constraints for type safety
@@ -291,8 +308,6 @@ function evalBinaryOp(
   requireConstraint(right.constraint, builtin.params[1], `right of ${op}`);
 
   const resultConstraint = builtin.result([left.constraint, right.constraint]);
-  const leftResidual = svalueToResidual(left);
-  const rightResidual = svalueToResidual(right);
 
   return { svalue: later(resultConstraint, binop(op, leftResidual, rightResidual)) };
 }
@@ -392,7 +407,14 @@ function evalLet(
 ): SEvalResult {
   const valueResult = stagingEvaluate(valueExpr, env, ctx).svalue;
 
-  const newEnv = env.set(name, { svalue: valueResult });
+  // For Later values with complex residuals, update to use varRef so subsequent
+  // lookups reference the variable instead of duplicating the expression.
+  // Simple residuals (varRef, lit) can be inlined safely.
+  const boundValue = isLater(valueResult) && !isSimpleResidual(valueResult.residual)
+    ? later(valueResult.constraint, varRef(name))
+    : valueResult;
+
+  const newEnv = env.set(name, { svalue: boundValue });
 
   const bodyResult = stagingEvaluate(bodyExpr, newEnv, ctx).svalue;
 
@@ -771,7 +793,23 @@ function evalCall(
     callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
 
     try {
-      return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
+      const result = stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
+
+      // Always use call expression as residual for recursive functions with Later args
+      // This ensures proper code generation instead of inlining the body
+      const funcResidual = svalueToResidual(func);
+      const argResiduals = args.map(svalueToResidual);
+      const callResidual = call(funcResidual, ...argResiduals);
+
+      if (isNow(result.svalue)) {
+        return {
+          svalue: now(result.svalue.value, result.svalue.constraint, callResidual)
+        };
+      } else {
+        return {
+          svalue: later(result.svalue.constraint, callResidual)
+        };
+      }
     } finally {
       inProgressRecursiveCalls.delete(sclosure.name);
     }
@@ -789,7 +827,19 @@ function evalCall(
   callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
 
   // Evaluate body
-  return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
+  const result = stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
+
+  // If any argument was Later and result is Now, add call expression as residual
+  // This ensures closures that capture Later values get proper code generation
+  if (args.some(isLater) && isNow(result.svalue) && !result.svalue.residual) {
+    const funcResidual = svalueToResidual(func);
+    const argResiduals = args.map(svalueToResidual);
+    return {
+      svalue: now(result.svalue.value, result.svalue.constraint, call(funcResidual, ...argResiduals))
+    };
+  }
+
+  return result;
 }
 
 /**
@@ -1614,6 +1664,16 @@ function closureToResidualInternal(closure: Value): Expr {
     if (!bodyEnv.has(freeVar)) {
       // External reference - bind as Later
       bodyEnv = bodyEnv.set(freeVar, { svalue: later(anyC, varRef(freeVar)) });
+    } else {
+      // Captured variable - ensure compound Now values have varRef residual
+      // to avoid inlining large values
+      const binding = bodyEnv.get(freeVar);
+      const sv = binding.svalue;
+      if (isNow(sv) && isCompoundValue(sv.value) && !sv.residual) {
+        bodyEnv = bodyEnv.set(freeVar, {
+          svalue: now(sv.value, sv.constraint, varRef(freeVar))
+        });
+      }
     }
   }
 
@@ -1877,6 +1937,15 @@ function constraintEquals(a: Constraint, b: Constraint): boolean {
  */
 function isCompoundValue(v: Value): boolean {
   return v.tag === "object" || v.tag === "array" || v.tag === "closure";
+}
+
+/**
+ * Check if a residual expression is "simple" and can be safely inlined.
+ * Simple residuals are variable references and literals.
+ * Complex residuals (calls, operations, etc.) should be bound to variables.
+ */
+function isSimpleResidual(expr: Expr): boolean {
+  return expr.tag === "var" || expr.tag === "lit";
 }
 
 // Import for error messages

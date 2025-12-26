@@ -54,7 +54,6 @@ export default (props) => {
   }
   ];
   const [filterCategory, setFilterCategory] = useState("All");
-  const [sortBy, setSortBy] = useState("amount");
   const categories = ["All", "Electronics", "Accessories", "Hardware"];
   const filterByCategory = (cat) => (item) => cat === "All" ? true : item.category === cat;
   const filteredData = salesData.filter(filterByCategory(filterCategory));
@@ -78,7 +77,6 @@ export default (props) => {
     })();
   })(); };
   const maxSale = findMax(filteredData, 0, 0);
-  const avgSale = filteredData.length > 0 ? totalRevenue / filteredData.length : 0;
   const cardStyle = {
     backgroundColor: "white",
     padding: "20px",

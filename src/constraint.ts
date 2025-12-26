@@ -604,6 +604,11 @@ export function implies(a: Constraint, b: Constraint): boolean {
     }
   }
 
+  // or(A, B) implies C if ALL alternatives imply C
+  if (sa.tag === "or") {
+    return sa.constraints.every(c => implies(c, sb));
+  }
+
   // A implies or(A, B)
   if (sb.tag === "or") {
     if (sb.constraints.some(c => implies(sa, c))) return true;

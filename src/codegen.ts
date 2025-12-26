@@ -858,22 +858,16 @@ export function generateModuleWithImports(expr: Expr, options: CodeGenOptions = 
     })
     .join("\n");
 
-  // Try to stage the expression for partial evaluation
-  // Fall back to unstaged code generation if staging fails (e.g., missing modules)
-  let codeExpr: Expr;
-  try {
-    const result = stage(expr);
-    const sv = result.svalue;
+  // Stage the expression for partial evaluation
+  const result = stage(expr);
+  const sv = result.svalue;
 
-    // Get the expression to generate code from
-    if (isNow(sv)) {
-      codeExpr = exprFromValue(sv.value);
-    } else {
-      codeExpr = sv.residual;
-    }
-  } catch {
-    // Staging failed - fall back to unstaged code generation
-    codeExpr = expr;
+  // Get the expression to generate code from
+  let codeExpr: Expr;
+  if (isNow(sv)) {
+    codeExpr = exprFromValue(sv.value);
+  } else {
+    codeExpr = sv.residual;
   }
 
   // Strip import expressions from the body since we're hoisting them

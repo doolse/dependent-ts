@@ -458,6 +458,21 @@ export function lookupMethod(
     if (method) return method;
   }
 
+  // For 'any' type, search all method registries
+  // The actual type will be checked at runtime
+  // Use Object.hasOwn to avoid picking up Object.prototype methods like toString
+  if (receiverConstraint.tag === "any") {
+    if (Object.prototype.hasOwnProperty.call(stringMethods, methodName)) {
+      return stringMethods[methodName];
+    }
+    if (Object.prototype.hasOwnProperty.call(arrayMethods, methodName)) {
+      return arrayMethods[methodName];
+    }
+    if (Object.prototype.hasOwnProperty.call(numberMethods, methodName)) {
+      return numberMethods[methodName];
+    }
+  }
+
   return undefined;
 }
 

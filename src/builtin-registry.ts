@@ -261,9 +261,13 @@ registerBuiltin({
         // Fall through to residual generation
       }
 
-      // Generate residual
-      const arrResidual = ctx.isNow(arr) ? ctx.valueToExpr(arr.value) : arr.residual;
-      const fnResidual = ctx.isNow(fn) ? ctx.valueToExpr(fn.value) : fn.residual;
+      // Generate residual - use existing residual if available to avoid inlining
+      const arrResidual = ctx.isNow(arr)
+        ? (arr.residual ?? ctx.valueToExpr(arr.value))
+        : arr.residual;
+      const fnResidual = ctx.isNow(fn)
+        ? (fn.residual ?? ctx.valueToExpr(fn.value))
+        : fn.residual;
 
       return {
         svalue: ctx.later(
@@ -318,9 +322,13 @@ registerBuiltin({
         // Fall through to residual generation
       }
 
-      // Generate residual
-      const arrResidual = ctx.isNow(arr) ? ctx.valueToExpr(arr.value) : arr.residual;
-      const fnResidual = ctx.isNow(fn) ? ctx.valueToExpr(fn.value) : fn.residual;
+      // Generate residual - use existing residual if available to avoid inlining
+      const arrResidual = ctx.isNow(arr)
+        ? (arr.residual ?? ctx.valueToExpr(arr.value))
+        : arr.residual;
+      const fnResidual = ctx.isNow(fn)
+        ? (fn.residual ?? ctx.valueToExpr(fn.value))
+        : fn.residual;
 
       return {
         svalue: ctx.later(
