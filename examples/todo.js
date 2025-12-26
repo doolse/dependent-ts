@@ -12,7 +12,7 @@ export default (props) => {
     margin: "0 auto"
   },
     children: [
-    jsx("h1", { children: "TODO App (from dependent-ts)" }),
+    jsx("h1", { children: "TODO App(from dependent-ts)" }),
     jsxs("div", {
     style: { display: "flex", marginBottom: "20px" },
     children: [
@@ -88,7 +88,7 @@ export default (props) => {
     children: "Total: " + todos.length.toString() + " items"
   }) : jsx("p", {
     style: { color: "#999", marginTop: "20px", fontStyle: "italic" },
-    children: "No todos yet. Add one above!"
+    children: "No todos yet.Add one above!"
   })
   ]
   });

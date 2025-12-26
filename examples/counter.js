@@ -6,7 +6,7 @@ export default (props) => {
   return jsxs("div", {
     style: { fontFamily: "system-ui", padding: "20px" },
     children: [
-    jsx("h1", { children: "Counter (from dependent-ts)" }),
+    jsx("h1", { children: "Counter(from dependent-ts)" }),
     jsx("p", {
     style: { fontSize: "48px", margin: "20px 0" },
     children: count

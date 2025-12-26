@@ -58,6 +58,11 @@ export type TokenType =
   | "DOT"
   | "ARROW"
   | "SEMICOLON"
+  // JSX
+  | "JSX_OPEN"         // <
+  | "JSX_CLOSE"        // >
+  | "JSX_SLASH"        // /
+  | "JSX_TEXT"         // Text content between tags
   // Special
   | "EOF";
 
@@ -100,9 +105,64 @@ export class Lexer {
   private pos: number = 0;
   private line: number = 1;
   private column: number = 1;
+  private jsxDepth: number = 0;  // Track JSX nesting for text content
 
   constructor(source: string) {
     this.source = source;
+  }
+
+  /**
+   * Get current position in source for backtracking
+   */
+  getPosition(): { pos: number; line: number; column: number } {
+    return { pos: this.pos, line: this.line, column: this.column };
+  }
+
+  /**
+   * Restore position for backtracking
+   */
+  setPosition(state: { pos: number; line: number; column: number }): void {
+    this.pos = state.pos;
+    this.line = state.line;
+    this.column = state.column;
+  }
+
+  /**
+   * Read JSX text content until we hit < or { or end
+   */
+  readJsxText(): Token | null {
+    this.skipWhitespace();  // Skip leading whitespace but not comments
+
+    if (this.isAtEnd() || this.peek() === "<" || this.peek() === "{") {
+      return null;
+    }
+
+    const startCol = this.column;
+    let value = "";
+
+    while (!this.isAtEnd() && this.peek() !== "<" && this.peek() !== "{") {
+      value += this.advance();
+    }
+
+    // Trim trailing whitespace
+    value = value.trim();
+
+    if (value === "") {
+      return null;
+    }
+
+    return { type: "JSX_TEXT", value, line: this.line, column: startCol };
+  }
+
+  private skipWhitespace(): void {
+    while (!this.isAtEnd()) {
+      const ch = this.peek();
+      if (ch === " " || ch === "\t" || ch === "\r" || ch === "\n") {
+        this.advance();
+      } else {
+        break;
+      }
+    }
   }
 
   tokenize(): Token[] {

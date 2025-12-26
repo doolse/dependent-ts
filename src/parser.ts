@@ -26,7 +26,7 @@
  * array      = "[" (expr ("," expr)*)? "]"
  */
 
-import { Token, TokenType, tokenize, LexerError } from "./lexer";
+import { Token, TokenType, tokenize, LexerError, Lexer } from "./lexer";
 import {
   Expr,
   lit,
@@ -66,9 +66,11 @@ import {
 export class Parser {
   private tokens: Token[];
   private pos: number = 0;
+  private source: string = "";  // Original source for JSX text extraction
 
-  constructor(tokens: Token[]) {
+  constructor(tokens: Token[], source?: string) {
     this.tokens = tokens;
+    this.source = source || "";
   }
 
   parse(): Expr {
@@ -530,6 +532,11 @@ export class Parser {
       return this.parseArray();
     }
 
+    // JSX element
+    if (this.isJsxStart()) {
+      return this.parseJsx();
+    }
+
     const tok = this.peek();
     throw new ParseError(`Unexpected token '${tok.value}' at line ${tok.line}, column ${tok.column}`);
   }
@@ -562,6 +569,205 @@ export class Parser {
     this.expect("RBRACKET", "Expected ']' after array elements");
     return array(...elements);
   }
+
+  // ==========================================================================
+  // JSX Parsing
+  // ==========================================================================
+
+  /**
+   * Check if we're looking at a JSX element: < followed by identifier or /
+   */
+  private isJsxStart(): boolean {
+    if (!this.check("LT")) return false;
+    const next = this.tokens[this.pos + 1];
+    return next && (next.type === "IDENT" || next.type === "SLASH");
+  }
+
+  /**
+   * Parse a JSX element and desugar to jsx()/jsxs() calls.
+   * <Tag attr={value}>children</Tag>  ->  jsx(Tag, { attr: value, children: ... })
+   * <Tag />                            ->  jsx(Tag, {})
+   */
+  private parseJsx(): Expr {
+    this.expect("LT", "Expected '<' at start of JSX element");
+
+    // Get the tag name (could be lowercase string like "div" or component like "MyComp")
+    const tagToken = this.expect("IDENT", "Expected tag name after '<'");
+    const tagName = tagToken.value;
+
+    // Tag expression: string literal for lowercase, variable ref for uppercase
+    const tagExpr = this.isComponentTag(tagName) ? varRef(tagName) : lit(tagName);
+
+    // Parse attributes
+    const props: { name: string; value: Expr }[] = [];
+    while (!this.check("GT") && !this.check("SLASH") && !this.isAtEnd()) {
+      const attrName = this.expect("IDENT", "Expected attribute name").value;
+
+      if (this.match("ASSIGN")) {
+        // attr={expr} or attr="string"
+        if (this.match("LBRACE")) {
+          const value = this.parseExpr();
+          this.expect("RBRACE", "Expected '}' after JSX attribute expression");
+          props.push({ name: attrName, value });
+        } else if (this.check("STRING")) {
+          const value = lit(this.advance().value);
+          props.push({ name: attrName, value });
+        } else {
+          throw new ParseError(`Expected expression or string for attribute '${attrName}'`);
+        }
+      } else {
+        // Boolean attribute: <input disabled />
+        props.push({ name: attrName, value: lit(true) });
+      }
+    }
+
+    // Self-closing tag: <Tag />
+    if (this.match("SLASH")) {
+      this.expect("GT", "Expected '>' after '/>'");
+      return this.buildJsxCall(tagExpr, props, []);
+    }
+
+    // Opening tag close: >
+    this.expect("GT", "Expected '>' or '/>' after attributes");
+
+    // Parse children
+    const children = this.parseJsxChildren(tagName);
+
+    return this.buildJsxCall(tagExpr, props, children);
+  }
+
+  /**
+   * Check if tag name is a component (starts with uppercase)
+   */
+  private isComponentTag(name: string): boolean {
+    return name.length > 0 && name[0] === name[0].toUpperCase();
+  }
+
+  /**
+   * Parse JSX children until we hit the closing tag.
+   * Children can be: text, {expressions}, or nested JSX elements
+   */
+  private parseJsxChildren(parentTag: string): Expr[] {
+    const children: Expr[] = [];
+
+    while (!this.isAtEnd()) {
+      // Check for closing tag
+      if (this.check("LT") && this.tokens[this.pos + 1]?.type === "SLASH") {
+        // Closing tag: </Tag>
+        this.advance(); // <
+        this.advance(); // /
+        const closeTag = this.expect("IDENT", "Expected closing tag name").value;
+        if (closeTag !== parentTag) {
+          throw new ParseError(`Mismatched closing tag: expected </${parentTag}> but got </${closeTag}>`);
+        }
+        this.expect("GT", "Expected '>' after closing tag");
+        break;
+      }
+
+      // Expression: {expr}
+      if (this.match("LBRACE")) {
+        const expr = this.parseExpr();
+        this.expect("RBRACE", "Expected '}' after JSX expression");
+        children.push(expr);
+        continue;
+      }
+
+      // Nested JSX element
+      if (this.isJsxStart()) {
+        children.push(this.parseJsx());
+        continue;
+      }
+
+      // Text content - read until we hit <, {, or special tokens
+      const textContent = this.parseJsxText();
+      if (textContent) {
+        children.push(lit(textContent));
+      }
+    }
+
+    return children;
+  }
+
+  /**
+   * Parse text content between JSX elements.
+   * We look at tokens and reconstruct text, handling identifiers and other tokens as text.
+   */
+  private parseJsxText(): string | null {
+    // Collect text tokens until we hit something that starts new content
+    let text = "";
+    let lastWasWord = false;
+
+    // Token types that can appear as text in JSX
+    const textTokenTypes: TokenType[] = [
+      "IDENT", "NUMBER", "STRING",
+      // Punctuation
+      "COLON", "DOT", "COMMA", "PLUS", "MINUS", "STAR",
+      "SLASH", "LPAREN", "RPAREN", "LBRACKET", "RBRACKET",
+      "EQ", "NOT", "AND", "OR", "SEMICOLON", "PERCENT",
+      "NEQ", "LTE", "GTE", "ASSIGN", "ARROW", "GT",
+      // Keywords (can appear in text)
+      "LET", "IN", "IF", "THEN", "ELSE", "FN", "TRUE", "FALSE",
+      "NULL", "COMPTIME", "RUNTIME", "ASSERT", "TRUST",
+      "IMPORT", "FROM", "TYPEOF",
+    ];
+
+    const isWordToken = (type: TokenType) =>
+      type === "IDENT" || type === "NUMBER" || type === "STRING" ||
+      type === "LET" || type === "IN" || type === "IF" ||
+      type === "THEN" || type === "ELSE" || type === "FN" ||
+      type === "TRUE" || type === "FALSE" || type === "NULL" ||
+      type === "COMPTIME" || type === "RUNTIME" || type === "ASSERT" ||
+      type === "TRUST" || type === "IMPORT" || type === "FROM" ||
+      type === "TYPEOF";
+
+    while (!this.isAtEnd() &&
+           !this.check("LT") &&
+           !this.check("LBRACE") &&
+           !this.check("RBRACE")) {
+      const tok = this.peek();
+
+      if (textTokenTypes.includes(tok.type)) {
+        const isWord = isWordToken(tok.type);
+        // Add space between words, but not around punctuation
+        const needsSpace = lastWasWord && isWord;
+        text += (needsSpace ? " " : "") + tok.value;
+        lastWasWord = isWord;
+        this.advance();
+      } else {
+        // Stop at unrecognized tokens
+        break;
+      }
+    }
+
+    return text.trim() || null;
+  }
+
+  /**
+   * Build the jsx() or jsxs() call expression.
+   * - No children: jsx(tag, { ...props })
+   * - One child: jsx(tag, { ...props, children: child })
+   * - Multiple children: jsxs(tag, { ...props, children: [child1, child2, ...] })
+   */
+  private buildJsxCall(tagExpr: Expr, props: { name: string; value: Expr }[], children: Expr[]): Expr {
+    // Build props object
+    const propsFields: Record<string, Expr> = {};
+    for (const { name, value } of props) {
+      propsFields[name] = value;
+    }
+
+    // Add children if any
+    if (children.length === 1) {
+      propsFields["children"] = children[0];
+    } else if (children.length > 1) {
+      propsFields["children"] = array(...children);
+    }
+
+    const propsExpr = obj(propsFields);
+
+    // Choose jsx vs jsxs based on children count
+    const funcName = children.length > 1 ? "jsxs" : "jsx";
+    return call(varRef(funcName), tagExpr, propsExpr);
+  }
 }
 
 // ============================================================================
@@ -584,7 +790,7 @@ export class ParseError extends Error {
  */
 export function parse(source: string): Expr {
   const tokens = tokenize(source);
-  return new Parser(tokens).parse();
+  return new Parser(tokens, source).parse();
 }
 
 import { run } from "./staged-evaluate";
