@@ -6,19 +6,6 @@ export default (props) => {
   const [memory, setMemory] = useState(0);
   const [operation, setOperation] = useState(null);
   const [waitingForOperand, setWaitingForOperand] = useState(false);
-  const factorial = function fac(n) { return n <= 1 ? 1 : n * fac(n - 1); };
-  const power = function pow(base, exp) { return exp === 0 ? 1 : exp < 0 ? 1 / pow(base, 0 - exp) : base * pow(base, exp - 1); };
-  const abs = (n) => n < 0 ? 0 - n : n;
-  const sqrt = (n) => {
-    const improve = function imp(guess, n, iterations) { return iterations === 0 ? guess : imp((guess + n / guess) / 2, n, iterations - 1); };
-    return n < 0 ? 0 : improve(n / 2, n, 20);
-  };
-  const parseNum = (s) => {
-    const isNegative = s.startsWith("-");
-    const digits = isNegative ? s.slice(1, null) : s;
-    const result = 0;
-    return result;
-  };
   const inputDigit = (digit) => waitingForOperand ? (() => {
     const _ = setDisplay(digit);
     return setWaitingForOperand(false);

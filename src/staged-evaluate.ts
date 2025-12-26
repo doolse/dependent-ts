@@ -230,10 +230,18 @@ function evalVariable(name: string, env: SEnv, ctx: RefinementContext): SEvalRes
   if (refinement) {
     const refined = narrowOr(sv.constraint, refinement);
     if (isNow(sv)) {
-      return { svalue: now(sv.value, refined) };
+      // Preserve residual if it exists, otherwise add variable reference for compounds
+      const residual = sv.residual ?? (isCompoundValue(sv.value) ? varRef(name) : undefined);
+      return { svalue: now(sv.value, refined, residual) };
     } else {
       return { svalue: later(refined, sv.residual) };
     }
+  }
+
+  // For compound Now values without a residual, add the variable reference
+  // This ensures variable references are preserved in generated code
+  if (isNow(sv) && !sv.residual && isCompoundValue(sv.value)) {
+    return { svalue: now(sv.value, sv.constraint, varRef(name)) };
   }
 
   return { svalue: sv };
@@ -283,8 +291,8 @@ function evalBinaryOp(
   requireConstraint(right.constraint, builtin.params[1], `right of ${op}`);
 
   const resultConstraint = builtin.result([left.constraint, right.constraint]);
-  const leftResidual = isNow(left) ? valueToExpr(left.value) : left.residual;
-  const rightResidual = isNow(right) ? valueToExpr(right.value) : right.residual;
+  const leftResidual = svalueToResidual(left);
+  const rightResidual = svalueToResidual(right);
 
   return { svalue: later(resultConstraint, binop(op, leftResidual, rightResidual)) };
 }
@@ -369,8 +377,8 @@ function evalIf(
   // Result constraint is union of both branches
   const resultConstraint = simplify(or(thenResult.constraint, elseResult.constraint));
 
-  const thenResidual = isNow(thenResult) ? valueToExpr(thenResult.value) : thenResult.residual;
-  const elseResidual = isNow(elseResult) ? valueToExpr(elseResult.value) : elseResult.residual;
+  const thenResidual = svalueToResidual(thenResult);
+  const elseResidual = svalueToResidual(elseResult);
 
   return { svalue: later(resultConstraint, ifExpr(cond.residual, thenResidual, elseResidual)) };
 }
@@ -394,12 +402,27 @@ function evalLet(
     return { svalue: bodyResult };
   }
 
-  // If value was Later and body uses it, we need residual let
-  if (isLater(valueResult) && usesVar(bodyExpr, name)) {
+  // Body is Later - decide whether to emit a let binding
+  // For Later values: check original expression (to avoid duplicate evaluation of side effects)
+  // For Now values with compound types (objects, arrays, closures): check original expression
+  //   to preserve code structure and avoid duplicating large literals
+  // For Now values with primitives: check residual (inlining is fine)
+  const shouldEmitLet = isLater(valueResult)
+    ? usesVar(bodyExpr, name)
+    : isCompoundValue(valueResult.value)
+      ? usesVar(bodyExpr, name)
+      : usesVar(bodyResult.residual, name);
+
+  if (shouldEmitLet) {
+    // Variable is used in body - need to emit a let binding
+    const valueResidual = isNow(valueResult)
+      ? valueToExpr(valueResult.value)
+      : valueResult.residual;
+
     return {
       svalue: later(
         bodyResult.constraint,
-        letExpr(name, valueResult.residual, bodyResult.residual)
+        letExpr(name, valueResidual, bodyResult.residual)
       )
     };
   }
@@ -422,7 +445,12 @@ function extractFromPattern(
   function extract(pat: Pattern, val: SValue, basePath: Expr): void {
     switch (pat.tag) {
       case "varPattern":
-        bindings.push({ name: pat.name, svalue: val });
+        if (isNow(val)) {
+          bindings.push({ name: pat.name, svalue: val });
+        } else {
+          // Override residual to use the variable name - the letPattern will bind it
+          bindings.push({ name: pat.name, svalue: later(val.constraint, varRef(pat.name)) });
+        }
         break;
 
       case "arrayPattern": {
@@ -634,7 +662,7 @@ function evalBuiltinCall(
     }
 
     // Generate residual for pure builtin with Later args
-    const argResiduals = args.map(sv => isNow(sv) ? valueToExpr(sv.value) : sv.residual);
+    const argResiduals = args.map(svalueToResidual);
     const resultConstraint = builtinDef.resultType(args.map(sv => sv.constraint));
 
     // If it's a method-style builtin, generate method call syntax
@@ -697,7 +725,7 @@ function evalCall(
   if (isLater(func)) {
     // Function itself is not known - generate residual call
     const argResults = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
-    const argResiduals = argResults.map(sv => isNow(sv) ? valueToExpr(sv.value) : sv.residual);
+    const argResiduals = argResults.map(svalueToResidual);
 
     // We don't know the result constraint without knowing the function
     // Use 'any' as a conservative approximation
@@ -726,9 +754,7 @@ function evalCall(
       // Cycle detected! We're already evaluating this recursive function with Later args.
       // Use the pre-computed result constraint and emit residual code.
       const resultConstraint = inProgressRecursiveCalls.get(sclosure.name)!;
-      const argResiduals = args.map(sv =>
-        isNow(sv) ? valueToExpr(sv.value) : sv.residual
-      );
+      const argResiduals = args.map(svalueToResidual);
       return {
         svalue: later(resultConstraint, call(varRef(sclosure.name), ...argResiduals))
       };
@@ -817,8 +843,8 @@ function evalMethodCall(
 
   // If receiver or any argument is Later, generate residual
   if (isLater(recv) || args.some(isLater)) {
-    const recvResidual = isNow(recv) ? valueToExpr(recv.value) : recv.residual;
-    const argResiduals = args.map(sv => isNow(sv) ? valueToExpr(sv.value) : sv.residual);
+    const recvResidual = svalueToResidual(recv);
+    const argResiduals = args.map(svalueToResidual);
 
     const resultConstraint = methodDef.result(recv.constraint, args.map(a => a.constraint));
 
@@ -866,6 +892,22 @@ function evalObject(
     // Mark as closed object - no unlisted fields allowed
     fieldConstraints.push(indexSig(neverC));
     const constraint = and(...fieldConstraints);
+
+    // If any field has a residual (e.g., variable reference), generate a residual for the object
+    // This preserves variable references in generated code instead of inlining
+    const anyFieldHasResidual = evaluatedFields.some(f => (f.svalue as Now).residual !== undefined);
+    if (anyFieldHasResidual) {
+      const residualFields: { name: string; value: Expr }[] = [];
+      for (const { name, svalue } of evaluatedFields) {
+        residualFields.push({
+          name,
+          value: svalueToResidual(svalue)
+        });
+      }
+      const residual = obj(Object.fromEntries(residualFields.map(f => [f.name, f.value])));
+      return { svalue: now(value, constraint, residual) };
+    }
+
     return { svalue: now(value, constraint) };
   }
 
@@ -877,7 +919,7 @@ function evalObject(
     fieldConstraints.push(hasField(name, svalue.constraint));
     residualFields.push({
       name,
-      value: isNow(svalue) ? valueToExpr(svalue.value) : svalue.residual
+      value: svalueToResidual(svalue)
     });
   }
 
@@ -957,9 +999,7 @@ function createArraySValue(elements: SValue[]): SValue {
   }
 
   // At least one element is Later - create residual array
-  const residualElements = elements.map(sv =>
-    isNow(sv) ? valueToExpr(sv.value) : sv.residual
-  );
+  const residualElements = elements.map(svalueToResidual);
   return later(and(...constraints), array(...residualElements));
 }
 
@@ -991,6 +1031,14 @@ function evalArray(
       }
     }
 
+    // If any element has a residual (e.g., variable reference), generate a residual for the array
+    const anyElementHasResidual = evaluatedElements.some(sv => (sv as Now).residual !== undefined);
+    if (anyElementHasResidual) {
+      const residualElements = evaluatedElements.map(svalueToResidual);
+      const residual = array(...residualElements);
+      return { svalue: now(arrayVal(values), and(...constraints), residual) };
+    }
+
     return { svalue: now(arrayVal(values), and(...constraints)) };
   }
 
@@ -1010,9 +1058,7 @@ function evalArray(
     constraints.push({ tag: "elements", constraint: or(...unique) });
   }
 
-  const residualElements = evaluatedElements.map(sv =>
-    isNow(sv) ? valueToExpr(sv.value) : sv.residual
-  );
+  const residualElements = evaluatedElements.map(svalueToResidual);
 
   return { svalue: later(and(...constraints), array(...residualElements)) };
 }
@@ -1058,8 +1104,8 @@ function evalIndex(
     elementConstraint = extractElementsConstraint(arr.constraint);
   }
 
-  const arrResidual = isNow(arr) ? valueToExpr(arr.value) : arr.residual;
-  const idxResidual = isNow(idx) ? valueToExpr(idx.value) : idx.residual;
+  const arrResidual = svalueToResidual(arr);
+  const idxResidual = svalueToResidual(idx);
 
   return { svalue: later(elementConstraint, index(arrResidual, idxResidual)) };
 }
@@ -1519,6 +1565,109 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
 }
 
 /**
+ * Internal implementation of closure to residual conversion.
+ * Defined before valueToExpr so it can be called during value conversion.
+ */
+function closureToResidualInternal(closure: Value): Expr {
+  if (closure.tag !== "closure") {
+    throw new Error("closureToResidual requires a closure value");
+  }
+
+  const sclosure = stagedClosures.get(closure);
+  if (!sclosure) {
+    // Fallback: no staged info, emit body as-is
+    return closure.name
+      ? { tag: "recfn", name: closure.name, params: [], body: closure.body }
+      : { tag: "fn", params: [], body: closure.body };
+  }
+
+  // Extract parameter names from the desugared body pattern
+  // Body structure: let [param1, param2, ...] = args in actualBody
+  const { paramNames, innerBody } = extractParamsFromBodyInternal(sclosure.body);
+
+  // Create an environment with parameters as Later values
+  let bodyEnv = sclosure.env;
+
+  // Add self-reference for recursive functions
+  if (sclosure.name) {
+    bodyEnv = bodyEnv.set(sclosure.name, { svalue: now(closure, isFunction) });
+  }
+
+  // Create Later bindings for each parameter
+  const paramSValues: SValue[] = [];
+  for (const paramName of paramNames) {
+    const paramSValue = later(anyC, varRef(paramName));
+    paramSValues.push(paramSValue);
+    bodyEnv = bodyEnv.set(paramName, { svalue: paramSValue });
+  }
+
+  // Also bind args array as Later
+  bodyEnv = bodyEnv.set("args", { svalue: createArraySValue(paramSValues) });
+
+  // Find free variables in the inner body that aren't bound in the environment
+  // These are external references (globals, imports, etc.) - treat as Later
+  const boundVars = new Set<string>(["args", ...paramNames]);
+  if (sclosure.name) boundVars.add(sclosure.name);
+  const freeInBody = freeVars(innerBody, boundVars);
+
+  for (const freeVar of freeInBody) {
+    if (!bodyEnv.has(freeVar)) {
+      // External reference - bind as Later
+      bodyEnv = bodyEnv.set(freeVar, { svalue: later(anyC, varRef(freeVar)) });
+    }
+  }
+
+  // Stage the inner body (after parameter destructuring)
+  const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty()).svalue;
+
+  // Build the residual function
+  const residualBody = svalueToResidual(bodyResult);
+
+  if (closure.name) {
+    return { tag: "recfn", name: closure.name, params: paramNames, body: residualBody };
+  }
+  return { tag: "fn", params: paramNames, body: residualBody };
+}
+
+/**
+ * Extract parameter names and inner body from a desugared function body.
+ * Internal version used before the public function is defined.
+ */
+function extractParamsFromBodyInternal(body: Expr): { paramNames: string[]; innerBody: Expr } {
+  if (body.tag === "letPattern" && body.value.tag === "var" && body.value.name === "args") {
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern") {
+      const paramNames: string[] = [];
+      for (const elem of pattern.elements) {
+        if (elem.tag === "varPattern") {
+          paramNames.push(elem.name);
+        } else {
+          // Complex pattern - can't extract simple param names
+          return { paramNames: [], innerBody: body };
+        }
+      }
+      return { paramNames, innerBody: body.body };
+    }
+  }
+  // No parameter destructuring found - body is the actual body
+  return { paramNames: [], innerBody: body };
+}
+
+/**
+ * Get the residual expression from an SValue.
+ * For Later values, returns the residual.
+ * For Now values with a residual (e.g., variable reference), uses that.
+ * For Now values without a residual, converts the value to an expression.
+ */
+function svalueToResidual(sv: SValue): Expr {
+  if (isLater(sv)) {
+    return sv.residual;
+  }
+  // Now value - use residual if present, otherwise convert value
+  return sv.residual ?? valueToExpr(sv.value);
+}
+
+/**
  * Convert a value to an expression (for residual code generation).
  */
 function valueToExpr(v: Value): Expr {
@@ -1541,28 +1690,14 @@ function valueToExpr(v: Value): Expr {
     case "array":
       return array(...v.elements.map(valueToExpr));
     case "closure": {
-      // Convert closure back to expression by wrapping captured variables in let bindings
-      // With desugaring, params is always empty and args are in the body
+      // For nested closures (those being emitted as part of a let binding),
+      // emit the body as-is. The staging of function bodies only happens
+      // at the top level via closureToResidualInternal.
+      // This avoids type errors when staging functions with typed parameters.
       const funcExpr: Expr = v.name
         ? { tag: "recfn", name: v.name, params: [], body: v.body }
         : { tag: "fn", params: [], body: v.body };
-
-      // Find free variables in the body that need to be captured
-      // args is bound by the function call, so exclude it
-      const boundVars = new Set<string>(["args"]);
-      const freeInBody = freeVars(v.body, boundVars);
-
-      // Build let bindings for captured variables from the closure's environment
-      let result: Expr = funcExpr;
-      for (const varName of freeInBody) {
-        if (v.env.has(varName)) {
-          const binding = v.env.get(varName);
-          const valueExpr = valueToExpr(binding.value);
-          result = letExpr(varName, valueExpr, result);
-        }
-      }
-
-      return result;
+      return funcExpr;
     }
     case "type":
       // Types are referenced by their binding name in the environment
@@ -1736,6 +1871,14 @@ function constraintEquals(a: Constraint, b: Constraint): boolean {
   return JSON.stringify(a) === JSON.stringify(b); // Simple structural equality
 }
 
+/**
+ * Check if a value is a compound type (object, array, closure).
+ * These should not be inlined to avoid duplicating large literals.
+ */
+function isCompoundValue(v: Value): boolean {
+  return v.tag === "object" || v.tag === "array" || v.tag === "closure";
+}
+
 // Import for error messages
 import { exprToString } from "./expr";
 
@@ -1835,4 +1978,24 @@ export function run(expr: Expr, initialBindings?: Record<string, { value: Value;
  */
 export function runValue(expr: Expr): Value {
   return run(expr).value;
+}
+
+// ============================================================================
+// Closure Residualization
+// ============================================================================
+
+/**
+ * Convert a closure to a residual expression by staging its body.
+ *
+ * This is used when emitting a function that was created at compile time
+ * but needs to be output as code (e.g., React components).
+ *
+ * The process:
+ * 1. Extract parameter names from the desugared body (let [params] = args in ...)
+ * 2. Create Later bindings for each parameter
+ * 3. Stage the body with those bindings
+ * 4. Return a function expression with the residual body
+ */
+export function closureToResidual(closure: Value): Expr {
+  return closureToResidualInternal(closure);
 }

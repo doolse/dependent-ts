@@ -52,7 +52,7 @@ export default (props) => {
   }),
     jsx("p", {
     style: { fontSize: "24px", fontWeight: "bold", margin: 0 },
-    children: factorial(10).toString()
+    children: "3628800"
   })
   ]
   }),
@@ -69,7 +69,7 @@ export default (props) => {
   }),
     jsx("p", {
     style: { fontSize: "24px", fontWeight: "bold", margin: 0 },
-    children: fib(15).toString()
+    children: "610"
   })
   ]
   })
@@ -89,15 +89,7 @@ export default (props) => {
   }),
     jsx("div", {
     style: { display: "flex", gap: "10px", flexWrap: "wrap" },
-    children: [
-    factorial(1),
-    factorial(2),
-    factorial(3),
-    factorial(4),
-    factorial(5),
-    factorial(6),
-    factorial(7)
-  ].map((f) => jsx("span", {
+    children: [1, 2, 6, 24, 120, 720, 5040].map((f) => jsx("span", {
     style: {
     padding: "5px 10px",
     backgroundColor: "#1976d2",
@@ -123,18 +115,7 @@ export default (props) => {
   }),
     jsx("div", {
     style: { display: "flex", gap: "10px", flexWrap: "wrap" },
-    children: [
-    fib(1),
-    fib(2),
-    fib(3),
-    fib(4),
-    fib(5),
-    fib(6),
-    fib(7),
-    fib(8),
-    fib(9),
-    fib(10)
-  ].map((f) => jsx("span", {
+    children: [1, 1, 2, 3, 5, 8, 13, 21, 34, 55].map((f) => jsx("span", {
     style: {
     padding: "5px 10px",
     backgroundColor: "#c2185b",

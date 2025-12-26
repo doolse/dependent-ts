@@ -833,7 +833,8 @@ ${indent}})()`;
 export function generateModuleWithImports(expr: Expr, options: CodeGenOptions = {}): string {
   const opts = { ...defaultOptions, ...options };
 
-  // Collect all imports from the expression
+  // Collect all imports from the ORIGINAL expression (before staging)
+  // This is needed because staging may inline/transform imports
   const imports = collectImports(expr);
 
   // Generate import statements
@@ -844,8 +845,26 @@ export function generateModuleWithImports(expr: Expr, options: CodeGenOptions = 
     })
     .join("\n");
 
+  // Try to stage the expression for partial evaluation
+  // Fall back to unstaged code generation if staging fails (e.g., missing modules)
+  let codeExpr: Expr;
+  try {
+    const result = stage(expr);
+    const sv = result.svalue;
+
+    // Get the expression to generate code from
+    if (isNow(sv)) {
+      codeExpr = exprFromValue(sv.value);
+    } else {
+      codeExpr = sv.residual;
+    }
+  } catch {
+    // Staging failed - fall back to unstaged code generation
+    codeExpr = expr;
+  }
+
   // Strip import expressions from the body since we're hoisting them
-  const strippedExpr = stripImports(expr);
+  const strippedExpr = stripImports(codeExpr);
   const code = genExpr(strippedExpr, opts, 0);
 
   if (importStatements) {
@@ -1006,7 +1025,7 @@ function stripImports(expr: Expr): Expr {
 // Compilation Pipeline
 // ============================================================================
 
-import { stage } from "./staged-evaluate";
+import { stage, closureToResidual } from "./staged-evaluate";
 import { isNow } from "./svalue";
 import { valueToString } from "./value";
 
@@ -1158,30 +1177,11 @@ function exprFromValue(value: import("./value").Value): Expr {
     }
     case "array":
       return { tag: "array", elements: value.elements.map(exprFromValue) };
-    case "closure": {
-      // Convert closure back to expression by wrapping captured variables in let bindings
-      // With desugaring, params is always empty and args are in the body
-      const funcExpr: Expr = value.name
-        ? { tag: "recfn", name: value.name, params: [], body: value.body }
-        : { tag: "fn", params: [], body: value.body };
-
-      // Find free variables in the body that need to be captured
-      // args is bound by the function call, so exclude it
-      const boundVars = new Set<string>(["args"]);
-      const freeInBody = freeVars(value.body, boundVars);
-
-      // Build let bindings for captured variables from the closure's environment
-      let result: Expr = funcExpr;
-      for (const varName of freeInBody) {
-        if (value.env.has(varName)) {
-          const binding = value.env.get(varName);
-          const valueExpr = exprFromValue(binding.value);
-          result = { tag: "let", name: varName, value: valueExpr, body: result };
-        }
-      }
-
-      return result;
-    }
+    case "closure":
+      // Use closureToResidual to properly stage the function body
+      // This enables compile-time evaluation of expressions inside the function
+      // that don't depend on runtime parameters
+      return closureToResidual(value);
     case "type":
       // Types are meta-level values that don't have a runtime representation
       // They're only used at compile time, so this shouldn't normally be called

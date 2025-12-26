@@ -24,6 +24,7 @@ export interface Now {
   stage: "now";
   value: Value;
   constraint: Constraint;  // Precise constraint (often equals(value))
+  residual?: Expr;         // Optional: expression to use in codegen (e.g., variable reference)
 }
 
 /**
@@ -45,9 +46,10 @@ export type SValue = Now | Later;
 
 /**
  * Create a Now value from a known value and its constraint.
+ * Optionally specify a residual expression for code generation.
  */
-export function now(value: Value, constraint: Constraint): Now {
-  return { stage: "now", value, constraint };
+export function now(value: Value, constraint: Constraint, residual?: Expr): Now {
+  return residual ? { stage: "now", value, constraint, residual } : { stage: "now", value, constraint };
 }
 
 /**
@@ -78,6 +80,19 @@ export function isLater(sv: SValue): sv is Later {
  */
 export function constraintOfSV(sv: SValue): Constraint {
   return sv.constraint;
+}
+
+/**
+ * Get the residual expression from a staged value.
+ * For Later values, returns the residual.
+ * For Now values with a residual, returns that residual.
+ * For Now values without a residual, returns undefined (caller should use valueToExpr).
+ */
+export function getResidual(sv: SValue): Expr | undefined {
+  if (isLater(sv)) {
+    return sv.residual;
+  }
+  return sv.residual;
 }
 
 /**

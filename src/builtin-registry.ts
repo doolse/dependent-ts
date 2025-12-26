@@ -237,22 +237,28 @@ registerBuiltin({
       const arr = args[0];
       const fn = args[1];
 
-      // If both are Now, execute at compile time
+      // If both are Now, try to execute at compile time
       if (ctx.isNow(arr) && ctx.isNow(fn)) {
         const arrVal = arr.value as ArrayValue;
         const fnVal = fn.value as ClosureValue;
 
         const results: Value[] = [];
+        let allNow = true;
         for (const elem of arrVal.elements) {
           const elemSV = ctx.now(elem, constraintOf(elem));
           const result = ctx.invokeClosure(fnVal, [elemSV]);
           if (!ctx.isNow(result.svalue)) {
-            throw new Error("map callback returned Later value on Now input");
+            // Callback returned Later - fall back to residual
+            allNow = false;
+            break;
           }
           results.push(result.svalue.value);
         }
 
-        return { svalue: ctx.now(arrayVal(results), and(isArray, elements({ tag: "any" }))) };
+        if (allNow) {
+          return { svalue: ctx.now(arrayVal(results), and(isArray, elements({ tag: "any" }))) };
+        }
+        // Fall through to residual generation
       }
 
       // Generate residual
@@ -286,24 +292,30 @@ registerBuiltin({
       const arr = args[0];
       const fn = args[1];
 
-      // If both are Now, execute at compile time
+      // If both are Now, try to execute at compile time
       if (ctx.isNow(arr) && ctx.isNow(fn)) {
         const arrVal = arr.value as ArrayValue;
         const fnVal = fn.value as ClosureValue;
 
         const results: Value[] = [];
+        let allNow = true;
         for (const elem of arrVal.elements) {
           const elemSV = ctx.now(elem, constraintOf(elem));
           const result = ctx.invokeClosure(fnVal, [elemSV]);
           if (!ctx.isNow(result.svalue)) {
-            throw new Error("filter callback returned Later value on Now input");
+            // Callback returned Later - fall back to residual
+            allNow = false;
+            break;
           }
           if (result.svalue.value.tag === "bool" && result.svalue.value.value) {
             results.push(elem);
           }
         }
 
-        return { svalue: ctx.now(arrayVal(results), arr.constraint) };
+        if (allNow) {
+          return { svalue: ctx.now(arrayVal(results), arr.constraint) };
+        }
+        // Fall through to residual generation
       }
 
       // Generate residual
