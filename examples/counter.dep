@@ -1,12 +1,3 @@
-/**
- * Build script to generate counter.js from dependent-ts source
- */
-import { parse, generateModuleWithImports } from "../src/index";
-import * as fs from "fs";
-import * as path from "path";
-
-// The dependent-ts source code for our counter
-const source = `
 import { jsx, jsxs } from "react/jsx-runtime" in
 import { useState } from "react" in
   fn(props) =>
@@ -35,20 +26,3 @@ import { useState } from "react" in
         })
       ]
     })
-`;
-
-console.log("=== Source (dependent-ts) ===");
-console.log(source);
-
-// Parse and generate
-const expr = parse(source);
-const jsCode = generateModuleWithImports(expr);
-
-console.log("\n=== Generated JavaScript ===");
-console.log(jsCode);
-
-// Write to file
-const outputPath = path.join(__dirname, "counter.js");
-fs.writeFileSync(outputPath, jsCode);
-console.log(`\nWritten to: ${outputPath}`);
-console.log("\nTo run: open examples/counter.html in a browser (needs a local server)");
