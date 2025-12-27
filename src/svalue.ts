@@ -38,7 +38,18 @@ export interface Later {
   residual: Expr;          // The expression that computes this value at runtime
 }
 
-export type SValue = Now | Later;
+/**
+ * An array with known structure but some runtime elements.
+ * Preserves individual element SValues for optimizations like predicate pushing.
+ * Created when any element is Later.
+ */
+export interface LaterArray {
+  stage: "later-array";
+  elements: SValue[];      // Each element's SValue preserved (can be Now or Later)
+  constraint: Constraint;  // Overall array constraint (isArray, length, elementAt, etc.)
+}
+
+export type SValue = Now | Later | LaterArray;
 
 // ============================================================================
 // Constructors
@@ -59,6 +70,13 @@ export function later(constraint: Constraint, residual: Expr): Later {
   return { stage: "later", constraint, residual };
 }
 
+/**
+ * Create a LaterArray value with known element structure.
+ */
+export function laterArray(elements: SValue[], constraint: Constraint): LaterArray {
+  return { stage: "later-array", elements, constraint };
+}
+
 // ============================================================================
 // Predicates
 // ============================================================================
@@ -69,6 +87,10 @@ export function isNow(sv: SValue): sv is Now {
 
 export function isLater(sv: SValue): sv is Later {
   return sv.stage === "later";
+}
+
+export function isLaterArray(sv: SValue): sv is LaterArray {
+  return sv.stage === "later-array";
 }
 
 // ============================================================================
@@ -87,18 +109,22 @@ export function constraintOfSV(sv: SValue): Constraint {
  * For Later values, returns the residual.
  * For Now values with a residual, returns that residual.
  * For Now values without a residual, returns undefined (caller should use valueToExpr).
+ * For LaterArray, returns undefined (caller should use svalueToResidual which computes it from elements).
  */
 export function getResidual(sv: SValue): Expr | undefined {
   if (isLater(sv)) {
     return sv.residual;
   }
+  if (isLaterArray(sv)) {
+    return undefined; // Computed on-demand from elements
+  }
   return sv.residual;
 }
 
 /**
- * Map over a Now value, keeping Later unchanged.
+ * Map over a Now value, keeping Later/LaterArray unchanged.
  */
-export function mapNow<T>(sv: SValue, f: (n: Now) => T, g: (l: Later) => T): T {
+export function mapNow<T>(sv: SValue, f: (n: Now) => T, g: (l: Later | LaterArray) => T): T {
   if (isNow(sv)) {
     return f(sv);
   } else {
@@ -120,6 +146,9 @@ export function allNow(svs: SValue[]): svs is Now[] {
 export function svalueToString(sv: SValue): string {
   if (isNow(sv)) {
     return `now(${valueToString(sv.value)} : ${constraintToString(sv.constraint)})`;
+  } else if (isLaterArray(sv)) {
+    const elemStrs = sv.elements.map(svalueToString).join(", ");
+    return `laterArray([${elemStrs}] : ${constraintToString(sv.constraint)})`;
   } else {
     return `later(${exprToString(sv.residual)} : ${constraintToString(sv.constraint)})`;
   }

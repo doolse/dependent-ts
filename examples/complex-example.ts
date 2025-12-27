@@ -15,6 +15,7 @@ import {
   isNow,
   isLater,
   exprToString,
+  svalueToResidual,
 } from "../src/index";
 
 // ============================================================================
@@ -92,7 +93,7 @@ const stageResult = stage(parse(staging));
 if (isNow(stageResult.svalue)) {
   console.log("Fully evaluated at compile time:", valueToString(stageResult.svalue.value));
 } else {
-  console.log("Residual code:", exprToString(stageResult.svalue.residual));
+  console.log("Residual code:", exprToString(svalueToResidual(stageResult.svalue)));
   console.log("Inferred type:", constraintToString(stageResult.svalue.constraint));
 
   // Generate JavaScript

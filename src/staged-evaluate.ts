@@ -21,7 +21,7 @@ import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFu
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
 import { extractAllRefinements, negateRefinement } from "./refinement";
-import { SValue, Now, Later, now, later, isNow, isLater, allNow } from "./svalue";
+import { SValue, Now, Later, LaterArray, now, later, laterArray, isNow, isLater, isLaterArray, allNow } from "./svalue";
 
 // ============================================================================
 // Staged Environment
@@ -233,6 +233,9 @@ function evalVariable(name: string, env: SEnv, ctx: RefinementContext): SEvalRes
       // Preserve residual if it exists, otherwise add variable reference for compounds
       const residual = sv.residual ?? (isCompoundValue(sv.value) ? varRef(name) : undefined);
       return { svalue: now(sv.value, refined, residual) };
+    } else if (isLaterArray(sv)) {
+      // Preserve LaterArray structure with refined constraint
+      return { svalue: laterArray(sv.elements, refined) };
     } else {
       return { svalue: later(refined, sv.residual) };
     }
@@ -329,12 +332,12 @@ function evalUnaryOp(
     return { svalue: now(result, resultConstraint) };
   }
 
-  // Later - generate residual
+  // Later/LaterArray - generate residual
   const builtin = getUnaryOp(op);
   requireConstraint(operand.constraint, builtin.params[0], `operand of ${op}`);
 
   const resultConstraint = builtin.result([operand.constraint]);
-  return { svalue: later(resultConstraint, unary(op, operand.residual)) };
+  return { svalue: later(resultConstraint, unary(op, svalueToResidual(operand))) };
 }
 
 function evalIf(
@@ -395,7 +398,7 @@ function evalIf(
   const thenResidual = svalueToResidual(thenResult);
   const elseResidual = svalueToResidual(elseResult);
 
-  return { svalue: later(resultConstraint, ifExpr(cond.residual, thenResidual, elseResidual)) };
+  return { svalue: later(resultConstraint, ifExpr(svalueToResidual(cond), thenResidual, elseResidual)) };
 }
 
 function evalLet(
@@ -410,6 +413,7 @@ function evalLet(
   // For Later values with complex residuals, update to use varRef so subsequent
   // lookups reference the variable instead of duplicating the expression.
   // Simple residuals (varRef, lit) can be inlined safely.
+  // For LaterArray, we keep the structure but may later need to emit a let binding.
   const boundValue = isLater(valueResult) && !isSimpleResidual(valueResult.residual)
     ? later(valueResult.constraint, varRef(name))
     : valueResult;
@@ -425,26 +429,26 @@ function evalLet(
   }
 
   // Body is Later - decide whether to emit a let binding
-  // For Later values: check original expression (to avoid duplicate evaluation of side effects)
+  // For Later/LaterArray values: check original expression (to avoid duplicate evaluation of side effects)
   // For Now values with compound types (objects, arrays, closures): check original expression
   //   to preserve code structure and avoid duplicating large literals
   // For Now values with primitives: check residual (inlining is fine)
-  const shouldEmitLet = isLater(valueResult)
+  const shouldEmitLet = isLater(valueResult) || isLaterArray(valueResult)
     ? usesVar(bodyExpr, name)
     : isCompoundValue(valueResult.value)
       ? usesVar(bodyExpr, name)
-      : usesVar(bodyResult.residual, name);
+      : usesVar(svalueToResidual(bodyResult), name);
 
   if (shouldEmitLet) {
     // Variable is used in body - need to emit a let binding
     const valueResidual = isNow(valueResult)
       ? valueToExpr(valueResult.value)
-      : valueResult.residual;
+      : svalueToResidual(valueResult);
 
     return {
       svalue: later(
         bodyResult.constraint,
-        letExpr(name, valueResidual, bodyResult.residual)
+        letExpr(name, valueResidual, svalueToResidual(bodyResult))
       )
     };
   }
@@ -486,6 +490,13 @@ function extractFromPattern(
               extract(elemPat, now(elemVal, constraintOf(elemVal)), index(basePath, lit(i)));
             } else {
               // Type error - but for now create a Later with any constraint
+              extract(elemPat, later({ tag: "any" }, index(basePath, lit(i))), index(basePath, lit(i)));
+            }
+          } else if (isLaterArray(val)) {
+            // LaterArray - extract element SValue directly
+            if (i < val.elements.length) {
+              extract(elemPat, val.elements[i], index(basePath, lit(i)));
+            } else {
               extract(elemPat, later({ tag: "any" }, index(basePath, lit(i))), index(basePath, lit(i)));
             }
           } else {
@@ -596,12 +607,12 @@ function evalLetPattern(
   const patVars = patternVars(pattern);
   const anyVarUsed = patVars.some(name => usesVar(bodyExpr, name));
 
-  // If value was Later and body uses pattern variables, we need residual let pattern
-  if (isLater(valueResult) && anyVarUsed) {
+  // If value was Later/LaterArray and body uses pattern variables, we need residual let pattern
+  if ((isLater(valueResult) || isLaterArray(valueResult)) && anyVarUsed) {
     return {
       svalue: later(
         bodyResult.constraint,
-        letPatternExpr(pattern, valueResult.residual, bodyResult.residual)
+        letPatternExpr(pattern, svalueToResidual(valueResult), svalueToResidual(bodyResult))
       )
     };
   }
@@ -716,9 +727,12 @@ function evalBuiltinCall(
         return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
       },
       valueToExpr,
+      svalueToResidual,
       now,
       later,
+      laterArray,
       isNow,
+      isLaterArray,
     };
 
     return builtinDef.evaluate.handler(args, argExprs, builtinCtx);
@@ -744,14 +758,14 @@ function evalCall(
 
   requireConstraint(func.constraint, isFunction, "function call");
 
-  if (isLater(func)) {
+  if (isLater(func) || isLaterArray(func)) {
     // Function itself is not known - generate residual call
     const argResults = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
     const argResiduals = argResults.map(svalueToResidual);
 
     // We don't know the result constraint without knowing the function
     // Use 'any' as a conservative approximation
-    return { svalue: later({ tag: "any" }, call(func.residual, ...argResiduals)) };
+    return { svalue: later({ tag: "any" }, call(svalueToResidual(func), ...argResiduals)) };
   }
 
   // Function is Now
@@ -829,11 +843,12 @@ function evalCall(
   // Evaluate body
   const result = stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
 
-  // If any argument was Later and function has a residual (variable reference),
+  // If any argument was Later/LaterArray and function has a residual (variable reference),
   // emit a call expression instead of inlining the body.
   // This prevents closure bodies from being duplicated at each call site.
-  if (args.some(isLater) && func.residual) {
-    const funcResidual = func.residual;
+  const nowFunc = func as Now; // TypeScript doesn't track this narrowing through the control flow
+  if (args.some(sv => isLater(sv) || isLaterArray(sv)) && nowFunc.residual) {
+    const funcResidual = nowFunc.residual;
     const argResiduals = args.map(svalueToResidual);
     const callResidual = call(funcResidual, ...argResiduals);
 
@@ -896,8 +911,9 @@ function evalMethodCall(
     requireConstraint(args[i].constraint, methodDef.params[i], `argument ${i + 1} of .${methodName}()`);
   }
 
-  // If receiver or any argument is Later, generate residual
-  if (isLater(recv) || args.some(isLater)) {
+  // If receiver or any argument is Later/LaterArray, generate residual
+  const isRuntime = (sv: SValue) => isLater(sv) || isLaterArray(sv);
+  if (isRuntime(recv) || args.some(isRuntime)) {
     const recvResidual = svalueToResidual(recv);
     const argResiduals = args.map(svalueToResidual);
 
@@ -1021,7 +1037,7 @@ function evalField(
     );
   }
 
-  return { svalue: later(fieldConstraint, field(objResult.residual, fieldName)) };
+  return { svalue: later(fieldConstraint, field(svalueToResidual(objResult), fieldName)) };
 }
 
 /**
@@ -1053,9 +1069,8 @@ function createArraySValue(elements: SValue[]): SValue {
     return now(arrayVal(values), and(...constraints));
   }
 
-  // At least one element is Later - create residual array
-  const residualElements = elements.map(svalueToResidual);
-  return later(and(...constraints), array(...residualElements));
+  // At least one element is Later - create LaterArray to preserve element structure
+  return laterArray(elements, and(...constraints));
 }
 
 function evalArray(
@@ -1097,7 +1112,7 @@ function evalArray(
     return { svalue: now(arrayVal(values), and(...constraints)) };
   }
 
-  // At least one element is Later
+  // At least one element is Later - create LaterArray to preserve element structure
   const constraints: Constraint[] = [isArray];
   constraints.push(length(and(isNumber, { tag: "equals", value: elementExprs.length })));
 
@@ -1113,9 +1128,7 @@ function evalArray(
     constraints.push({ tag: "elements", constraint: or(...unique) });
   }
 
-  const residualElements = evaluatedElements.map(svalueToResidual);
-
-  return { svalue: later(and(...constraints), array(...residualElements)) };
+  return { svalue: laterArray(evaluatedElements, and(...constraints)) };
 }
 
 function evalIndex(
@@ -1149,6 +1162,14 @@ function evalIndex(
     const element = arr.value.elements[indexVal];
     const elementConstraint = extractElementConstraint(arr.constraint, indexVal);
     return { svalue: now(element, elementConstraint) };
+  }
+
+  // LaterArray with known index - extract element directly
+  if (isLaterArray(arr) && isNow(idx) && idx.value.tag === "number") {
+    const indexVal = idx.value.value;
+    if (Number.isInteger(indexVal) && indexVal >= 0 && indexVal < arr.elements.length) {
+      return { svalue: arr.elements[indexVal] };
+    }
   }
 
   // At least one is Later
@@ -1188,7 +1209,7 @@ function evalComptime(
 ): SEvalResult {
   const result = stagingEvaluate(expr, env, ctx).svalue;
 
-  if (isLater(result)) {
+  if (isLater(result) || isLaterArray(result)) {
     throw new StagingError(
       `comptime expression evaluated to runtime value. ` +
       `Expression: ${exprToString(expr)}, ` +
@@ -1229,7 +1250,7 @@ function evalAssert(
   // Evaluate the constraint expression - should be a Type value
   const constraintResult = stagingEvaluate(constraintExpr, env, ctx).svalue;
 
-  if (isLater(constraintResult)) {
+  if (isLater(constraintResult) || isLaterArray(constraintResult)) {
     throw new StagingError("assert requires a compile-time known type constraint");
   }
 
@@ -1256,10 +1277,10 @@ function evalAssert(
     return { svalue: now(valueResult.value, refinedConstraint) };
   }
 
-  // Value is Later - generate residual assertion
+  // Value is Later/LaterArray - generate residual assertion
   // The residual will be: assert(value, type, message)
   const refinedConstraint = unify(valueResult.constraint, targetConstraint);
-  const residualAssert = assertExpr(valueResult.residual, constraintExpr, message);
+  const residualAssert = assertExpr(svalueToResidual(valueResult), constraintExpr, message);
 
   return { svalue: later(refinedConstraint, residualAssert) };
 }
@@ -1293,7 +1314,7 @@ function evalAssertCond(
   }
 
   // Condition is Later - generate residual assertion
-  const residualAssert = assertCondExpr(condResult.residual, message);
+  const residualAssert = assertCondExpr(svalueToResidual(condResult), message);
   return { svalue: later(isBool, residualAssert) };
 }
 
@@ -1319,7 +1340,7 @@ function evalTrust(
   // Evaluate the constraint expression - should be a Type value
   const constraintResult = stagingEvaluate(constraintExpr, env, ctx).svalue;
 
-  if (isLater(constraintResult)) {
+  if (isLater(constraintResult) || isLaterArray(constraintResult)) {
     throw new StagingError("trust requires a compile-time known type constraint");
   }
 
@@ -1333,8 +1354,12 @@ function evalTrust(
     return { svalue: now(valueResult.value, refinedConstraint) };
   }
 
-  // Value is Later - trust is purely a type-level operation, no residual
+  // Value is Later/LaterArray - trust is purely a type-level operation, no residual
   // The trust "disappears" and just affects the constraint
+  if (isLaterArray(valueResult)) {
+    // Preserve LaterArray structure with refined constraint
+    return { svalue: laterArray(valueResult.elements, refinedConstraint) };
+  }
   return { svalue: later(refinedConstraint, valueResult.residual) };
 }
 
@@ -1496,7 +1521,7 @@ function evalImport(
     return {
       svalue: later(
         bodyResult.constraint,
-        importExpr(names, modulePath, bodyResult.residual)
+        importExpr(names, modulePath, svalueToResidual(bodyResult))
       )
     };
   }
@@ -1724,9 +1749,13 @@ function extractParamsFromBodyInternal(body: Expr): { paramNames: string[]; inne
  * For Now values with a residual (e.g., variable reference), uses that.
  * For Now values without a residual, converts the value to an expression.
  */
-function svalueToResidual(sv: SValue): Expr {
+export function svalueToResidual(sv: SValue): Expr {
   if (isLater(sv)) {
     return sv.residual;
+  }
+  if (isLaterArray(sv)) {
+    // Compute array expression from elements
+    return array(...sv.elements.map(svalueToResidual));
   }
   // Now value - use residual if present, otherwise convert value
   return sv.residual ?? valueToExpr(sv.value);
@@ -2018,7 +2047,7 @@ export function stageToExpr(expr: Expr): Expr {
   if (isNow(result)) {
     return valueToExpr(result.value);
   }
-  return result.residual;
+  return svalueToResidual(result);
 }
 
 /**

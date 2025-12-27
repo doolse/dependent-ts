@@ -6,7 +6,7 @@
 import * as readline from "readline";
 import { parse, ParseError } from "./parser";
 import { LexerError } from "./lexer";
-import { run } from "./staged-evaluate";
+import { run, svalueToResidual } from "./staged-evaluate";
 import { TypeError } from "./builtins";
 import { stage, StagingError } from "./staged-evaluate";
 import { compile } from "./codegen";
@@ -196,7 +196,7 @@ function stageMode(expr: Expr): void {
       console.log(`  : ${constraintToString(sv.constraint)}`);
     }
   } else {
-    console.log(`Later: ${exprToString(sv.residual)}`);
+    console.log(`Later: ${exprToString(svalueToResidual(sv))}`);
     if (state.showConstraints) {
       console.log(`  : ${constraintToString(sv.constraint)}`);
     }

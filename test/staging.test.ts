@@ -45,6 +45,7 @@ import {
   stageToExpr,
   isNow,
   isLater,
+  isLaterArray,
   StagingError,
   resetVarCounter,
 } from "../src/index";
@@ -292,9 +293,16 @@ describe("Array Staging Tests", () => {
     expect(isNow(result)).toBe(true);
   });
 
-  it("array with Later element is Later", () => {
+  it("array with Later element is LaterArray", () => {
     const result = stage(array(num(1), runtime(num(2), "x"), num(3))).svalue;
-    expect(isLater(result)).toBe(true);
+    expect(isLaterArray(result)).toBe(true);
+    if (isLaterArray(result)) {
+      // LaterArray preserves element structure
+      expect(result.elements.length).toBe(3);
+      expect(isNow(result.elements[0])).toBe(true);
+      expect(isLater(result.elements[1])).toBe(true);
+      expect(isNow(result.elements[2])).toBe(true);
+    }
   });
 
   it("index on Now array with Now index is Now", () => {

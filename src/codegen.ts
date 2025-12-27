@@ -867,7 +867,7 @@ export function generateModuleWithImports(expr: Expr, options: CodeGenOptions = 
   if (isNow(sv)) {
     codeExpr = exprFromValue(sv.value);
   } else {
-    codeExpr = sv.residual;
+    codeExpr = svalueToResidual(sv);
   }
 
   // Strip import expressions from the body since we're hoisting them
@@ -1032,7 +1032,7 @@ function stripImports(expr: Expr): Expr {
 // Compilation Pipeline
 // ============================================================================
 
-import { stage, closureToResidual } from "./staged-evaluate";
+import { stage, closureToResidual, svalueToResidual } from "./staged-evaluate";
 import { isNow } from "./svalue";
 import { valueToString } from "./value";
 
@@ -1049,8 +1049,8 @@ export function compile(expr: Expr, options: CodeGenOptions = {}): string {
     return generateJS(exprFromValue(sv.value), options);
   }
 
-  // Generate code from residual (sv is Later)
-  return generateJS(sv.residual, options);
+  // Generate code from residual (sv is Later or LaterArray)
+  return generateJS(svalueToResidual(sv), options);
 }
 
 /**

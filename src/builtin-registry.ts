@@ -8,7 +8,7 @@
 import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar } from "./constraint";
 import { Value, numberVal, stringVal, boolVal, nullVal, arrayVal, typeVal, BuiltinValue, StringValue, NumberValue, ArrayValue, ClosureValue, constraintOf, valueToString } from "./value";
 import { Expr, methodCall, call, varRef } from "./expr";
-import type { SValue, Now, Later } from "./svalue";
+import type { SValue, Now, Later, LaterArray } from "./svalue";
 import type { RefinementContext } from "./env";
 
 // Re-export for use by staged-evaluate
@@ -87,12 +87,18 @@ export interface StagedBuiltinContext {
   invokeClosure: (closure: ClosureValue, args: SValue[]) => SEvalResult;
   /** Convert a Now value to an expression for residual */
   valueToExpr: (value: Value) => Expr;
+  /** Convert any SValue to a residual expression */
+  svalueToResidual: (sv: SValue) => Expr;
   /** Create a Now SValue */
   now: (value: Value, constraint: Constraint) => Now;
   /** Create a Later SValue */
   later: (constraint: Constraint, residual: Expr) => Later;
+  /** Create a LaterArray SValue */
+  laterArray: (elements: SValue[], constraint: Constraint) => LaterArray;
   /** Check if SValue is Now */
   isNow: (sv: SValue) => sv is Now;
+  /** Check if SValue is LaterArray */
+  isLaterArray: (sv: SValue) => sv is LaterArray;
 }
 
 // ============================================================================
@@ -152,7 +158,7 @@ registerBuiltin({
         return { svalue: ctx.now(nullVal, isNull) };
       }
       // Generate residual print call
-      return { svalue: ctx.later(isNull, call(varRef("print"), arg.residual)) };
+      return { svalue: ctx.later(isNull, call(varRef("print"), ctx.svalueToResidual(arg))) };
     }
   }
 });
@@ -261,13 +267,9 @@ registerBuiltin({
         // Fall through to residual generation
       }
 
-      // Generate residual - use existing residual if available to avoid inlining
-      const arrResidual = ctx.isNow(arr)
-        ? (arr.residual ?? ctx.valueToExpr(arr.value))
-        : arr.residual;
-      const fnResidual = ctx.isNow(fn)
-        ? (fn.residual ?? ctx.valueToExpr(fn.value))
-        : fn.residual;
+      // Generate residual - use svalueToResidual for consistent handling
+      const arrResidual = ctx.svalueToResidual(arr);
+      const fnResidual = ctx.svalueToResidual(fn);
 
       return {
         svalue: ctx.later(
@@ -322,13 +324,9 @@ registerBuiltin({
         // Fall through to residual generation
       }
 
-      // Generate residual - use existing residual if available to avoid inlining
-      const arrResidual = ctx.isNow(arr)
-        ? (arr.residual ?? ctx.valueToExpr(arr.value))
-        : arr.residual;
-      const fnResidual = ctx.isNow(fn)
-        ? (fn.residual ?? ctx.valueToExpr(fn.value))
-        : fn.residual;
+      // Generate residual - use svalueToResidual for consistent handling
+      const arrResidual = ctx.svalueToResidual(arr);
+      const fnResidual = ctx.svalueToResidual(fn);
 
       return {
         svalue: ctx.later(
@@ -782,10 +780,10 @@ registerBuiltin({
         }
         return { svalue: ctx.now(fieldValue, constraintOf(fieldValue)) };
       } else {
-        // Object is Later - generate residual field access
+        // Object is Later/LaterArray - generate residual field access
         const fieldConstraint = extractFieldConstraint(objArg.constraint, fieldName) || { tag: "any" as const };
         return {
-          svalue: ctx.later(fieldConstraint, { tag: "field" as const, object: objArg.residual, name: fieldName } as Expr)
+          svalue: ctx.later(fieldConstraint, { tag: "field" as const, object: ctx.svalueToResidual(objArg), name: fieldName } as Expr)
         };
       }
     }
