@@ -35,13 +35,7 @@ fn(props) =>
   in
 
   // Parse display to number
-  let parseNum = fn(s) =>
-    let isNegative = s.startsWith("-") in
-    let digits = if isNegative then s.slice(1, null) else s in
-    // Simple integer parsing
-    let result = 0 in
-    result
-  in
+  let parseNum = fn(s) => parseNumber(s) in
 
   let inputDigit = fn(digit) =>
     if waitingForOperand then
@@ -76,16 +70,27 @@ fn(props) =>
   in
 
   let calculate = fn() =>
-    // For demo purposes, just show the operation
-    setDisplay(memory + " " + operation + " " + display)
+    let a = parseNum(memory) in
+    let b = parseNum(display) in
+    let result =
+      if operation == "+" then a + b
+      else if operation == "-" then a - b
+      else if operation == "*" then a * b
+      else if operation == "/" then a / b
+      else b
+    in
+    setDisplay(result.toString())
   in
 
   let applyFunction = fn(funcName) =>
-    let n = display in
-    if funcName == "sqrt" then setDisplay("sqrt(" + n + ")")
-    else if funcName == "square" then setDisplay(n + "^2")
-    else if funcName == "factorial" then setDisplay(n + "!")
-    else setDisplay(n)
+    let n = parseNum(display) in
+    let result =
+      if funcName == "sqrt" then sqrt(n)
+      else if funcName == "square" then power(n, 2)
+      else if funcName == "factorial" then factorial(n)
+      else n
+    in
+    setDisplay(result.toString())
   in
 
   let buttonStyle = {

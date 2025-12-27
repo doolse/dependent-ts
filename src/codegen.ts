@@ -568,6 +568,12 @@ function genCall(
     return `console.log(${argsCode})`;
   }
 
+  // Special case: parseNumber() becomes parseFloat()
+  if (func.tag === "var" && func.name === "parseNumber") {
+    const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
+    return `parseFloat(${argsCode})`;
+  }
+
   // Special case: map(fn, arr) becomes arr.map(fn)
   if (func.tag === "var" && func.name === "map" && args.length === 2) {
     const fnCode = genExpr(args[0], opts, depth);

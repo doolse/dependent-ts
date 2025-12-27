@@ -222,6 +222,21 @@ registerBuiltin({
   }
 });
 
+registerBuiltin({
+  name: "parseNumber",
+  params: [{ name: "str", constraint: isString }],
+  resultType: () => isNumber,
+  isMethod: false,
+  evaluate: {
+    kind: "pure",
+    impl: ([str]) => {
+      const s = (str as StringValue).value;
+      const n = parseFloat(s);
+      return numberVal(isNaN(n) ? 0 : n);
+    }
+  }
+});
+
 // ============================================================================
 // Core Builtins: Array HOFs
 // ============================================================================

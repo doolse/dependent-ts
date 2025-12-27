@@ -6,6 +6,13 @@ export default (props) => {
   const [memory, setMemory] = useState(0);
   const [operation, setOperation] = useState(null);
   const [waitingForOperand, setWaitingForOperand] = useState(false);
+  const factorial = function fac(n) { return n <= 1 ? 1 : n * fac(n - 1); };
+  const power = function pow(base, exp) { return exp === 0 ? 1 : exp < 0 ? 1 / pow(base, 0 - exp) : base * pow(base, exp - 1); };
+  const sqrt = (n) => {
+    const improve = function imp(guess, n, iterations) { return iterations === 0 ? guess : imp((guess + n / guess) / 2, n, iterations - 1); };
+    return n < 0 ? 0 : improve(n / 2, n, 20);
+  };
+  const parseNum = (s) => parseFloat(s);
   const inputDigit = (digit) => waitingForOperand ? (() => {
     setDisplay(digit);
     return setWaitingForOperand(false);
@@ -26,10 +33,16 @@ export default (props) => {
     setMemory(display);
     return setWaitingForOperand(true);
   };
-  const calculate = () => setDisplay(memory + " " + operation + " " + display);
+  const calculate = () => {
+    const a = parseNum(memory);
+    const b = parseNum(display);
+    const result = operation === "+" ? a + b : operation === "-" ? a - b : operation === "*" ? a * b : operation === "/" ? a / b : b;
+    return setDisplay(result.toString());
+  };
   const applyFunction = (funcName) => {
-    const n = display;
-    return funcName === "sqrt" ? setDisplay("sqrt(" + n + ")") : funcName === "square" ? setDisplay(n + "^2") : funcName === "factorial" ? setDisplay(n + "!") : setDisplay(n);
+    const n = parseNum(display);
+    const result = funcName === "sqrt" ? sqrt(n) : funcName === "square" ? power(n, 2) : funcName === "factorial" ? factorial(n) : n;
+    return setDisplay(result.toString());
   };
   const buttonStyle = {
     padding: "15px",
