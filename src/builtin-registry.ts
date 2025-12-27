@@ -5,7 +5,8 @@
  * Each builtin has a name, type signature, and evaluation handler.
  */
 
-import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar, satisfies, anyC } from "./constraint";
+import { extractRefinement, extractTypeGuard } from "./refinement";
 import { Value, numberVal, stringVal, boolVal, nullVal, arrayVal, typeVal, BuiltinValue, StringValue, NumberValue, ArrayValue, ClosureValue, constraintOf, valueToString } from "./value";
 import { Expr, methodCall, call, varRef } from "./expr";
 import type { SValue, Now, Later, LaterArray } from "./svalue";
@@ -281,6 +282,93 @@ registerBuiltin({
   }
 });
 
+/**
+ * Extract constraint from a filter predicate function.
+ * If the predicate can be analyzed, returns the constraint it implies.
+ * Otherwise, returns satisfies(closure) to preserve the predicate info.
+ */
+function extractPredicateConstraint(fn: SValue, ctx: StagedBuiltinContext): Constraint {
+  // Only analyze Now closures (compile-time known functions)
+  if (!ctx.isNow(fn)) {
+    // Predicate is runtime-only - can't analyze, use satisfies
+    return anyC; // Can't even create satisfies without a concrete closure
+  }
+
+  const fnVal = fn.value;
+  if (fnVal.tag !== "closure") {
+    // Builtin or other - use satisfies
+    return satisfies(fnVal);
+  }
+
+  // Extract parameter name and inner body from desugared function
+  const extracted = extractParamsFromBody(fnVal.body);
+  if (extracted.paramNames.length === 0) {
+    // Couldn't extract param name - fall back to satisfies
+    return satisfies(fnVal);
+  }
+
+  const paramName = extracted.paramNames[0];
+  const innerBody = extracted.innerBody;
+
+  // Try to extract type guard first (e.g., isNumber(x))
+  const typeGuard = extractTypeGuard(innerBody);
+  if (typeGuard && typeGuard.varName === paramName) {
+    return typeGuard.constraint;
+  }
+
+  // Try to extract refinement from the body (e.g., x > 0, x != null)
+  const refinement = extractRefinement(innerBody);
+  const constraint = refinement.constraints.get(paramName);
+
+  if (constraint) {
+    return constraint;
+  }
+
+  // Couldn't analyze - fall back to satisfies
+  return satisfies(fnVal);
+}
+
+/**
+ * Extract parameter names and inner body from a desugared function body.
+ * Desugared functions have form: let [params] = args in <body>
+ */
+function extractParamsFromBody(body: Expr): { paramNames: string[]; innerBody: Expr } {
+  if (body.tag === "letPattern" && body.value.tag === "var" && body.value.name === "args") {
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern") {
+      const paramNames: string[] = [];
+      for (const elem of pattern.elements) {
+        if (elem.tag === "varPattern") {
+          paramNames.push(elem.name);
+        } else {
+          // Complex pattern - can't extract simple param names
+          return { paramNames: [], innerBody: body };
+        }
+      }
+      return { paramNames, innerBody: body.body };
+    }
+  }
+  // No parameter destructuring found
+  return { paramNames: [], innerBody: body };
+}
+
+/**
+ * Extract element constraint from an array constraint.
+ */
+function extractElementConstraint(arrConstraint: Constraint): Constraint {
+  if (arrConstraint.tag === "elements") {
+    return arrConstraint.constraint;
+  }
+  if (arrConstraint.tag === "and") {
+    for (const c of arrConstraint.constraints) {
+      if (c.tag === "elements") {
+        return c.constraint;
+      }
+    }
+  }
+  return anyC;
+}
+
 registerBuiltin({
   name: "filter",
   params: [
@@ -328,9 +416,17 @@ registerBuiltin({
       const arrResidual = ctx.svalueToResidual(arr);
       const fnResidual = ctx.svalueToResidual(fn);
 
+      // Extract constraint from predicate for refined result type
+      const predicateConstraint = extractPredicateConstraint(fn, ctx);
+      const elemConstraint = extractElementConstraint(arr.constraint);
+
+      // Combine: elements must satisfy both original element type AND predicate
+      const refinedElemConstraint = and(elemConstraint, predicateConstraint);
+      const resultConstraint = and(isArray, elements(refinedElemConstraint));
+
       return {
         svalue: ctx.later(
-          arr.constraint,
+          resultConstraint,
           methodCall(arrResidual, "filter", [fnResidual])
         )
       };

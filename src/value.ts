@@ -313,6 +313,12 @@ export function valueSatisfies(value: Value, constraint: Constraint): boolean {
       // For other index constraints, we'd need to check all fields not covered by hasField
       // For simplicity, assume satisfied (our values don't have extra fields)
       return true;
+
+    case "satisfies":
+      // Opaque predicate constraint - we can't check this statically
+      // The actual runtime check happens in generated code via the predicate itself
+      // For valueSatisfies, we conservatively assume satisfied
+      return true;
   }
 }
 

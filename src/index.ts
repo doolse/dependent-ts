@@ -46,6 +46,7 @@ export {
   extractFieldConstraint,
   rec,
   recVar,
+  satisfies,
   // Constraint solving
   Substitution,
   emptySubstitution,

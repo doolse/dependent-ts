@@ -51,7 +51,11 @@ export type Constraint =
 
   // Recursive types (μ types)
   | { tag: "rec", var: string, body: Constraint }    // μX. body (recursive type binder)
-  | { tag: "recVar", var: string };
+  | { tag: "recVar", var: string }
+
+  // Predicate satisfaction (opaque function reference)
+  // Used when a filter predicate can't be analyzed into constraints
+  | { tag: "satisfies", predicate: unknown };
 
 // ============================================================================
 // Constructors
@@ -139,6 +143,10 @@ export const rec = (varName: string, body: Constraint): Constraint =>
 
 export const recVar = (varName: string): Constraint =>
   ({ tag: "recVar", var: varName });
+
+// Predicate satisfaction (for opaque predicates)
+export const satisfies = (predicate: unknown): Constraint =>
+  ({ tag: "satisfies", predicate });
 
 // ============================================================================
 // Classification Helpers
@@ -292,6 +300,10 @@ export function constraintEquals(a: Constraint, b: Constraint): boolean {
 
     case "recVar":
       return a.var === (b as typeof a).var;
+
+    case "satisfies":
+      // Reference equality for predicates
+      return a.predicate === (b as typeof a).predicate;
   }
 }
 
@@ -455,6 +467,7 @@ export function simplify(c: Constraint): Constraint {
     case "never":
     case "any":
     case "var":
+    case "satisfies":
       return c;
 
     case "hasField":
@@ -673,6 +686,9 @@ export function implies(a: Constraint, b: Constraint): boolean {
   }
 
   // recVar only implies itself (handled by constraintEquals above)
+
+  // satisfies(f) only implies satisfies(g) if f === g (handled by constraintEquals above)
+  // Different predicates are treated as unrelated (can't prove implication)
 
   return false;
 }
@@ -907,6 +923,20 @@ export function constraintToString(c: Constraint): string {
 
     case "recVar":
       return c.var;
+
+    case "satisfies": {
+      // Try to get a meaningful name from the predicate
+      const pred = c.predicate as { tag?: string; name?: string };
+      if (pred && typeof pred === "object") {
+        if (pred.tag === "closure" && pred.name) {
+          return `satisfies(${pred.name})`;
+        }
+        if (pred.tag === "builtin" && pred.name) {
+          return `satisfies(${pred.name})`;
+        }
+      }
+      return `satisfies(<fn>)`;
+    }
   }
 }
 
@@ -1112,6 +1142,10 @@ function solveInto(a: Constraint, b: Constraint, sub: Substitution): boolean {
 
       case "recVar":
         return a.var === (b as typeof a).var;
+
+      case "satisfies":
+        // Reference equality for predicates
+        return a.predicate === (b as typeof a).predicate;
 
       case "and": {
         const aConstraints = a.constraints;
