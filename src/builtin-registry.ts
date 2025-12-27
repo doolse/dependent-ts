@@ -267,14 +267,14 @@ registerBuiltin({
         // Fall through to residual generation
       }
 
-      // Generate residual - use svalueToResidual for consistent handling
+      // Generate residual - use abstract function call (backend decides syntax)
       const arrResidual = ctx.svalueToResidual(arr);
       const fnResidual = ctx.svalueToResidual(fn);
 
       return {
         svalue: ctx.later(
           and(isArray, elements({ tag: "any" })),
-          methodCall(arrResidual, "map", [fnResidual])
+          call(varRef("map"), arrResidual, fnResidual)
         )
       };
     }
@@ -324,14 +324,14 @@ registerBuiltin({
         // Fall through to residual generation
       }
 
-      // Generate residual - use svalueToResidual for consistent handling
+      // Generate residual - use abstract function call (backend decides syntax)
       const arrResidual = ctx.svalueToResidual(arr);
       const fnResidual = ctx.svalueToResidual(fn);
 
       return {
         svalue: ctx.later(
           arr.constraint,
-          methodCall(arrResidual, "filter", [fnResidual])
+          call(varRef("filter"), arrResidual, fnResidual)
         )
       };
     }

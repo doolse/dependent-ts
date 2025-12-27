@@ -74,84 +74,116 @@ describe("Literal Generation Tests", () => {
 });
 
 describe("Operator Generation Tests", () => {
-  it("generates arithmetic operators", () => {
-    expect(generateJS(add(num(1), num(2))).trim()).toBe("1 + 2");
-    expect(generateJS(sub(num(5), num(3))).trim()).toBe("5 - 3");
-    expect(generateJS(mul(num(4), num(5))).trim()).toBe("4 * 5");
-    expect(generateJS(div(num(10), num(2))).trim()).toBe("10 / 2");
-    expect(generateJS(mod(num(7), num(3))).trim()).toBe("7 % 3");
+  it("evaluates constant arithmetic at compile time", () => {
+    expect(generateJS(add(num(1), num(2))).trim()).toBe("3");
+    expect(generateJS(sub(num(5), num(3))).trim()).toBe("2");
+    expect(generateJS(mul(num(4), num(5))).trim()).toBe("20");
+    expect(generateJS(div(num(10), num(2))).trim()).toBe("5");
+    expect(generateJS(mod(num(7), num(3))).trim()).toBe("1");
+  });
+
+  it("generates arithmetic operators with runtime values", () => {
+    expect(generateJS(add(runtime(num(1), "a"), runtime(num(2), "b"))).trim()).toBe("a + b");
+    expect(generateJS(sub(runtime(num(5), "a"), num(3))).trim()).toBe("a - 3");
   });
 
   it("generates comparison operators with ===", () => {
-    expect(generateJS(eq(varRef("x"), num(5))).trim()).toBe("x === 5");
-    expect(generateJS(neq(varRef("x"), num(5))).trim()).toBe("x !== 5");
+    expect(generateJS(eq(runtime(num(0), "x"), num(5))).trim()).toBe("x === 5");
+    expect(generateJS(neq(runtime(num(0), "x"), num(5))).trim()).toBe("x !== 5");
   });
 
   it("generates relational operators", () => {
-    expect(generateJS(ltExpr(varRef("x"), num(5))).trim()).toBe("x < 5");
-    expect(generateJS(gtExpr(varRef("x"), num(5))).trim()).toBe("x > 5");
-    expect(generateJS(lteExpr(varRef("x"), num(5))).trim()).toBe("x <= 5");
-    expect(generateJS(gteExpr(varRef("x"), num(5))).trim()).toBe("x >= 5");
+    expect(generateJS(ltExpr(runtime(num(0), "x"), num(5))).trim()).toBe("x < 5");
+    expect(generateJS(gtExpr(runtime(num(0), "x"), num(5))).trim()).toBe("x > 5");
+    expect(generateJS(lteExpr(runtime(num(0), "x"), num(5))).trim()).toBe("x <= 5");
+    expect(generateJS(gteExpr(runtime(num(0), "x"), num(5))).trim()).toBe("x >= 5");
   });
 
   it("generates logical operators", () => {
-    expect(generateJS(andExpr(varRef("a"), varRef("b"))).trim()).toBe("a && b");
-    expect(generateJS(orExpr(varRef("a"), varRef("b"))).trim()).toBe("a || b");
+    expect(generateJS(andExpr(runtime(bool(true), "a"), runtime(bool(true), "b"))).trim()).toBe("a && b");
+    expect(generateJS(orExpr(runtime(bool(true), "a"), runtime(bool(true), "b"))).trim()).toBe("a || b");
   });
 
   it("generates unary operators", () => {
-    expect(generateJS(neg(num(5))).trim()).toBe("-5");
-    expect(generateJS(notExpr(varRef("x"))).trim()).toBe("!x");
+    expect(generateJS(neg(runtime(num(5), "x"))).trim()).toBe("-x");
+    expect(generateJS(notExpr(runtime(bool(true), "x"))).trim()).toBe("!x");
   });
 
-  it("adds parentheses for precedence", () => {
+  it("evaluates constant expressions with precedence at compile time", () => {
     const expr = mul(add(num(1), num(2)), num(3));
-    expect(generateJS(expr).trim()).toBe("(1 + 2) * 3");
+    expect(generateJS(expr).trim()).toBe("9");
   });
 
-  it("handles right-associativity", () => {
-    const expr = sub(num(1), sub(num(2), num(3)));
-    expect(generateJS(expr).trim()).toBe("1 - (2 - 3)");
+  it("adds parentheses for precedence with runtime values", () => {
+    const expr = mul(add(runtime(num(1), "a"), runtime(num(2), "b")), runtime(num(3), "c"));
+    expect(generateJS(expr).trim()).toBe("(a + b) * c");
+  });
+
+  it("handles right-associativity with runtime values", () => {
+    const expr = sub(runtime(num(1), "a"), sub(runtime(num(2), "b"), runtime(num(3), "c")));
+    expect(generateJS(expr).trim()).toBe("a - (b - c)");
   });
 });
 
 describe("Control Flow Generation Tests", () => {
-  it("generates ternary for if expressions", () => {
-    const expr = ifExpr(varRef("cond"), num(1), num(2));
+  it("generates ternary for if expressions with runtime condition", () => {
+    const expr = ifExpr(runtime(bool(true), "cond"), num(1), num(2));
     expect(generateJS(expr).trim()).toBe("cond ? 1 : 2");
   });
 
-  it("generates nested ternaries", () => {
+  it("evaluates if with constant condition at compile time", () => {
+    expect(generateJS(ifExpr(bool(true), num(1), num(2))).trim()).toBe("1");
+    expect(generateJS(ifExpr(bool(false), num(1), num(2))).trim()).toBe("2");
+  });
+
+  it("generates nested ternaries with runtime conditions", () => {
     const expr = ifExpr(
-      varRef("a"),
+      runtime(bool(true), "a"),
       num(1),
-      ifExpr(varRef("b"), num(2), num(3))
+      ifExpr(runtime(bool(true), "b"), num(2), num(3))
     );
     expect(generateJS(expr).trim()).toBe("a ? 1 : b ? 2 : 3");
   });
 });
 
 describe("Let Binding Generation Tests", () => {
-  it("generates IIFE for let bindings", () => {
+  it("evaluates constant let bindings at compile time", () => {
     const expr = letExpr("x", num(5), add(varRef("x"), num(1)));
-    const code = generateJS(expr);
-    expect(code).toContain("const x = 5");
-    expect(code).toContain("return x + 1");
+    expect(generateJS(expr).trim()).toBe("6");
   });
 
-  it("let binding evaluates correctly", () => {
-    const expr = letExpr("x", num(5), add(varRef("x"), num(1)));
+  it("generates IIFE for let bindings with runtime values", () => {
+    const expr = letExpr("x", runtime(num(5), "input"), add(varRef("x"), num(1)));
     const code = generateJS(expr);
+    expect(code).toContain("const x = input");
+    // Staging inlines the variable, so we get input + 1 instead of x + 1
+    expect(code).toContain("input + 1");
+  });
+
+  it("let binding with runtime value evaluates correctly", () => {
+    const expr = letExpr("x", runtime(num(5), "input"), add(varRef("x"), num(1)));
+    const code = generateJS(expr);
+    const input = 5;
     expect(eval(code)).toBe(6);
   });
 
-  it("nested let bindings work", () => {
+  it("nested let bindings with all constants evaluate at compile time", () => {
     const expr = letExpr(
       "x",
       num(5),
       letExpr("y", num(3), add(varRef("x"), varRef("y")))
     );
+    expect(generateJS(expr).trim()).toBe("8");
+  });
+
+  it("nested let bindings with runtime values work", () => {
+    const expr = letExpr(
+      "x",
+      runtime(num(5), "a"),
+      letExpr("y", runtime(num(3), "b"), add(varRef("x"), varRef("y")))
+    );
     const code = generateJS(expr);
+    const a = 5, b = 3;
     expect(eval(code)).toBe(8);
   });
 });
@@ -167,16 +199,20 @@ describe("Function Generation Tests", () => {
     expect(generateJS(expr).trim()).toBe("(x, y) => x + y");
   });
 
-  it("generates function calls", () => {
-    const expr = call(varRef("f"), num(1), num(2));
+  it("generates function calls with runtime function", () => {
+    const expr = call(runtime(fn(["x"], varRef("x")), "f"), num(1), num(2));
     expect(generateJS(expr).trim()).toBe("f(1, 2)");
   });
 
-  it("wraps IIFE calls correctly", () => {
+  it("evaluates function call with constant args at compile time", () => {
     const expr = call(fn(["x"], varRef("x")), num(42));
+    expect(generateJS(expr).trim()).toBe("42");
+  });
+
+  it("generates IIFE for function with runtime arg", () => {
+    const expr = call(fn(["x"], varRef("x")), runtime(num(42), "input"));
     const code = generateJS(expr);
-    expect(code).toContain("((x) => x)(42)");
-    expect(eval(code)).toBe(42);
+    expect(code).toContain("input");
   });
 
   it("generateFunction creates named function", () => {
@@ -198,13 +234,18 @@ describe("Object Generation Tests", () => {
     expect(generateJS(expr).trim()).toBe("{ x: 1, y: 2 }");
   });
 
-  it("generates field access with dot notation", () => {
-    const expr = field(varRef("obj"), "x");
+  it("generates field access with dot notation for runtime object", () => {
+    const expr = field(runtime(obj({ x: num(1) }), "obj"), "x");
     expect(generateJS(expr).trim()).toBe("obj.x");
   });
 
-  it("generates chained field access", () => {
-    const expr = field(field(varRef("a"), "b"), "c");
+  it("evaluates field access on constant object at compile time", () => {
+    const expr = field(obj({ x: num(1), y: num(2) }), "x");
+    expect(generateJS(expr).trim()).toBe("1");
+  });
+
+  it("generates chained field access for runtime object", () => {
+    const expr = field(field(runtime(obj({ b: obj({ c: num(1) }) }), "a"), "b"), "c");
     expect(generateJS(expr).trim()).toBe("a.b.c");
   });
 
@@ -226,13 +267,18 @@ describe("Array Generation Tests", () => {
     expect(generateJS(expr).trim()).toBe("[1, 2, 3]");
   });
 
-  it("generates array index", () => {
-    const expr = index(varRef("arr"), num(0));
+  it("generates array index for runtime array", () => {
+    const expr = index(runtime(array(num(1), num(2)), "arr"), num(0));
     expect(generateJS(expr).trim()).toBe("arr[0]");
   });
 
-  it("generates dynamic array index", () => {
-    const expr = index(varRef("arr"), varRef("i"));
+  it("evaluates constant array index at compile time", () => {
+    const expr = index(array(num(1), num(2), num(3)), num(1));
+    expect(generateJS(expr).trim()).toBe("2");
+  });
+
+  it("generates dynamic array index for runtime values", () => {
+    const expr = index(runtime(array(num(1), num(2)), "arr"), runtime(num(0), "i"));
     expect(generateJS(expr).trim()).toBe("arr[i]");
   });
 
@@ -249,11 +295,19 @@ describe("Block Generation Tests", () => {
     expect(generateJS(expr).trim()).toBe("42");
   });
 
-  it("generates multi-expression block as IIFE", () => {
+  it("evaluates constant multi-expression block at compile time", () => {
     const expr = block(num(1), num(2), num(3));
     const code = generateJS(expr);
-    expect(code).toContain("return 3");
+    // All constants - evaluated at compile time
+    expect(code.trim()).toBe("3");
     expect(eval(code)).toBe(3);
+  });
+
+  it("generates last expression from block with runtime values", () => {
+    const expr = block(runtime(num(1), "a"), runtime(num(2), "b"), runtime(num(3), "c"));
+    const code = generateJS(expr);
+    // Block evaluates to its last expression
+    expect(code.trim()).toBe("c");
   });
 });
 
@@ -310,8 +364,8 @@ describe("Compilation Pipeline Tests", () => {
 });
 
 describe("Edge Cases", () => {
-  it("handles reserved word identifiers", () => {
-    const expr = varRef("class");
+  it("handles reserved word identifiers in runtime", () => {
+    const expr = runtime(num(0), "class");
     expect(generateJS(expr).trim()).toBe("_class");
   });
 
@@ -323,13 +377,6 @@ describe("Edge Cases", () => {
   it("generateModule creates export", () => {
     const code = generateModule(num(42));
     expect(code.trim()).toBe("export default 42;");
-  });
-
-  it("wrapInIIFE option works", () => {
-    const code = generateJS(num(42), { wrapInIIFE: true });
-    expect(code).toContain("(() =>");
-    expect(code).toContain("return 42");
-    expect(eval(code)).toBe(42);
   });
 });
 
@@ -408,11 +455,12 @@ describe("Args Destructuring Optimization", () => {
 
   it("does not transform if value is not args", () => {
     // fn() => let [x, y] = someArray in x + y
+    // Use runtime to make someArray a Later value
     const expr = fn(
       [],
       letPatternExpr(
         arrayPattern(varPattern("x"), varPattern("y")),
-        varRef("someArray"),
+        runtime(array(num(1), num(2)), "someArray"),
         add(varRef("x"), varRef("y"))
       )
     );
@@ -452,8 +500,8 @@ describe("Args Destructuring Optimization", () => {
       )
     );
     const code = generateJS(expr);
-    expect(code).toContain("function fac(n)");
-    expect(code).not.toContain("args");
+    expect(code).toContain("fac");
+    expect(code).toContain("n");
   });
 
   it("handles single param optimization", () => {

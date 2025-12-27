@@ -3,9 +3,20 @@
  *
  * Converts expressions (typically residual expressions from staged evaluation)
  * into JavaScript code strings that can be executed.
+ *
+ * Uses the new backend architecture:
+ * 1. Stage the expression to get SValue
+ * 2. Pass to backend to generate JS AST
+ * 3. Print JS AST to string
  */
 
-import { Expr, patternToString, patternVars } from "./expr";
+import { Expr, patternVars } from "./expr";
+import { stage, stagingEvaluate, svalueToResidual, SEnv, closureToResidual } from "./staged-evaluate";
+import { isNow, SValue } from "./svalue";
+import { Backend, BackendContext } from "./backend";
+import { JSBackend } from "./js-backend";
+import { JSExpr } from "./js-ast";
+import { printExpr } from "./js-printer";
 
 // ============================================================================
 // Code Generation Options
@@ -30,29 +41,28 @@ const defaultOptions: Required<CodeGenOptions> = {
 };
 
 // ============================================================================
-// Main Code Generation Function
+// Compilation Pipeline
 // ============================================================================
 
 /**
- * Generate JavaScript code from an expression.
+ * Full compilation pipeline: stage + codegen.
+ * Takes an expression, partially evaluates it, and generates JavaScript.
  */
-export function generateJS(expr: Expr, options: CodeGenOptions = {}): string {
-  const opts = { ...defaultOptions, ...options };
-  const code = genExpr(expr, opts, 0);
-
-  if (opts.wrapInIIFE) {
-    return `(() => {\n${opts.indent}return ${code};\n})()`;
-  }
-
-  return code;
+export function compile(expr: Expr, options: CodeGenOptions = {}): string {
+  const result = stage(expr);
+  return compileFromSValue(result.svalue, options);
 }
+
+/**
+ * Alias for compile() - stages the expression and generates JavaScript.
+ */
+export const generateJS = compile;
 
 /**
  * Generate a complete JavaScript module with the expression as the default export.
  */
 export function generateModule(expr: Expr, options: CodeGenOptions = {}): string {
-  const opts = { ...defaultOptions, ...options };
-  const code = genExpr(expr, opts, 0);
+  const code = compile(expr, options);
   return `export default ${code};\n`;
 }
 
@@ -65,779 +75,59 @@ export function generateFunction(
   expr: Expr,
   options: CodeGenOptions = {}
 ): string {
-  const opts = { ...defaultOptions, ...options };
-
   if (expr.tag !== "fn") {
     throw new Error("generateFunction requires a function expression");
   }
 
-  // Check for args destructuring optimization
-  let params = expr.params;
-  let body = expr.body;
-  if (params.length === 0) {
-    const argsDestructuring = extractArgsDestructuring(body);
-    if (argsDestructuring) {
-      params = argsDestructuring.params;
-      body = argsDestructuring.innerBody;
+  const code = compile(expr, options);
+
+  // The backend generates arrow functions, convert to named function declaration
+  const arrowMatch = code.match(/^\(([^)]*)\)\s*=>\s*(.*)$/s);
+  if (arrowMatch) {
+    const [, params, body] = arrowMatch;
+    if (body.startsWith("{")) {
+      return `function ${name}(${params}) ${body}`;
     }
+    return `function ${name}(${params}) { return ${body}; }`;
   }
 
-  const paramsStr = params.join(", ");
-  const bodyCode = genExpr(body, opts, 1);
-
-  return `function ${name}(${paramsStr}) {\n${opts.indent}return ${bodyCode};\n}`;
+  // Fallback - wrap in assignment
+  return `const ${name} = ${code};`;
 }
 
-// ============================================================================
-// Expression Code Generation
-// ============================================================================
-
-function genExpr(expr: Expr, opts: Required<CodeGenOptions>, depth: number): string {
-  switch (expr.tag) {
-    case "lit":
-      return genLiteral(expr.value);
-
-    case "var":
-      return genIdentifier(expr.name);
-
-    case "binop":
-      return genBinaryOp(expr.op, expr.left, expr.right, opts, depth);
-
-    case "unary":
-      return genUnaryOp(expr.op, expr.operand, opts, depth);
-
-    case "if":
-      return genIf(expr.cond, expr.then, expr.else, opts, depth);
-
-    case "let":
-      return genLet(expr.name, expr.value, expr.body, opts, depth);
-
-    case "letPattern":
-      return genLetPattern(expr.pattern, expr.value, expr.body, opts, depth);
-
-    case "fn":
-      return genFunction(expr.params, expr.body, opts, depth);
-
-    case "recfn":
-      return genRecFunction(expr.name, expr.params, expr.body, opts, depth);
-
-    case "call":
-      return genCall(expr.func, expr.args, opts, depth);
-
-    case "obj":
-      return genObject(expr.fields, opts, depth);
-
-    case "field":
-      return genFieldAccess(expr.object, expr.name, opts, depth);
-
-    case "array":
-      return genArray(expr.elements, opts, depth);
-
-    case "index":
-      return genIndex(expr.array, expr.index, opts, depth);
-
-    case "block":
-      return genBlock(expr.exprs, opts, depth);
-
-    case "comptime":
-      // comptime should have been resolved during staging
-      // If we reach here, just generate the inner expression
-      return genExpr(expr.expr, opts, depth);
-
-    case "runtime":
-      // runtime annotation - generate the variable reference or inner expression
-      if (expr.name) {
-        return genIdentifier(expr.name);
-      }
-      return genExpr(expr.expr, opts, depth);
-
-    case "assert":
-      return genAssert(expr.expr, expr.constraint, expr.message, opts, depth);
-
-    case "assertCond":
-      return genAssertCond(expr.condition, expr.message, opts, depth);
-
-    case "trust":
-      // trust is purely a type-level operation - just generate the inner expression
-      return genExpr(expr.expr, opts, depth);
-
-    case "methodCall":
-      return genMethodCall(expr.receiver, expr.method, expr.args, opts, depth);
-
-    case "import":
-      return genImport(expr.names, expr.modulePath, expr.body, opts, depth);
-
-    case "typeOf":
-      // typeOf should have been evaluated at compile time
-      // If it appears in residual code, that's an error
-      throw new Error("typeOf cannot appear in residual code - it must be evaluated at compile time");
-  }
+/**
+ * Compile from an already-staged value.
+ */
+export function compileFromSValue(sv: SValue, options: CodeGenOptions = {}): string {
+  const backend = new JSBackend();
+  const jsAst = generateWithBackend(sv, backend);
+  return printExpr(jsAst, options.indent ? { indent: options.indent } : {});
 }
 
-// ============================================================================
-// Literal Generation
-// ============================================================================
-
-function genLiteral(value: number | string | boolean | null): string {
-  if (value === null) {
-    return "null";
-  }
-  if (typeof value === "string") {
-    return JSON.stringify(value);
-  }
-  if (typeof value === "number") {
-    // Handle special number cases
-    if (Object.is(value, -0)) return "-0";
-    if (!Number.isFinite(value)) {
-      if (value === Infinity) return "Infinity";
-      if (value === -Infinity) return "-Infinity";
-      return "NaN";
+/**
+ * Generate JS AST using a backend.
+ * This is the core of the new architecture - the backend has access
+ * to staging machinery for on-demand evaluation.
+ */
+export function generateWithBackend(sv: SValue, backend: Backend): JSExpr {
+  const emptyEnv = SEnv.empty();
+  const ctx: BackendContext = {
+    stage: (expr, env) => stagingEvaluate(expr, env ?? emptyEnv),
+    env: emptyEnv,
+    svalueToResidual,
+    generate: (innerSv) => backend.generate(innerSv, ctx),
+    generateExpr: (expr) => {
+      const result = stagingEvaluate(expr, emptyEnv);
+      return backend.generate(result.svalue, ctx);
     }
-    return String(value);
-  }
-  if (typeof value === "boolean") {
-    return value ? "true" : "false";
-  }
-  throw new Error(`Unknown literal type: ${typeof value}`);
+  };
+
+  return backend.generate(sv, ctx);
 }
 
 // ============================================================================
-// Identifier Generation
+// Module Generation with Imports
 // ============================================================================
-
-// JavaScript reserved words that need escaping
-const RESERVED_WORDS = new Set([
-  "break", "case", "catch", "continue", "debugger", "default", "delete",
-  "do", "else", "finally", "for", "function", "if", "in", "instanceof",
-  "new", "return", "switch", "this", "throw", "try", "typeof", "var",
-  "void", "while", "with", "class", "const", "enum", "export", "extends",
-  "import", "super", "implements", "interface", "let", "package", "private",
-  "protected", "public", "static", "yield", "await", "null", "true", "false"
-]);
-
-function genIdentifier(name: string): string {
-  // If it's a reserved word, prefix with underscore
-  if (RESERVED_WORDS.has(name)) {
-    return `_${name}`;
-  }
-  // Check if it's a valid identifier
-  if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(name)) {
-    return name;
-  }
-  // Otherwise, escape it (shouldn't happen with normal usage)
-  return `_${name.replace(/[^a-zA-Z0-9_$]/g, "_")}`;
-}
-
-// ============================================================================
-// Operator Generation
-// ============================================================================
-
-// Operator precedence for deciding when to add parentheses
-const PRECEDENCE: Record<string, number> = {
-  "||": 1,
-  "&&": 2,
-  "==": 3, "!=": 3,
-  "<": 4, ">": 4, "<=": 4, ">=": 4,
-  "+": 5, "-": 5,
-  "*": 6, "/": 6, "%": 6,
-  "!": 7, "-unary": 7,
-};
-
-function genBinaryOp(
-  op: string,
-  left: Expr,
-  right: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const leftCode = genExpr(left, opts, depth);
-  const rightCode = genExpr(right, opts, depth);
-
-  // Use === and !== instead of == and != for JavaScript
-  const jsOp = op === "==" ? "===" : op === "!=" ? "!==" : op;
-
-  // Add parentheses based on precedence if needed
-  const leftWrapped = needsParens(left, op, "left") ? `(${leftCode})` : leftCode;
-  const rightWrapped = needsParens(right, op, "right") ? `(${rightCode})` : rightCode;
-
-  return `${leftWrapped} ${jsOp} ${rightWrapped}`;
-}
-
-function needsParens(expr: Expr, parentOp: string, side: "left" | "right"): boolean {
-  if (expr.tag !== "binop") return false;
-
-  const childPrec = PRECEDENCE[expr.op] ?? 0;
-  const parentPrec = PRECEDENCE[parentOp] ?? 0;
-
-  if (childPrec < parentPrec) return true;
-  if (childPrec === parentPrec && side === "right") return true;
-
-  return false;
-}
-
-function genUnaryOp(
-  op: string,
-  operand: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const operandCode = genExpr(operand, opts, depth);
-
-  // Add parentheses for complex operands
-  const needsWrap = operand.tag === "binop" || operand.tag === "unary";
-  const wrapped = needsWrap ? `(${operandCode})` : operandCode;
-
-  return `${op}${wrapped}`;
-}
-
-// ============================================================================
-// Control Flow Generation
-// ============================================================================
-
-function genIf(
-  cond: Expr,
-  thenExpr: Expr,
-  elseExpr: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const condCode = genExpr(cond, opts, depth);
-  const thenCode = genExpr(thenExpr, opts, depth);
-  const elseCode = genExpr(elseExpr, opts, depth);
-
-  if (opts.preferExpressions) {
-    // Use ternary operator
-    // Wrap complex conditions in parentheses
-    const condWrapped = cond.tag === "binop" && PRECEDENCE[cond.op] <= 1
-      ? `(${condCode})`
-      : condCode;
-    return `${condWrapped} ? ${thenCode} : ${elseCode}`;
-  }
-
-  // Use if statement wrapped in IIFE
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-  return `(() => {
-${innerIndent}if (${condCode}) {
-${innerIndent}${opts.indent}return ${thenCode};
-${innerIndent}} else {
-${innerIndent}${opts.indent}return ${elseCode};
-${innerIndent}}
-${indent}})()`;
-}
-
-// ============================================================================
-// Let Binding Generation
-// ============================================================================
-
-function genLet(
-  name: string,
-  value: Expr,
-  body: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const valueCode = genExpr(value, opts, depth + 1);
-  const bodyCode = genExpr(body, opts, depth + 1);
-
-  // Use IIFE to create proper scoping
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-
-  if (name === "_") {
-    // Discard binding - just evaluate for side effect
-    return `(() => {
-${innerIndent}${valueCode};
-${innerIndent}return ${bodyCode};
-${indent}})()`;
-  }
-
-  const safeName = genIdentifier(name);
-  return `(() => {
-${innerIndent}const ${safeName} = ${valueCode};
-${innerIndent}return ${bodyCode};
-${indent}})()`;
-}
-
-import type { Pattern } from "./expr";
-
-/**
- * Generate JavaScript for pattern destructuring.
- */
-function genPattern(pattern: Pattern): string {
-  switch (pattern.tag) {
-    case "varPattern":
-      return genIdentifier(pattern.name);
-    case "arrayPattern":
-      return `[${pattern.elements.map(genPattern).join(", ")}]`;
-    case "objectPattern":
-      return `{ ${pattern.fields.map(f => {
-        const patStr = genPattern(f.pattern);
-        // If the pattern is just a variable with the same name as the key, use shorthand
-        if (f.pattern.tag === "varPattern" && f.pattern.name === f.key) {
-          return genIdentifier(f.key);
-        }
-        return `${genIdentifier(f.key)}: ${patStr}`;
-      }).join(", ")} }`;
-  }
-}
-
-function genLetPattern(
-  pattern: Pattern,
-  value: Expr,
-  body: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const patternCode = genPattern(pattern);
-  const valueCode = genExpr(value, opts, depth + 1);
-  const bodyCode = genExpr(body, opts, depth + 1);
-
-  // Use IIFE to create proper scoping
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-
-  return `(() => {
-${innerIndent}const ${patternCode} = ${valueCode};
-${innerIndent}return ${bodyCode};
-${indent}})()`;
-}
-
-// ============================================================================
-// Function Generation
-// ============================================================================
-
-/**
- * Check if an expression is a let chain (let x = ... in let y = ... in ...)
- * These should be generated as statements in function bodies, not IIFEs.
- */
-function isLetChain(expr: Expr): boolean {
-  return expr.tag === "let" || expr.tag === "letPattern";
-}
-
-/**
- * Generate a function body as statements (for let chains).
- * Converts: let x = a in let y = b in result
- * To: const x = a; const y = b; return result;
- */
-function genFunctionBodyStatements(
-  body: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const indent = opts.indent.repeat(depth);
-  const statements: string[] = [];
-
-  let current = body;
-  while (isLetChain(current)) {
-    if (current.tag === "let") {
-      const valueCode = genExpr(current.value, opts, depth);
-      if (current.name === "_") {
-        // Discard binding - just emit the expression as a statement
-        statements.push(`${indent}${valueCode};`);
-      } else {
-        const safeName = genIdentifier(current.name);
-        statements.push(`${indent}const ${safeName} = ${valueCode};`);
-      }
-      current = current.body;
-    } else if (current.tag === "letPattern") {
-      const patternCode = genPattern(current.pattern);
-      const valueCode = genExpr(current.value, opts, depth);
-      statements.push(`${indent}const ${patternCode} = ${valueCode};`);
-      current = current.body;
-    }
-  }
-
-  // The final expression is the return value
-  const returnCode = genExpr(current, opts, depth);
-  statements.push(`${indent}return ${returnCode};`);
-
-  return statements.join("\n");
-}
-
-/**
- * Check if a pattern is a simple array destructuring of consecutive elements.
- * Returns the list of variable names if it's a simple pattern, null otherwise.
- */
-function extractSimpleArrayPattern(pattern: Pattern): string[] | null {
-  if (pattern.tag === "arrayPattern") {
-    const names: string[] = [];
-    for (const elem of pattern.elements) {
-      if (elem.tag === "varPattern") {
-        names.push(elem.name);
-      } else {
-        // Nested patterns not supported for this optimization
-        return null;
-      }
-    }
-    return names;
-  }
-  return null;
-}
-
-/**
- * Check if a function body starts with `let [a, b, ...] = args in rest`
- * and extract the parameter names and the inner body.
- * This allows us to generate proper JavaScript function parameters.
- */
-function extractArgsDestructuring(body: Expr): { params: string[]; innerBody: Expr } | null {
-  if (body.tag === "letPattern") {
-    // Check if the value is the 'args' variable
-    if (body.value.tag === "var" && body.value.name === "args") {
-      const params = extractSimpleArrayPattern(body.pattern);
-      if (params) {
-        return { params, innerBody: body.body };
-      }
-    }
-  }
-  return null;
-}
-
-function genFunction(
-  params: string[],
-  body: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  // Check for args destructuring optimization: fn => let [x, y] = args in body
-  // transforms to (x, y) => body
-  if (params.length === 0) {
-    const argsDestructuring = extractArgsDestructuring(body);
-    if (argsDestructuring) {
-      return genFunction(argsDestructuring.params, argsDestructuring.innerBody, opts, depth);
-    }
-  }
-
-  const safeParams = params.map(genIdentifier).join(", ");
-
-  // If body is a let chain, generate as block with statements
-  if (isLetChain(body)) {
-    const bodyStatements = genFunctionBodyStatements(body, opts, depth + 1);
-    const indent = opts.indent.repeat(depth);
-    return `(${safeParams}) => {\n${bodyStatements}\n${indent}}`;
-  }
-
-  // Simple expression body
-  const bodyCode = genExpr(body, opts, depth);
-  return `(${safeParams}) => ${bodyCode}`;
-}
-
-/**
- * Generate a named recursive function.
- * Uses function declaration syntax for proper recursion.
- */
-function genRecFunction(
-  name: string,
-  params: string[],
-  body: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  // Check for args destructuring optimization
-  if (params.length === 0) {
-    const argsDestructuring = extractArgsDestructuring(body);
-    if (argsDestructuring) {
-      return genRecFunction(name, argsDestructuring.params, argsDestructuring.innerBody, opts, depth);
-    }
-  }
-
-  const safeName = genIdentifier(name);
-  const safeParams = params.map(genIdentifier).join(", ");
-
-  // If body is a let chain, generate as block with statements
-  if (isLetChain(body)) {
-    const bodyStatements = genFunctionBodyStatements(body, opts, depth + 1);
-    const indent = opts.indent.repeat(depth);
-    return `function ${safeName}(${safeParams}) {\n${bodyStatements}\n${indent}}`;
-  }
-
-  // Simple expression body
-  const bodyCode = genExpr(body, opts, depth);
-  return `function ${safeName}(${safeParams}) { return ${bodyCode}; }`;
-}
-
-function genCall(
-  func: Expr,
-  args: Expr[],
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  // Special case: print() becomes console.log()
-  if (func.tag === "var" && func.name === "print") {
-    const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
-    return `console.log(${argsCode})`;
-  }
-
-  // Special case: map(fn, arr) becomes arr.map(fn)
-  if (func.tag === "var" && func.name === "map" && args.length === 2) {
-    const fnCode = genExpr(args[0], opts, depth);
-    const arrCode = genExpr(args[1], opts, depth);
-    return `${arrCode}.map(${fnCode})`;
-  }
-
-  // Special case: filter(fn, arr) becomes arr.filter(fn)
-  if (func.tag === "var" && func.name === "filter" && args.length === 2) {
-    const fnCode = genExpr(args[0], opts, depth);
-    const arrCode = genExpr(args[1], opts, depth);
-    return `${arrCode}.filter(${fnCode})`;
-  }
-
-  const funcCode = genExpr(func, opts, depth);
-  const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
-
-  // Wrap function expression in parentheses if needed
-  const funcWrapped = func.tag === "fn" ? `(${funcCode})` : funcCode;
-
-  return `${funcWrapped}(${argsCode})`;
-}
-
-/**
- * Generate method call: receiver.method(args)
- */
-function genMethodCall(
-  receiver: Expr,
-  method: string,
-  args: Expr[],
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const recvCode = genExpr(receiver, opts, depth);
-  const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
-
-  // Wrap complex receiver expressions in parentheses
-  const needsWrap = receiver.tag === "binop" || receiver.tag === "unary" ||
-                    receiver.tag === "if" || receiver.tag === "let";
-  const recvWrapped = needsWrap ? `(${recvCode})` : recvCode;
-
-  return `${recvWrapped}.${method}(${argsCode})`;
-}
-
-// ============================================================================
-// Object Generation
-// ============================================================================
-
-function genObject(
-  fields: { name: string; value: Expr }[],
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  if (fields.length === 0) {
-    return "{}";
-  }
-
-  const fieldStrs = fields.map(({ name, value }) => {
-    const valueCode = genExpr(value, opts, depth);
-    // Use shorthand if the value is a variable with the same name
-    if (value.tag === "var" && value.name === name) {
-      return genIdentifier(name);
-    }
-    // Quote field name if necessary
-    const safeName = isValidPropertyName(name) ? name : JSON.stringify(name);
-    return `${safeName}: ${valueCode}`;
-  });
-
-  // Single line for short objects, multi-line for longer ones
-  const singleLine = `{ ${fieldStrs.join(", ")} }`;
-  if (singleLine.length <= 60) {
-    return singleLine;
-  }
-
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-  return `{\n${innerIndent}${fieldStrs.join(`,\n${innerIndent}`)}\n${indent}}`;
-}
-
-function isValidPropertyName(name: string): boolean {
-  return /^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(name) && !RESERVED_WORDS.has(name);
-}
-
-function genFieldAccess(
-  object: Expr,
-  fieldName: string,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const objCode = genExpr(object, opts, depth);
-
-  // Wrap complex expressions
-  const needsWrap = object.tag === "binop" || object.tag === "unary" ||
-                    object.tag === "if" || object.tag === "let";
-  const objWrapped = needsWrap ? `(${objCode})` : objCode;
-
-  // Use dot notation if valid, otherwise bracket notation
-  if (isValidPropertyName(fieldName)) {
-    return `${objWrapped}.${fieldName}`;
-  }
-  return `${objWrapped}[${JSON.stringify(fieldName)}]`;
-}
-
-// ============================================================================
-// Array Generation
-// ============================================================================
-
-function genArray(
-  elements: Expr[],
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  if (elements.length === 0) {
-    return "[]";
-  }
-
-  const elementStrs = elements.map(e => genExpr(e, opts, depth));
-
-  // Single line for short arrays
-  const singleLine = `[${elementStrs.join(", ")}]`;
-  if (singleLine.length <= 60) {
-    return singleLine;
-  }
-
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-  return `[\n${innerIndent}${elementStrs.join(`,\n${innerIndent}`)}\n${indent}]`;
-}
-
-function genIndex(
-  array: Expr,
-  indexExpr: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const arrCode = genExpr(array, opts, depth);
-  const indexCode = genExpr(indexExpr, opts, depth);
-
-  // Wrap complex expressions
-  const needsWrap = array.tag === "binop" || array.tag === "unary" ||
-                    array.tag === "if" || array.tag === "let";
-  const arrWrapped = needsWrap ? `(${arrCode})` : arrCode;
-
-  return `${arrWrapped}[${indexCode}]`;
-}
-
-// ============================================================================
-// Block Generation
-// ============================================================================
-
-function genBlock(
-  exprs: Expr[],
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  if (exprs.length === 0) {
-    return "null";
-  }
-
-  if (exprs.length === 1) {
-    return genExpr(exprs[0], opts, depth);
-  }
-
-  // Multiple expressions - use IIFE with statements
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-
-  const statements = exprs.slice(0, -1).map(e =>
-    `${innerIndent}${genExpr(e, opts, depth + 1)};`
-  );
-  const lastExpr = exprs[exprs.length - 1];
-  const returnStmt = `${innerIndent}return ${genExpr(lastExpr, opts, depth + 1)};`;
-
-  return `(() => {\n${statements.join("\n")}\n${returnStmt}\n${indent}})()`;
-}
-
-// ============================================================================
-// Assert Generation
-// ============================================================================
-
-/**
- * Generate runtime assertion code.
- * Creates an IIFE that checks the constraint and throws if it fails.
- */
-function genAssert(
-  valueExpr: Expr,
-  constraintExpr: Expr,
-  message: string | undefined,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-  const valueCode = genExpr(valueExpr, opts, depth + 1);
-
-  // For now, generate a simple runtime type check
-  // In a full implementation, this would generate a proper constraint check
-  const errorMessage = message
-    ? JSON.stringify(message)
-    : `"Assertion failed"`;
-
-  // Generate an IIFE that validates and returns the value
-  return `(() => {
-${innerIndent}const __value = ${valueCode};
-${innerIndent}if (__value === null || __value === undefined) {
-${innerIndent}${opts.indent}throw new Error(${errorMessage});
-${innerIndent}}
-${innerIndent}return __value;
-${indent}})()`;
-}
-
-/**
- * Generate code for condition-based assert.
- */
-function genAssertCond(
-  conditionExpr: Expr,
-  message: string | undefined,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-  const condCode = genExpr(conditionExpr, opts, depth + 1);
-
-  const errorMessage = message
-    ? JSON.stringify(message)
-    : `"Assertion failed: condition is false"`;
-
-  // Generate an IIFE that checks condition and returns true
-  return `(() => {
-${innerIndent}if (!(${condCode})) {
-${innerIndent}${opts.indent}throw new Error(${errorMessage});
-${innerIndent}}
-${innerIndent}return true;
-${indent}})()`;
-}
-
-// ============================================================================
-// Import Generation
-// ============================================================================
-
-/**
- * Generate JavaScript import statement followed by the body.
- *
- * Generates:
- * import { name1, name2 } from "module";
- * body
- */
-function genImport(
-  names: string[],
-  modulePath: string,
-  body: Expr,
-  opts: Required<CodeGenOptions>,
-  depth: number
-): string {
-  const indent = opts.indent.repeat(depth);
-  const innerIndent = opts.indent.repeat(depth + 1);
-  const bodyCode = genExpr(body, opts, depth + 1);
-
-  // Generate import names
-  const importNames = names.map(genIdentifier).join(", ");
-
-  // Use IIFE to properly scope the import
-  // The import statement must be at module level in real ES modules,
-  // but for generated code we'll use dynamic import or assume bundler handles it
-  return `(() => {
-${innerIndent}// import { ${importNames} } from ${JSON.stringify(modulePath)};
-${innerIndent}return ${bodyCode};
-${indent}})()`;
-}
 
 /**
  * Generate JavaScript with top-level imports.
@@ -847,13 +137,12 @@ export function generateModuleWithImports(expr: Expr, options: CodeGenOptions = 
   const opts = { ...defaultOptions, ...options };
 
   // Collect all imports from the ORIGINAL expression (before staging)
-  // This is needed because staging may inline/transform imports
   const imports = collectImports(expr);
 
   // Generate import statements
   const importStatements = Array.from(imports.entries())
     .map(([modulePath, names]) => {
-      const importNames = Array.from(names).map(genIdentifier).join(", ");
+      const importNames = Array.from(names).map(escapeIdentifier).join(", ");
       return `import { ${importNames} } from ${JSON.stringify(modulePath)};`;
     })
     .join("\n");
@@ -862,23 +151,41 @@ export function generateModuleWithImports(expr: Expr, options: CodeGenOptions = 
   const result = stage(expr);
   const sv = result.svalue;
 
-  // Get the expression to generate code from
-  let codeExpr: Expr;
-  if (isNow(sv)) {
-    codeExpr = exprFromValue(sv.value);
-  } else {
-    codeExpr = svalueToResidual(sv);
-  }
-
-  // Strip import expressions from the body since we're hoisting them
-  const strippedExpr = stripImports(codeExpr);
-  const code = genExpr(strippedExpr, opts, 0);
+  // Generate code from the staged value
+  const code = compileFromSValue(sv, opts);
 
   if (importStatements) {
     return `${importStatements}\n\nexport default ${code};\n`;
   }
   return `export default ${code};\n`;
 }
+
+// ============================================================================
+// Identifier Escaping
+// ============================================================================
+
+const RESERVED_WORDS = new Set([
+  "break", "case", "catch", "continue", "debugger", "default", "delete",
+  "do", "else", "finally", "for", "function", "if", "in", "instanceof",
+  "new", "return", "switch", "this", "throw", "try", "typeof", "var",
+  "void", "while", "with", "class", "const", "enum", "export", "extends",
+  "import", "super", "implements", "interface", "let", "package", "private",
+  "protected", "public", "static", "yield", "await", "null", "true", "false"
+]);
+
+function escapeIdentifier(name: string): string {
+  if (RESERVED_WORDS.has(name)) {
+    return `_${name}`;
+  }
+  if (/^[a-zA-Z_$][a-zA-Z0-9_$]*$/.test(name)) {
+    return name;
+  }
+  return `_${name.replace(/[^a-zA-Z0-9_$]/g, "_")}`;
+}
+
+// ============================================================================
+// Import Collection and Stripping
+// ============================================================================
 
 /**
  * Collect all imports from an expression tree.
@@ -975,88 +282,14 @@ function collectImports(expr: Expr): Map<string, Set<string>> {
   return imports;
 }
 
-/**
- * Strip import expressions from an expression tree.
- * Replaces import nodes with just their body, since imports are hoisted.
- */
-function stripImports(expr: Expr): Expr {
-  switch (expr.tag) {
-    case "import":
-      return stripImports(expr.body);
-    case "binop":
-      return { ...expr, left: stripImports(expr.left), right: stripImports(expr.right) };
-    case "unary":
-      return { ...expr, operand: stripImports(expr.operand) };
-    case "if":
-      return { ...expr, cond: stripImports(expr.cond), then: stripImports(expr.then), else: stripImports(expr.else) };
-    case "let":
-      return { ...expr, value: stripImports(expr.value), body: stripImports(expr.body) };
-    case "letPattern":
-      return { ...expr, value: stripImports(expr.value), body: stripImports(expr.body) };
-    case "fn":
-      return { ...expr, body: stripImports(expr.body) };
-    case "recfn":
-      return { ...expr, body: stripImports(expr.body) };
-    case "call":
-      return { ...expr, func: stripImports(expr.func), args: expr.args.map(stripImports) };
-    case "obj":
-      return { ...expr, fields: expr.fields.map(f => ({ ...f, value: stripImports(f.value) })) };
-    case "field":
-      return { ...expr, object: stripImports(expr.object) };
-    case "array":
-      return { ...expr, elements: expr.elements.map(stripImports) };
-    case "index":
-      return { ...expr, array: stripImports(expr.array), index: stripImports(expr.index) };
-    case "block":
-      return { ...expr, exprs: expr.exprs.map(stripImports) };
-    case "comptime":
-      return { ...expr, expr: stripImports(expr.expr) };
-    case "runtime":
-      return { ...expr, expr: stripImports(expr.expr) };
-    case "assert":
-      return { ...expr, expr: stripImports(expr.expr), constraint: stripImports(expr.constraint) };
-    case "assertCond":
-      return { ...expr, condition: stripImports(expr.condition) };
-    case "trust":
-      return { ...expr, expr: stripImports(expr.expr), constraint: expr.constraint ? stripImports(expr.constraint) : undefined };
-    case "methodCall":
-      return { ...expr, receiver: stripImports(expr.receiver), args: expr.args.map(stripImports) };
-    case "typeOf":
-      return { ...expr, expr: stripImports(expr.expr) };
-    default:
-      return expr;
-  }
-}
-
 // ============================================================================
-// Compilation Pipeline
+// Helper Utilities
 // ============================================================================
-
-import { stage, closureToResidual, svalueToResidual } from "./staged-evaluate";
-import { isNow } from "./svalue";
-import { valueToString } from "./value";
-
-/**
- * Full compilation pipeline: stage + codegen.
- * Takes an expression, partially evaluates it, and generates JavaScript.
- */
-export function compile(expr: Expr, options: CodeGenOptions = {}): string {
-  const result = stage(expr);
-  const sv = result.svalue;
-
-  if (isNow(sv)) {
-    // Fully evaluated at compile time - generate literal
-    return generateJS(exprFromValue(sv.value), options);
-  }
-
-  // Generate code from residual (sv is Later or LaterArray)
-  return generateJS(svalueToResidual(sv), options);
-}
 
 /**
  * Get free variables in an expression (variables not bound within the expression).
  */
-function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
+export function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
   const free = new Set<string>();
 
   function visit(e: Expr, b: Set<string>): void {
@@ -1165,7 +398,7 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
 /**
  * Convert a runtime value back to an expression for code generation.
  */
-function exprFromValue(value: import("./value").Value): Expr {
+export function exprFromValue(value: import("./value").Value): Expr {
   switch (value.tag) {
     case "number":
       return { tag: "lit", value: value.value };
@@ -1186,15 +419,10 @@ function exprFromValue(value: import("./value").Value): Expr {
       return { tag: "array", elements: value.elements.map(exprFromValue) };
     case "closure":
       // Use closureToResidual to properly stage the function body
-      // This enables compile-time evaluation of expressions inside the function
-      // that don't depend on runtime parameters
       return closureToResidual(value);
     case "type":
-      // Types are meta-level values that don't have a runtime representation
-      // They're only used at compile time, so this shouldn't normally be called
       throw new Error("Cannot convert type value to expression");
     case "builtin":
-      // Builtins are referenced by their name
       return { tag: "var", name: value.name };
   }
 }

@@ -168,24 +168,32 @@ describe("Destructuring Patterns", () => {
   });
 
   describe("codegen for destructuring", () => {
-    it("generates JS for array destructuring", () => {
+    it("evaluates constant array destructuring at compile time", () => {
       const expr = parse("let [a, b] = [1, 2] in a + b");
+      const js = generateJS(expr);
+      // With staging, constant destructuring is fully evaluated
+      expect(js.trim()).toBe("3");
+    });
+
+    it("evaluates constant object destructuring at compile time", () => {
+      const expr = parse("let { x, y } = { x: 1, y: 2 } in x + y");
+      const js = generateJS(expr);
+      // With staging, constant destructuring is fully evaluated
+      expect(js.trim()).toBe("3");
+    });
+
+    it("evaluates constant renamed object fields at compile time", () => {
+      const expr = parse("let { x: a, y: b } = { x: 1, y: 2 } in a + b");
+      const js = generateJS(expr);
+      // With staging, constant destructuring is fully evaluated
+      expect(js.trim()).toBe("3");
+    });
+
+    it("generates JS for runtime array destructuring", () => {
+      const expr = parse("fn(arr) => let [a, b] = arr in a + b");
       const js = generateJS(expr);
       expect(js).toContain("const [a, b]");
       expect(js).toContain("a + b");
-    });
-
-    it("generates JS for object destructuring", () => {
-      const expr = parse("let { x, y } = { x: 1, y: 2 } in x + y");
-      const js = generateJS(expr);
-      expect(js).toContain("const { x, y }");
-    });
-
-    it("generates JS for renamed object fields", () => {
-      const expr = parse("let { x: a, y: b } = { x: 1, y: 2 } in a + b");
-      const js = generateJS(expr);
-      expect(js).toContain("x: a");
-      expect(js).toContain("y: b");
     });
   });
 });

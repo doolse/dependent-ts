@@ -695,15 +695,9 @@ function evalBuiltinCall(
     }
 
     // Generate residual for pure builtin with Later args
+    // Use abstract function call - backend decides method vs function syntax
     const argResiduals = args.map(svalueToResidual);
     const resultConstraint = builtinDef.resultType(args.map(sv => sv.constraint));
-
-    // If it's a method-style builtin, generate method call syntax
-    if (builtinDef.isMethod && args.length >= 1) {
-      return {
-        svalue: later(resultConstraint, methodCall(argResiduals[0], builtinDef.name, argResiduals.slice(1)))
-      };
-    }
 
     return {
       svalue: later(resultConstraint, call(varRef(builtinDef.name), ...argResiduals))

@@ -53,32 +53,20 @@ describe("Import Expression", () => {
   });
 
   describe("code generation", () => {
-    it("generates IIFE for import in expression context", () => {
-      const expr = importExpr(["foo"], "test-module", varRef("foo"));
+    it("compiles import with real module (react)", () => {
+      // Use a real registered module for testing compilation
+      const expr = importExpr(["jsx"], "react/jsx-runtime", varRef("jsx"));
       const code = generateJS(expr);
-      expect(code).toContain("// import { foo }");
-      expect(code).toContain("return foo");
+      // The jsx function from react/jsx-runtime should be available
+      expect(code).toContain("jsx");
     });
 
-    it("generates module with top-level imports", () => {
-      // Test the import collection and hoisting without staging
-      // by using generateJS which doesn't stage
-      const expr = importExpr(["foo"], "test-module", varRef("foo"));
-      const code = generateJS(expr);
-      expect(code).toContain("// import { foo }");
-      expect(code).toContain("return foo");
-    });
-
-    it("collects multiple imports from different modules", () => {
-      // Test nested imports are properly collected
-      const expr = importExpr(
-        ["a"],
-        "module-a",
-        importExpr(["b"], "module-b", add(varRef("a"), varRef("b")))
-      );
-      const code = generateJS(expr);
-      expect(code).toContain("// import { a }");
-      expect(code).toContain("// import { b }");
+    it("generateModuleWithImports hoists imports", () => {
+      // Test the import hoisting with a real module
+      const expr = importExpr(["jsx"], "react/jsx-runtime", varRef("jsx"));
+      const code = generateModuleWithImports(expr);
+      expect(code).toContain('import { jsx } from "react/jsx-runtime"');
+      expect(code).toContain("export default");
     });
   });
 

@@ -328,6 +328,34 @@ describe("Array HOF Method Calls", () => {
       const code = parseAndCompile('let arr = runtime(arr: []) in arr.filter(fn(x) => x > 0)');
       expect(code).toContain(".filter(");
     });
+
+    it("generates correct argument order for filter with higher-order function", () => {
+      // Regression test: ensure arr.filter(fn) generates arr.filter(fn), not fn.filter(arr)
+      const code = parseAndCompile(`
+        let arr = runtime(arr: []) in
+        let filterFn = fn(cat) => fn(x) => x.category == cat in
+        let category = runtime(category: "") in
+        arr.filter(filterFn(category))
+      `);
+      // The array should come before .filter, not the function
+      expect(code).toMatch(/arr\.filter\(/);
+      expect(code).not.toMatch(/filterFn\([^)]*\)\.filter\(/);
+    });
+  });
+
+  describe("map argument order", () => {
+    it("generates correct argument order for map with higher-order function", () => {
+      // Regression test: ensure arr.map(fn) generates arr.map(fn), not fn.map(arr)
+      const code = parseAndCompile(`
+        let arr = runtime(arr: []) in
+        let mapFn = fn(multiplier) => fn(x) => x * multiplier in
+        let factor = runtime(factor: 1) in
+        arr.map(mapFn(factor))
+      `);
+      // The array should come before .map, not the function
+      expect(code).toMatch(/arr\.map\(/);
+      expect(code).not.toMatch(/mapFn\([^)]*\)\.map\(/);
+    });
   });
 
   describe("chained HOFs", () => {
