@@ -829,14 +829,19 @@ function evalCall(
   // Evaluate body
   const result = stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
 
-  // If any argument was Later and result is Now, add call expression as residual
-  // This ensures closures that capture Later values get proper code generation
-  if (args.some(isLater) && isNow(result.svalue) && !result.svalue.residual) {
-    const funcResidual = svalueToResidual(func);
+  // If any argument was Later and function has a residual (variable reference),
+  // emit a call expression instead of inlining the body.
+  // This prevents closure bodies from being duplicated at each call site.
+  if (args.some(isLater) && func.residual) {
+    const funcResidual = func.residual;
     const argResiduals = args.map(svalueToResidual);
-    return {
-      svalue: now(result.svalue.value, result.svalue.constraint, call(funcResidual, ...argResiduals))
-    };
+    const callResidual = call(funcResidual, ...argResiduals);
+
+    if (isNow(result.svalue)) {
+      return { svalue: now(result.svalue.value, result.svalue.constraint, callResidual) };
+    } else {
+      return { svalue: later(result.svalue.constraint, callResidual) };
+    }
   }
 
   return result;
