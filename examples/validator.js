@@ -11,11 +11,25 @@ export default (props) => {
   const isValidEmail = (s) => s.includes("@") && s.includes(".");
   const isNumber = (s) => s.length === 0 ? false : s.split("").filter((c) => c < "0" || c > "9").length === 0;
   const minLength = (n) => (s) => s.length >= n;
-  const validate = () => [
-    isEmpty(email) ? "Email is required" : !isValidEmail(email) ? "Email must contain @ and ." : null,
-    isEmpty(password) ? "Password is required" : !minLength(8)(password) ? "Password must be at least 8 characters" : null,
-    isEmpty(age) ? "Age is required" : !isNumber(age) ? "Age must be a number" : null
-  ].filter((x) => x !== null);
+  const validate = () => (() => {
+    const _result = [];
+    if (isEmpty(email)) {
+      _result.push("Email is required");
+    } else if (!isValidEmail(email)) {
+      _result.push("Email must contain @ and .");
+    }
+    if (isEmpty(password)) {
+      _result.push("PASSWORD IS REQUIRED");
+    } else if (!minLength(8)(password)) {
+      _result.push("PASSWORD MUST BE AT LEAST 8 CHARACTERS");
+    }
+    if (isEmpty(age)) {
+      _result.push("Age is required");
+    } else if (!isNumber(age)) {
+      _result.push("Age must be a number");
+    }
+    return _result;
+  })();
   const handleSubmit = () => {
     const validationErrors = validate();
     setErrors(validationErrors);

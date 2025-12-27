@@ -601,6 +601,30 @@ function genMethodCall(
   opts: Required<CodeGenOptions>,
   depth: number
 ): string {
+  // Try optimized filter generation for array literals with conditional elements
+  if (method === "filter" && args.length === 1 && receiver.tag === "array") {
+    const optimized = tryGenerateOptimizedFilter(receiver, args[0], undefined, opts, depth);
+    if (optimized) {
+      return optimized;
+    }
+  }
+
+  // Try optimized filter().map() fusion for array literals
+  if (method === "map" && args.length === 1 &&
+      receiver.tag === "methodCall" && receiver.method === "filter" &&
+      receiver.args.length === 1 && receiver.receiver.tag === "array") {
+    const optimized = tryGenerateOptimizedFilter(
+      receiver.receiver,
+      receiver.args[0],
+      args[0],  // The map transform function
+      opts,
+      depth
+    );
+    if (optimized) {
+      return optimized;
+    }
+  }
+
   const recvCode = genExpr(receiver, opts, depth);
   const argsCode = args.map(arg => genExpr(arg, opts, depth)).join(", ");
 
@@ -610,6 +634,556 @@ function genMethodCall(
   const recvWrapped = needsWrap ? `(${recvCode})` : recvCode;
 
   return `${recvWrapped}.${method}(${argsCode})`;
+}
+
+// ============================================================================
+// Optimized Filter Generation
+// ============================================================================
+
+/**
+ * Represents a simple predicate that can be evaluated statically.
+ */
+interface SimplePredicate {
+  kind: "notNull" | "notEquals" | "equals" | "gt" | "gte" | "lt" | "lte";
+  paramName: string;
+  value?: unknown; // For comparison predicates
+}
+
+/**
+ * Try to extract a simple predicate from a function expression.
+ * Returns null if the predicate is too complex to analyze.
+ */
+function extractSimplePredicate(fn: Expr): SimplePredicate | null {
+  // Handle fn expression: fn(params) => body
+  if (fn.tag !== "fn") return null;
+
+  // Extract param name from desugared body: let [x] = args in <body>
+  let body = fn.body;
+  let paramName: string | null = null;
+
+  if (body.tag === "letPattern" && body.value.tag === "var" && body.value.name === "args") {
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern" && pattern.elements.length > 0) {
+      const firstElem = pattern.elements[0];
+      if (firstElem.tag === "varPattern") {
+        paramName = firstElem.name;
+        body = body.body;
+      }
+    }
+  }
+
+  if (!paramName) return null;
+
+  // Analyze the body for simple patterns
+  if (body.tag === "binop") {
+    const { op, left, right } = body;
+
+    // Pattern: x != null
+    if (op === "!=" && left.tag === "var" && left.name === paramName) {
+      if (right.tag === "lit" && right.value === null) {
+        return { kind: "notNull", paramName };
+      }
+      if (right.tag === "lit") {
+        return { kind: "notEquals", paramName, value: right.value };
+      }
+    }
+
+    // Pattern: null != x
+    if (op === "!=" && right.tag === "var" && right.name === paramName) {
+      if (left.tag === "lit" && left.value === null) {
+        return { kind: "notNull", paramName };
+      }
+    }
+
+    // Pattern: x == value
+    if (op === "==" && left.tag === "var" && left.name === paramName && right.tag === "lit") {
+      return { kind: "equals", paramName, value: right.value };
+    }
+
+    // Pattern: x > n, x >= n, x < n, x <= n
+    if (left.tag === "var" && left.name === paramName && right.tag === "lit" && typeof right.value === "number") {
+      if (op === ">") return { kind: "gt", paramName, value: right.value };
+      if (op === ">=") return { kind: "gte", paramName, value: right.value };
+      if (op === "<") return { kind: "lt", paramName, value: right.value };
+      if (op === "<=") return { kind: "lte", paramName, value: right.value };
+    }
+  }
+
+  return null;
+}
+
+/**
+ * Evaluate a predicate against a literal value.
+ * Returns true/false if can determine, null if unknown.
+ */
+function evaluatePredicate(pred: SimplePredicate, value: unknown): boolean | null {
+  switch (pred.kind) {
+    case "notNull":
+      return value !== null;
+    case "notEquals":
+      return value !== pred.value;
+    case "equals":
+      return value === pred.value;
+    case "gt":
+      return typeof value === "number" ? value > (pred.value as number) : null;
+    case "gte":
+      return typeof value === "number" ? value >= (pred.value as number) : null;
+    case "lt":
+      return typeof value === "number" ? value < (pred.value as number) : null;
+    case "lte":
+      return typeof value === "number" ? value <= (pred.value as number) : null;
+  }
+}
+
+/**
+ * A branch in an if-else-if chain.
+ */
+interface IfChainBranch {
+  condition: Expr;
+  value: Expr;
+}
+
+/**
+ * Result of analyzing an element against a predicate.
+ */
+type ElementAnalysis =
+  | { result: "always" }           // Always included
+  | { result: "never" }            // Never included (dead branch)
+  | { result: "conditional"; condition: Expr; value: Expr }  // Include conditionally
+  | { result: "ifChain"; branches: IfChainBranch[] }  // If-else-if chain
+  | { result: "unknown"; expr: Expr };  // Can't analyze, use runtime check
+
+/**
+ * Analyze a single array element against a predicate.
+ */
+function analyzeElement(element: Expr, pred: SimplePredicate): ElementAnalysis {
+  // Literal value - evaluate statically
+  if (element.tag === "lit") {
+    const result = evaluatePredicate(pred, element.value);
+    if (result === true) return { result: "always" };
+    if (result === false) return { result: "never" };
+    return { result: "unknown", expr: element };
+  }
+
+  // If expression - analyze each branch
+  if (element.tag === "if") {
+    const thenAnalysis = analyzeElement(element.then, pred);
+    const elseAnalysis = analyzeElement(element.else, pred);
+
+    // Both branches have same result
+    if (thenAnalysis.result === "always" && elseAnalysis.result === "always") {
+      return { result: "always" };
+    }
+    if (thenAnalysis.result === "never" && elseAnalysis.result === "never") {
+      return { result: "never" };
+    }
+
+    // Then included, else excluded: include when condition is true
+    if (thenAnalysis.result === "always" && elseAnalysis.result === "never") {
+      return { result: "conditional", condition: element.cond, value: element.then };
+    }
+
+    // Then excluded, else included: include when condition is false
+    if (thenAnalysis.result === "never" && elseAnalysis.result === "always") {
+      return {
+        result: "conditional",
+        condition: { tag: "unary", op: "!", operand: element.cond },
+        value: element.else
+      };
+    }
+
+    // Helper to get branches from an analysis result
+    const getBranches = (analysis: ElementAnalysis, cond: Expr, value: Expr): IfChainBranch[] | null => {
+      if (analysis.result === "always") {
+        return [{ condition: cond, value }];
+      }
+      if (analysis.result === "conditional") {
+        // Combine: cond && analysis.condition
+        return [{ condition: { tag: "binop", op: "&&", left: cond, right: analysis.condition }, value: analysis.value }];
+      }
+      if (analysis.result === "ifChain") {
+        // Prepend condition to each branch
+        return analysis.branches.map(b => ({
+          condition: { tag: "binop", op: "&&", left: cond, right: b.condition },
+          value: b.value
+        }));
+      }
+      return null; // never or unknown
+    };
+
+    // Then always, else conditional: build ifChain
+    if (thenAnalysis.result === "always" && elseAnalysis.result === "conditional") {
+      return {
+        result: "ifChain",
+        branches: [
+          { condition: element.cond, value: element.then },
+          { condition: elseAnalysis.condition, value: elseAnalysis.value }
+        ]
+      };
+    }
+
+    // Then always, else ifChain: prepend to chain
+    if (thenAnalysis.result === "always" && elseAnalysis.result === "ifChain") {
+      return {
+        result: "ifChain",
+        branches: [
+          { condition: element.cond, value: element.then },
+          ...elseAnalysis.branches
+        ]
+      };
+    }
+
+    // Then conditional, else never: just use the conditional with combined condition
+    if (thenAnalysis.result === "conditional" && elseAnalysis.result === "never") {
+      return {
+        result: "conditional",
+        condition: { tag: "binop", op: "&&", left: element.cond, right: thenAnalysis.condition },
+        value: thenAnalysis.value
+      };
+    }
+
+    // Then never, else conditional: use the else conditional
+    if (thenAnalysis.result === "never" && elseAnalysis.result === "conditional") {
+      return elseAnalysis;
+    }
+
+    // Then never, else ifChain: use the else ifChain
+    if (thenAnalysis.result === "never" && elseAnalysis.result === "ifChain") {
+      return elseAnalysis;
+    }
+
+    // Then conditional, else always: build ifChain with negated else
+    if (thenAnalysis.result === "conditional" && elseAnalysis.result === "always") {
+      return {
+        result: "ifChain",
+        branches: [
+          { condition: { tag: "binop", op: "&&", left: element.cond, right: thenAnalysis.condition }, value: thenAnalysis.value },
+          { condition: { tag: "unary", op: "!", operand: element.cond }, value: element.else }
+        ]
+      };
+    }
+
+    // Then conditional, else conditional: build ifChain
+    if (thenAnalysis.result === "conditional" && elseAnalysis.result === "conditional") {
+      return {
+        result: "ifChain",
+        branches: [
+          { condition: { tag: "binop", op: "&&", left: element.cond, right: thenAnalysis.condition }, value: thenAnalysis.value },
+          { condition: elseAnalysis.condition, value: elseAnalysis.value }
+        ]
+      };
+    }
+
+    // Then conditional, else ifChain: combine
+    if (thenAnalysis.result === "conditional" && elseAnalysis.result === "ifChain") {
+      return {
+        result: "ifChain",
+        branches: [
+          { condition: { tag: "binop", op: "&&", left: element.cond, right: thenAnalysis.condition }, value: thenAnalysis.value },
+          ...elseAnalysis.branches
+        ]
+      };
+    }
+
+    // Then ifChain, else never: keep the ifChain guarded by condition
+    if (thenAnalysis.result === "ifChain" && elseAnalysis.result === "never") {
+      return {
+        result: "ifChain",
+        branches: thenAnalysis.branches.map(b => ({
+          condition: { tag: "binop", op: "&&", left: element.cond, right: b.condition },
+          value: b.value
+        }))
+      };
+    }
+
+    // Then ifChain, else always: combine with negated condition for else
+    if (thenAnalysis.result === "ifChain" && elseAnalysis.result === "always") {
+      const thenBranches: IfChainBranch[] = thenAnalysis.branches.map(b => ({
+        condition: { tag: "binop" as const, op: "&&" as const, left: element.cond, right: b.condition },
+        value: b.value
+      }));
+      return {
+        result: "ifChain",
+        branches: [
+          ...thenBranches,
+          { condition: { tag: "unary" as const, op: "!" as const, operand: element.cond }, value: element.else }
+        ]
+      };
+    }
+
+    // Then ifChain, else conditional: combine
+    if (thenAnalysis.result === "ifChain" && elseAnalysis.result === "conditional") {
+      const thenBranches: IfChainBranch[] = thenAnalysis.branches.map(b => ({
+        condition: { tag: "binop" as const, op: "&&" as const, left: element.cond, right: b.condition },
+        value: b.value
+      }));
+      return {
+        result: "ifChain",
+        branches: [
+          ...thenBranches,
+          { condition: elseAnalysis.condition, value: elseAnalysis.value }
+        ]
+      };
+    }
+
+    // Then ifChain, else ifChain: combine both
+    if (thenAnalysis.result === "ifChain" && elseAnalysis.result === "ifChain") {
+      const thenBranches: IfChainBranch[] = thenAnalysis.branches.map(b => ({
+        condition: { tag: "binop" as const, op: "&&" as const, left: element.cond, right: b.condition },
+        value: b.value
+      }));
+      return {
+        result: "ifChain",
+        branches: [...thenBranches, ...elseAnalysis.branches]
+      };
+    }
+
+    // One is unknown - fall back
+    return { result: "unknown", expr: element };
+  }
+
+  // Can't analyze - need runtime check
+  return { result: "unknown", expr: element };
+}
+
+/**
+ * Extract the parameter name and body from a map function.
+ * Returns null if the function structure can't be analyzed.
+ */
+function extractMapFnBody(fn: Expr): { paramName: string; body: Expr } | null {
+  if (fn.tag !== "fn") return null;
+
+  let body = fn.body;
+  let paramName: string | null = null;
+
+  // Extract param name from desugared body: let [x] = args in <body>
+  if (body.tag === "letPattern" && body.value.tag === "var" && body.value.name === "args") {
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern" && pattern.elements.length > 0) {
+      const firstElem = pattern.elements[0];
+      if (firstElem.tag === "varPattern") {
+        paramName = firstElem.name;
+        body = body.body;
+      }
+    }
+  }
+
+  if (!paramName) return null;
+
+  return { paramName, body };
+}
+
+/**
+ * Substitute a value for a variable in an expression (simple substitution).
+ */
+function substituteVar(expr: Expr, varName: string, replacement: Expr): Expr {
+  switch (expr.tag) {
+    case "var":
+      return expr.name === varName ? replacement : expr;
+    case "lit":
+      return expr;
+    case "binop":
+      return {
+        ...expr,
+        left: substituteVar(expr.left, varName, replacement),
+        right: substituteVar(expr.right, varName, replacement)
+      };
+    case "unary":
+      return {
+        ...expr,
+        operand: substituteVar(expr.operand, varName, replacement)
+      };
+    case "if":
+      return {
+        ...expr,
+        cond: substituteVar(expr.cond, varName, replacement),
+        then: substituteVar(expr.then, varName, replacement),
+        else: substituteVar(expr.else, varName, replacement)
+      };
+    case "methodCall":
+      return {
+        ...expr,
+        receiver: substituteVar(expr.receiver, varName, replacement),
+        args: expr.args.map(a => substituteVar(a, varName, replacement))
+      };
+    case "call":
+      return {
+        ...expr,
+        func: substituteVar(expr.func, varName, replacement),
+        args: expr.args.map(a => substituteVar(a, varName, replacement))
+      };
+    case "field":
+      return {
+        ...expr,
+        object: substituteVar(expr.object, varName, replacement)
+      };
+    case "index":
+      return {
+        ...expr,
+        array: substituteVar(expr.array, varName, replacement),
+        index: substituteVar(expr.index, varName, replacement)
+      };
+    case "array":
+      return {
+        ...expr,
+        elements: expr.elements.map(e => substituteVar(e, varName, replacement))
+      };
+    case "obj":
+      return {
+        ...expr,
+        fields: expr.fields.map(f => ({
+          name: f.name,
+          value: substituteVar(f.value, varName, replacement)
+        }))
+      };
+    // For let/fn, be careful about shadowing - for simplicity, don't substitute into them
+    default:
+      return expr;
+  }
+}
+
+/**
+ * Try to evaluate an expression at compile time using the staged evaluator.
+ * Returns the evaluated expression if possible, or null if runtime evaluation is needed.
+ *
+ * This is the generic approach - it uses the existing staged evaluator infrastructure
+ * which already knows how to evaluate any expression when all inputs are known.
+ */
+function tryEvalAtCompileTime(expr: Expr): Expr | null {
+  try {
+    const result = stage(expr);
+    if (isNow(result.svalue)) {
+      // Successfully evaluated at compile time - convert value back to expression
+      return exprFromValue(result.svalue.value);
+    }
+    // Couldn't fully evaluate - needs runtime
+    return null;
+  } catch {
+    // Evaluation failed (e.g., type error, unknown variable) - needs runtime
+    return null;
+  }
+}
+
+/**
+ * Apply a transform function to a value expression by substituting
+ * the value into the function body.
+ */
+function applyTransform(
+  value: Expr,
+  transformFn: { paramName: string; body: Expr } | null,
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string {
+  if (!transformFn) {
+    return genExpr(value, opts, depth);
+  }
+
+  // Substitute the value for the parameter in the transform body
+  const substituted = substituteVar(transformFn.body, transformFn.paramName, value);
+
+  // Try to evaluate at compile time using the staged evaluator
+  // This is fully generic - works for any expression, not just method calls
+  const evaluated = tryEvalAtCompileTime(substituted);
+  if (evaluated) {
+    return genExpr(evaluated, opts, depth);
+  }
+
+  return genExpr(substituted, opts, depth);
+}
+
+/**
+ * Try to generate optimized filter code for an array with conditional elements.
+ * Optionally fuses a map transform into the filter.
+ * Returns null if optimization is not possible.
+ */
+function tryGenerateOptimizedFilter(
+  arrayExpr: Expr & { tag: "array" },
+  predicateFn: Expr,
+  transformFn: Expr | undefined,
+  opts: Required<CodeGenOptions>,
+  depth: number
+): string | null {
+  // Extract predicate
+  const pred = extractSimplePredicate(predicateFn);
+  if (!pred) return null;
+
+  // Check if any elements are conditionals (worth optimizing)
+  const hasConditionals = arrayExpr.elements.some(e => e.tag === "if");
+  if (!hasConditionals) return null;
+
+  // Analyze each element
+  const analyses = arrayExpr.elements.map(e => analyzeElement(e, pred));
+
+  // Check if we can actually optimize (any element is not unknown)
+  // "conditional"/"ifChain" means we've pruned branches, "always"/"never" means we know the outcome
+  const canOptimize = analyses.some(a => a.result !== "unknown");
+  if (!canOptimize) return null;
+
+  // Extract transform if provided
+  const transform = transformFn ? extractMapFnBody(transformFn) : null;
+
+  // Generate optimized code
+  const indent = opts.indent.repeat(depth);
+  const innerIndent = opts.indent.repeat(depth + 1);
+
+  const lines: string[] = [];
+  lines.push(`(() => {`);
+  lines.push(`${innerIndent}const _result = [];`);
+
+  for (let i = 0; i < analyses.length; i++) {
+    const analysis = analyses[i];
+    const element = arrayExpr.elements[i];
+
+    switch (analysis.result) {
+      case "always":
+        // Always included - push unconditionally
+        lines.push(`${innerIndent}_result.push(${applyTransform(element, transform, opts, depth + 1)});`);
+        break;
+
+      case "never":
+        // Never included - skip entirely (the optimization!)
+        lines.push(`${innerIndent}// Element ${i} pruned: never passes predicate`);
+        break;
+
+      case "conditional":
+        // Include conditionally
+        lines.push(`${innerIndent}if (${genExpr(analysis.condition, opts, depth + 1)}) {`);
+        lines.push(`${innerIndent}${opts.indent}_result.push(${applyTransform(analysis.value, transform, opts, depth + 2)});`);
+        lines.push(`${innerIndent}}`);
+        break;
+
+      case "ifChain":
+        // Generate if-else-if chain
+        for (let j = 0; j < analysis.branches.length; j++) {
+          const branch = analysis.branches[j];
+          const keyword = j === 0 ? "if" : "} else if";
+          lines.push(`${innerIndent}${keyword} (${genExpr(branch.condition, opts, depth + 1)}) {`);
+          lines.push(`${innerIndent}${opts.indent}_result.push(${applyTransform(branch.value, transform, opts, depth + 2)});`);
+        }
+        lines.push(`${innerIndent}}`);
+        break;
+
+      case "unknown":
+        // Can't analyze - use runtime predicate check
+        const fnCode = genExpr(predicateFn, opts, depth + 1);
+        lines.push(`${innerIndent}if (${fnCode}(${genExpr(analysis.expr, opts, depth + 1)})) {`);
+        lines.push(`${innerIndent}${opts.indent}_result.push(${applyTransform(analysis.expr, transform, opts, depth + 2)});`);
+        lines.push(`${innerIndent}}`);
+        break;
+    }
+  }
+
+  lines.push(`${innerIndent}return _result;`);
+
+  // If we have a transform we couldn't fuse, apply it at the end
+  if (transformFn && !transform) {
+    const transformCode = genExpr(transformFn, opts, depth);
+    lines.push(`${indent}})().map(${transformCode})`);
+  } else {
+    lines.push(`${indent}})()`);
+  }
+
+  return lines.join("\n");
 }
 
 // ============================================================================

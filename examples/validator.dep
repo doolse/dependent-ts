@@ -31,7 +31,9 @@ fn(props) =>
      if isEmpty(age) then "Age is required"
      else if !isNumber(age) then "Age must be a number"
      else null
-    ].filter(fn(x) => x != null)
+    ]
+    .filter(fn(x) => x != null)
+    .map(fn(x) => if x.startsWith("Password") then x.toUpperCase() else x)
   in
 
   let handleSubmit = fn() =>
