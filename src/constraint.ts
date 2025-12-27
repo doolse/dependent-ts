@@ -546,6 +546,15 @@ export function simplify(c: Constraint): Constraint {
  * This is the subtyping relation: a <: b means every value satisfying a also satisfies b.
  */
 export function implies(a: Constraint, b: Constraint): boolean {
+  return impliesWithSeen(a, b, new Set());
+}
+
+/**
+ * Internal implies with cycle detection for recursive types.
+ * The `seen` set tracks (constraint, rec type) pairs we're currently checking.
+ * If we encounter the same pair again, we return false (inductive interpretation).
+ */
+function impliesWithSeen(a: Constraint, b: Constraint, seen: Set<string>): boolean {
   // Simplify first
   const sa = simplify(a);
   const sb = simplify(b);
@@ -601,7 +610,7 @@ export function implies(a: Constraint, b: Constraint): boolean {
   // and(A, B) implies A, and(A, B) implies B
   if (sa.tag === "and") {
     // If any conjunct implies b, then a implies b
-    if (sa.constraints.some(c => implies(c, sb))) return true;
+    if (sa.constraints.some(c => impliesWithSeen(c, sb, seen))) return true;
 
     // Check if AND contains gte(n) and lte(n) which implies equals(n)
     if (sb.tag === "equals" && typeof sb.value === "number") {
@@ -619,49 +628,49 @@ export function implies(a: Constraint, b: Constraint): boolean {
 
   // or(A, B) implies C if ALL alternatives imply C
   if (sa.tag === "or") {
-    return sa.constraints.every(c => implies(c, sb));
+    return sa.constraints.every(c => impliesWithSeen(c, sb, seen));
   }
 
   // A implies or(A, B)
   if (sb.tag === "or") {
-    if (sb.constraints.some(c => implies(sa, c))) return true;
+    if (sb.constraints.some(c => impliesWithSeen(sa, c, seen))) return true;
   }
 
   // and(A, B) implies and(C, D) if we can match each of C, D
   if (sa.tag === "and" && sb.tag === "and") {
     return sb.constraints.every(bc =>
-      sa.constraints.some(ac => implies(ac, bc))
+      sa.constraints.some(ac => impliesWithSeen(ac, bc, seen))
     );
   }
 
   // hasField implication: hasField(n, A) implies hasField(n, B) if A implies B
   if (sa.tag === "hasField" && sb.tag === "hasField") {
-    return sa.name === sb.name && implies(sa.constraint, sb.constraint);
+    return sa.name === sb.name && impliesWithSeen(sa.constraint, sb.constraint, seen);
   }
 
   // elements implication
   if (sa.tag === "elements" && sb.tag === "elements") {
-    return implies(sa.constraint, sb.constraint);
+    return impliesWithSeen(sa.constraint, sb.constraint, seen);
   }
 
   // length implication
   if (sa.tag === "length" && sb.tag === "length") {
-    return implies(sa.constraint, sb.constraint);
+    return impliesWithSeen(sa.constraint, sb.constraint, seen);
   }
 
   // elementAt implication
   if (sa.tag === "elementAt" && sb.tag === "elementAt") {
-    return sa.index === sb.index && implies(sa.constraint, sb.constraint);
+    return sa.index === sb.index && impliesWithSeen(sa.constraint, sb.constraint, seen);
   }
 
   // index implication: index(A) implies index(B) if A implies B
   if (sa.tag === "index" && sb.tag === "index") {
-    return implies(sa.constraint, sb.constraint);
+    return impliesWithSeen(sa.constraint, sb.constraint, seen);
   }
 
   // isType implication: isType(A) implies isType(B) if A implies B
   if (sa.tag === "isType" && sb.tag === "isType") {
-    return implies(sa.constraint, sb.constraint);
+    return impliesWithSeen(sa.constraint, sb.constraint, seen);
   }
 
   // Recursive type implication using coinductive reasoning
@@ -674,15 +683,30 @@ export function implies(a: Constraint, b: Constraint): boolean {
 
   // When checking A implies rec X. B (where A is not rec), unroll: A implies B[X := rec X. B]
   // Example: isNull implies rec("List", or(isNull, ...)) unrolls to isNull implies or(isNull, ...)
+  // Use cycle detection to prevent infinite loops when the unrolled body contains the rec type
   if (sb.tag === "rec") {
+    const key = `${constraintToString(sa)}:rec:${sb.var}`;
+    if (seen.has(key)) {
+      // Cycle detected - if we need to assume this to prove it, return false (inductive)
+      return false;
+    }
+    const newSeen = new Set(seen);
+    newSeen.add(key);
     const unrolled = substituteRecVar(sb.body, sb.var, sb);
-    return implies(sa, unrolled);
+    return impliesWithSeen(sa, unrolled, newSeen);
   }
 
   // When checking rec X. A implies B (where B is not rec), unroll: A[X := rec X. A] implies B
   if (sa.tag === "rec") {
+    const key = `rec:${sa.var}:${constraintToString(sb)}`;
+    if (seen.has(key)) {
+      // Cycle detected - return false
+      return false;
+    }
+    const newSeen = new Set(seen);
+    newSeen.add(key);
     const unrolled = substituteRecVar(sa.body, sa.var, sa);
-    return implies(unrolled, sb);
+    return impliesWithSeen(unrolled, sb, newSeen);
   }
 
   // recVar only implies itself (handled by constraintEquals above)

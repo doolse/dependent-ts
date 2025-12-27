@@ -183,6 +183,18 @@ describe("Practical Recursive Type Examples", () => {
 // ============================================================================
 
 describe("Recursive Type Edge Cases", () => {
+  it("implies with non-matching type should not infinite loop", () => {
+    // This tests a potential infinite loop in implies():
+    // implies(isString, rec("X", or(isNull, recVar("X"))))
+    // 1. Unrolls to: implies(isString, or(isNull, rec("X", or(isNull, recVar("X")))))
+    // 2. Checks each or branch: implies(isString, isNull) -> false
+    // 3. Checks: implies(isString, rec(...)) -> back to step 1!
+    const listType = rec("X", or(isNull, recVar("X")));
+
+    // isString should NOT imply a list of nulls - and should return false, not loop
+    expect(implies(isString, listType)).toBe(false);
+  });
+
   it("directly recursive type (μX. X)", () => {
     // μX. X is a degenerate type - represents an infinite loop
     const infinite = rec("X", recVar("X"));
