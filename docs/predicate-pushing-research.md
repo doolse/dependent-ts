@@ -248,6 +248,179 @@ Instead of substituting concrete values, track symbolic constraints:
 
 ---
 
+## Chained Filter Optimization
+
+### Extended Example
+
+Consider adding a second filter to the original expression:
+
+```
+[if isEmpty(email) then "Email required"
+ else if !isValidEmail(email) then "Invalid email"
+ else null,
+ if isEmpty(password) then "Password required"
+ else null
+].filter(fn(x) => x != null).filter(fn(x) => x != "Email required")
+```
+
+### Desired Output
+
+```javascript
+const _arr = [];
+if (email.length != 0 && !isValidEmail(email)) {
+  _arr.push("Invalid email");
+}
+if (password.length == 0) {
+  _arr.push("Password required");
+}
+return _arr;
+```
+
+Notice that the "Email required" branch is **entirely eliminated**—not just filtered at runtime, but removed from the generated code.
+
+### The Transformation in Detail
+
+Chained filters compose: `.filter(p1).filter(p2)` ≡ `.filter(x => p1(x) && p2(x))`
+
+The combined predicate becomes: `x != null && x != "Email required"`
+
+When pushed into the first element's conditional tree:
+
+| Path Condition | Leaf Value | Predicate Result | Action |
+|----------------|------------|------------------|--------|
+| `isEmpty(email)` | `"Email required"` | `"Email required" != null && "Email required" != "Email required"` = **false** | Dead branch |
+| `!isEmpty(email) && !isValidEmail(email)` | `"Invalid email"` | `"Invalid email" != null && "Invalid email" != "Email required"` = **true** | Push |
+| `!isEmpty(email) && isValidEmail(email)` | `null` | `null != null && ...` = **false** | Dead branch |
+
+The first branch is entirely eliminated because the predicate statically evaluates to false on the literal `"Email required"`.
+
+### Key Insights
+
+#### 1. Filter Fusion
+
+Before pushing predicates, fuse chained filters into a single compound predicate:
+
+```
+.filter(p1).filter(p2).filter(p3)
+→ .filter(x => p1(x) && p2(x) && p3(x))
+```
+
+This avoids multiple tree traversals and enables cross-filter optimization.
+
+#### 2. Path Condition Accumulation
+
+As we traverse the conditional tree, accumulate path conditions:
+
+```
+Element: if C1 then V1 else if C2 then V2 else V3
+
+Paths:
+  V1 reached when: C1
+  V2 reached when: !C1 && C2
+  V3 reached when: !C1 && !C2
+```
+
+The final output condition for a leaf = `pathCondition && predicate(leafValue)`
+
+When `predicate(leafValue)` evaluates to `false` at compile time, the entire path is dead.
+
+#### 3. Integration with Constraint System
+
+This maps onto the existing constraint infrastructure:
+
+```typescript
+// Predicate as constraint
+const pred = and(not(equals(null)), not(equals("Email required")));
+
+// At each leaf, check satisfiability using implies()
+implies(equals("Invalid email"), pred)  // → true, keep branch
+implies(equals("Email required"), pred) // → false, dead branch
+implies(equals(null), pred)             // → false, dead branch
+```
+
+The `implies` function can do compile-time predicate evaluation on literal leaves.
+
+#### 4. Handling Later (Runtime) Leaves
+
+When a leaf is a Later value rather than a literal:
+
+```
+if isEmpty(email) then errorFromServer else ...
+```
+
+Where `errorFromServer` is a runtime value, the predicate becomes a runtime guard:
+
+```javascript
+if (email.length == 0 && errorFromServer != null && errorFromServer != "Email required") {
+  _arr.push(errorFromServer);
+}
+```
+
+The predicate is still pushed, but evaluated at runtime for non-literal leaves.
+
+#### 5. Condition Simplification
+
+After dead branch elimination, conditions may need simplification:
+
+```
+Original: if C1 then SKIP else if C2 then PUSH else SKIP
+Simplified: if !C1 && C2 then PUSH
+```
+
+This requires boolean simplification (De Morgan's laws, double negation elimination, etc.).
+
+### Generalization to Other Array Methods
+
+The pattern extends beyond filter:
+
+| Method | Optimization |
+|--------|--------------|
+| `.map(f).filter(p)` | Push `p(f(x))` into elements |
+| `.some(p)` | Short-circuit: `if (cond1 && p(v1)) return true; ...` |
+| `.every(p)` | Short-circuit: `if (cond1 && !p(v1)) return false; ...` |
+| `.find(p)` | `if (cond1 && p(v1)) return v1; ...` |
+| `.flatMap` | Subsumes filter when returning `[]` vs `[x]` |
+
+### Option E: Leaf Collection Approach
+
+Rather than rewriting the AST recursively, collect leaf cases directly:
+
+```typescript
+interface LeafCase {
+  pathCondition: Constraint;  // When this path is taken
+  value: SValue;              // The leaf value (Now or Later)
+}
+
+function collectLeaves(element: Expr, path: Constraint): LeafCase[]
+```
+
+Then for each leaf case:
+1. If `value` is Now (literal): evaluate predicate statically via `implies`
+2. If `predicate(value)` is false: discard case entirely
+3. If `predicate(value)` is true: emit `if (pathCondition) push(value)`
+4. If `value` is Later: emit `if (pathCondition && predicate(value)) push(value)`
+
+This separates tree walking from codegen and avoids messy AST rewriting. It's a restricted but practical form of supercompilation that avoids termination concerns.
+
+### Potential Issues
+
+**Code Explosion**: Deep nesting with many predicates could cause exponential growth. Mitigation: common subexpression elimination, or bail out to naive codegen beyond a threshold.
+
+**Predicate Complexity**: Simple `== / !=` with literals is easy. But `x.startsWith("Error")` or user-defined predicates need either inlining + simplification (full supercompilation) or fall back to runtime checks.
+
+**Condition Simplification**: Accumulated conditions may benefit from DNF/CNF normalization. For example, `!(isEmpty(email) || isValidEmail(email))` should simplify to `!isEmpty(email) && !isValidEmail(email)`.
+
+### Connection to Query Optimization
+
+This is analogous to relational query optimization:
+- **Predicate pushdown** in SQL
+- **Filter fusion**
+- **Join elimination** when a join key is statically known
+
+The array is like a "table" with conditional elements, and filter predicates are like WHERE clauses.
+
+---
+
 ## Open Questions
 
 1. How do existing supercompilers handle typed languages where substitution might violate type constraints?
@@ -257,3 +430,7 @@ Instead of substituting concrete values, track symbolic constraints:
 3. Could we leverage the existing refinement context to track "predicate assumptions" rather than substituting values?
 
 4. How do we handle predicates that aren't simple null checks (e.g., `x > 0`, `x.startsWith("a")`)?
+
+5. For the leaf collection approach, what's the best representation for path conditions that enables efficient simplification and codegen?
+
+6. How should we handle the interaction between filter fusion and short-circuiting semantics (e.g., if `p1` throws, `p2` shouldn't run)?
