@@ -67,6 +67,9 @@ function printJSExpr(expr: JSExpr, opts: Required<PrintOptions>, depth: number):
     case "jsArrow":
       return printArrow(expr.params, expr.body, opts, depth);
 
+    case "jsNamedFunction":
+      return printNamedFunction(expr.name, expr.params, expr.body, opts, depth);
+
     case "jsTernary":
       return printTernary(expr.cond, expr.then, expr.else, opts, depth);
 
@@ -249,6 +252,28 @@ function printArrow(
   // Expression body
   const bodyCode = printJSExpr(body, opts, depth);
   return `(${paramsCode}) => ${bodyCode}`;
+}
+
+function printNamedFunction(
+  name: string,
+  params: string[],
+  body: JSExpr | JSStmt[],
+  opts: Required<PrintOptions>,
+  depth: number
+): string {
+  const safeName = printIdentifier(name);
+  const paramsCode = params.map(printIdentifier).join(", ");
+
+  if (Array.isArray(body)) {
+    // Statement body
+    const bodyCode = body.map((s) => printJSStmt(s, opts, depth + 1)).join("\n");
+    const indent = opts.indent.repeat(depth);
+    return `function ${safeName}(${paramsCode}) {\n${bodyCode}\n${indent}}`;
+  }
+
+  // Expression body - wrap in return statement
+  const bodyCode = printJSExpr(body, opts, depth);
+  return `function ${safeName}(${paramsCode}) { return ${bodyCode}; }`;
 }
 
 // ============================================================================

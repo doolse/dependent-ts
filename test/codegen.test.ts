@@ -471,6 +471,8 @@ describe("Args Destructuring Optimization", () => {
 
   it("does not transform if params are already specified", () => {
     // fn(a) => let [x, y] = args in x + y
+    // When a function has explicit params, args is the array of those params
+    // So args becomes [a] since a is the only parameter
     const expr = fn(
       ["a"],
       letPatternExpr(
@@ -481,7 +483,8 @@ describe("Args Destructuring Optimization", () => {
     );
     const code = generateJS(expr);
     expect(code).toContain("(a)");
-    expect(code).toContain("const [x, y] = args");
+    // With proper staging, args is evaluated to [a]
+    expect(code).toContain("const [x, y] = [a]");
   });
 
   it("transforms recursive functions", () => {

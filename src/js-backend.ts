@@ -12,7 +12,7 @@ import { Backend, BackendContext, isNowValue, isLaterValue, isLaterArrayValue } 
 import {
   JSExpr, JSStmt, JSPattern,
   jsLit, jsVar, jsBinop, jsUnary, jsCall, jsMethod,
-  jsArrow, jsTernary, jsMember, jsIndex, jsObject, jsArray,
+  jsArrow, jsNamedFunction, jsTernary, jsMember, jsIndex, jsObject, jsArray,
   jsIIFE, jsConst, jsConstPattern, jsReturn, jsExpr,
   jsVarPattern, jsArrayPattern, jsObjectPattern
 } from "./js-ast";
@@ -92,28 +92,12 @@ export class JSBackend implements Backend {
       throw new Error("Expected closure value");
     }
 
-    // Extract params and body from the closure
-    // The body is already in desugared form: let [params] = args in actualBody
-    const { params, body } = this.extractParamsFromBody(closure.body);
+    // Convert closure to a residual expression - this properly stages the body
+    // with parameters as Later values, enabling compile-time evaluation
+    const residualExpr = ctx.closureToResidual(closure);
 
-    // Generate the body - we need to stage it with params as Later values
-    // For now, just generate the body expression directly
-    const bodyJs = this.generateFromExpr(body, ctx);
-
-    if (closure.name) {
-      // Named recursive function - need to use function declaration
-      // Wrap in IIFE that returns the function
-      return jsIIFE([
-        {
-          tag: "jsConst",
-          name: closure.name,
-          value: jsArrow(params, bodyJs)
-        } as JSStmt,
-        jsReturn(jsVar(closure.name))
-      ]);
-    }
-
-    return jsArrow(params, bodyJs);
+    // Generate from the staged residual
+    return this.generateFromExpr(residualExpr, ctx);
   }
 
   private extractParamsFromBody(body: Expr): { params: string[]; body: Expr } {
@@ -254,23 +238,24 @@ export class JSBackend implements Backend {
 
   private generateLet(name: string, value: Expr, body: Expr, ctx: BackendContext): JSExpr {
     const valueJs = this.generateFromExpr(value, ctx);
-    const bodyJs = this.generateFromExpr(body, ctx);
 
     if (name === "_") {
       // Discard binding - evaluate for side effect
+      const bodyJs = this.generateFromExpr(body, ctx);
       return jsIIFE([
         jsExpr(valueJs),
         jsReturn(bodyJs)
       ]);
     }
 
-    // Check if body is a let chain - can flatten into statements
-    const stmts = this.collectLetChain(name, valueJs, body, ctx);
-    if (stmts.length > 1) {
+    // Check for let chain BEFORE generating body - prevents nested IIFEs
+    if (body.tag === "let" || body.tag === "letPattern") {
+      const stmts = this.collectLetChain(name, valueJs, body, ctx);
       return jsIIFE(stmts);
     }
 
     // Single let - use IIFE
+    const bodyJs = this.generateFromExpr(body, ctx);
     return jsIIFE([
       jsConst(name, valueJs),
       jsReturn(bodyJs)
@@ -305,8 +290,33 @@ export class JSBackend implements Backend {
   private generateLetPattern(pattern: Pattern, value: Expr, body: Expr, ctx: BackendContext): JSExpr {
     const valueJs = this.generateFromExpr(value, ctx);
     const patternJs = this.convertPattern(pattern);
-    const bodyJs = this.generateFromExpr(body, ctx);
 
+    // Check for let chain BEFORE generating body - prevents nested IIFEs
+    if (body.tag === "let" || body.tag === "letPattern") {
+      const stmts: JSStmt[] = [jsConstPattern(patternJs, valueJs)];
+      // Collect remaining chain
+      let current: Expr = body;
+      while (current.tag === "let" || current.tag === "letPattern") {
+        if (current.tag === "let") {
+          const val = this.generateFromExpr(current.value, ctx);
+          if (current.name === "_") {
+            stmts.push(jsExpr(val));
+          } else {
+            stmts.push(jsConst(current.name, val));
+          }
+          current = current.body;
+        } else {
+          const val = this.generateFromExpr(current.value, ctx);
+          const pat = this.convertPattern(current.pattern);
+          stmts.push(jsConstPattern(pat, val));
+          current = current.body;
+        }
+      }
+      stmts.push(jsReturn(this.generateFromExpr(current, ctx)));
+      return jsIIFE(stmts);
+    }
+
+    const bodyJs = this.generateFromExpr(body, ctx);
     return jsIIFE([
       jsConstPattern(patternJs, valueJs),
       jsReturn(bodyJs)
@@ -363,33 +373,15 @@ export class JSBackend implements Backend {
       }
     }
 
-    // For recursive functions, we need a named function
-    // Generate: function name(params) { return body; }
-    // But since we're generating an expression, wrap in IIFE
-
+    // For recursive functions, generate a named function expression
+    // function name(params) { return body; }
     if (body.tag === "let" || body.tag === "letPattern") {
       const stmts = this.collectFunctionBody(body, ctx);
-      // Return as a function declaration string isn't directly possible
-      // Use named function expression syntax via a workaround
-      return jsIIFE([
-        {
-          tag: "jsConst",
-          name,
-          value: jsArrow(params, stmts)
-        } as JSStmt,
-        jsReturn(jsVar(name))
-      ]);
+      return jsNamedFunction(name, params, stmts);
     }
 
     const bodyJs = this.generateFromExpr(body, ctx);
-    return jsIIFE([
-      {
-        tag: "jsConst",
-        name,
-        value: jsArrow(params, bodyJs)
-      } as JSStmt,
-      jsReturn(jsVar(name))
-    ]);
+    return jsNamedFunction(name, params, bodyJs);
   }
 
   private collectFunctionBody(body: Expr, ctx: BackendContext): JSStmt[] {

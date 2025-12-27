@@ -23,6 +23,7 @@ export type JSExpr =
   | JSCall
   | JSMethod
   | JSArrow
+  | JSNamedFunction
   | JSTernary
   | JSMember
   | JSIndex
@@ -75,6 +76,14 @@ export interface JSMethod {
 /** Arrow function: (params) => body */
 export interface JSArrow {
   tag: "jsArrow";
+  params: string[];
+  body: JSExpr | JSStmt[];
+}
+
+/** Named function expression: function name(params) { body } */
+export interface JSNamedFunction {
+  tag: "jsNamedFunction";
+  name: string;
   params: string[];
   body: JSExpr | JSStmt[];
 }
@@ -259,6 +268,13 @@ export const jsMethod = (obj: JSExpr, method: string, args: JSExpr[]): JSMethod 
 
 export const jsArrow = (params: string[], body: JSExpr | JSStmt[]): JSArrow => ({
   tag: "jsArrow",
+  params,
+  body,
+});
+
+export const jsNamedFunction = (name: string, params: string[], body: JSExpr | JSStmt[]): JSNamedFunction => ({
+  tag: "jsNamedFunction",
+  name,
   params,
   body,
 });

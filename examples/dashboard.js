@@ -1,7 +1,7 @@
 import { jsx, jsxs } from "react/jsx-runtime";
 import { useState } from "react";
 
-export default (props) => (() => {
+export default (props) => {
   const salesData = [
     {
     id: 1,
@@ -54,31 +54,23 @@ export default (props) => (() => {
   }
   ];
   const [filterCategory, setFilterCategory] = useState("All");
-  const [sortBy, setSortBy] = useState("amount");
   const categories = ["All", "Electronics", "Accessories", "Hardware"];
   const filterByCategory = (cat) => (item) => cat === "All" ? true : item.category === cat;
   const filteredData = salesData.filter(filterByCategory(filterCategory));
-  const sumField = (() => {
-    const sumRec = (arr, field, idx) => idx >= arr.length ? 0 : (() => {
-      const item = arr[idx];
-      const value = field === "amount" ? item.amount * item.quantity : item.quantity;
-      return value + sumRec(arr, field, idx + 1);
-    })();
-    return sumRec;
-  })();
+  const sumField = function sumRec(arr, field, idx) { return idx >= arr.length ? 0 : (() => {
+    const item = arr[idx];
+    const value = field === "amount" ? item.amount * item.quantity : item.quantity;
+    return value + sumRec(arr, field, idx + 1);
+  })(); };
   const totalRevenue = sumField(filteredData, "amount", 0);
   const totalQuantity = sumField(filteredData, "quantity", 0);
-  const findMax = (() => {
-    const maxRec = (arr, idx, currentMax) => idx >= arr.length ? currentMax : (() => {
-      const item = arr[idx];
-      const value = item.amount * item.quantity;
-      const newMax = value > currentMax ? value : currentMax;
-      return maxRec(arr, idx + 1, newMax);
-    })();
-    return maxRec;
-  })();
+  const findMax = function maxRec(arr, idx, currentMax) { return idx >= arr.length ? currentMax : (() => {
+    const item = arr[idx];
+    const value = item.amount * item.quantity;
+    const newMax = value > currentMax ? value : currentMax;
+    return maxRec(arr, idx + 1, newMax);
+  })(); };
   const maxSale = findMax(filteredData, 0, 0);
-  const avgSale = filteredData.length > 0 ? totalRevenue / filteredData.length : 0;
   const cardStyle = {
     backgroundColor: "white",
     padding: "20px",
@@ -301,4 +293,4 @@ export default (props) => (() => {
   ]
   })
   });
-})();
+};

@@ -13,6 +13,7 @@
 
 import { Expr } from "./expr";
 import { Constraint } from "./constraint";
+import { Value } from "./value";
 import { SValue, Now, Later, LaterArray } from "./svalue";
 import { SEnv, SEvalResult } from "./staged-evaluate";
 import { JSExpr } from "./js-ast";
@@ -52,6 +53,12 @@ export interface BackendContext {
    * Generate code from an expression (stages it first).
    */
   generateExpr(expr: Expr): JSExpr;
+
+  /**
+   * Convert a closure value to a residual expression.
+   * Stages the closure body with parameters as Later values.
+   */
+  closureToResidual(closure: Value): Expr;
 }
 
 // ============================================================================

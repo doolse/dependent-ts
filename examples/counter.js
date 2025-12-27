@@ -1,7 +1,7 @@
 import { jsx, jsxs } from "react/jsx-runtime";
 import { useState } from "react";
 
-export default (props) => (() => {
+export default (props) => {
   const [count, setCount] = useState(0);
   return jsxs("div", {
     style: { fontFamily: "system-ui", padding: "20px" },
@@ -31,4 +31,4 @@ export default (props) => (() => {
   })
   ]
   });
-})();
+};

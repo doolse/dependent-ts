@@ -10,9 +10,9 @@
  * 3. Print JS AST to string
  */
 
-import { Expr, patternVars } from "./expr";
-import { stage, stagingEvaluate, svalueToResidual, SEnv, closureToResidual } from "./staged-evaluate";
-import { isNow, SValue } from "./svalue";
+import { Expr } from "./expr";
+import { stage, stagingEvaluate, svalueToResidual, closureToResidual, SEnv } from "./staged-evaluate";
+import { SValue } from "./svalue";
 import { Backend, BackendContext } from "./backend";
 import { JSBackend } from "./js-backend";
 import { JSExpr } from "./js-ast";
@@ -115,6 +115,7 @@ export function generateWithBackend(sv: SValue, backend: Backend): JSExpr {
     stage: (expr, env) => stagingEvaluate(expr, env ?? emptyEnv),
     env: emptyEnv,
     svalueToResidual,
+    closureToResidual,
     generate: (innerSv) => backend.generate(innerSv, ctx),
     generateExpr: (expr) => {
       const result = stagingEvaluate(expr, emptyEnv);
@@ -280,149 +281,4 @@ function collectImports(expr: Expr): Map<string, Set<string>> {
 
   visit(expr);
   return imports;
-}
-
-// ============================================================================
-// Helper Utilities
-// ============================================================================
-
-/**
- * Get free variables in an expression (variables not bound within the expression).
- */
-export function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
-  const free = new Set<string>();
-
-  function visit(e: Expr, b: Set<string>): void {
-    switch (e.tag) {
-      case "lit":
-        break;
-      case "var":
-        if (!b.has(e.name)) free.add(e.name);
-        break;
-      case "binop":
-        visit(e.left, b);
-        visit(e.right, b);
-        break;
-      case "unary":
-        visit(e.operand, b);
-        break;
-      case "if":
-        visit(e.cond, b);
-        visit(e.then, b);
-        visit(e.else, b);
-        break;
-      case "let": {
-        visit(e.value, b);
-        const newBound = new Set(b);
-        newBound.add(e.name);
-        visit(e.body, newBound);
-        break;
-      }
-      case "letPattern": {
-        visit(e.value, b);
-        const newBound = new Set(b);
-        for (const v of patternVars(e.pattern)) newBound.add(v);
-        visit(e.body, newBound);
-        break;
-      }
-      case "fn": {
-        const newBound = new Set(b);
-        for (const p of e.params) newBound.add(p);
-        visit(e.body, newBound);
-        break;
-      }
-      case "recfn": {
-        const newBound = new Set(b);
-        newBound.add(e.name);  // Name is bound for recursion
-        for (const p of e.params) newBound.add(p);
-        visit(e.body, newBound);
-        break;
-      }
-      case "call":
-        visit(e.func, b);
-        for (const a of e.args) visit(a, b);
-        break;
-      case "obj":
-        for (const f of e.fields) visit(f.value, b);
-        break;
-      case "field":
-        visit(e.object, b);
-        break;
-      case "array":
-        for (const el of e.elements) visit(el, b);
-        break;
-      case "index":
-        visit(e.array, b);
-        visit(e.index, b);
-        break;
-      case "block":
-        for (const ex of e.exprs) visit(ex, b);
-        break;
-      case "comptime":
-        visit(e.expr, b);
-        break;
-      case "runtime":
-        visit(e.expr, b);
-        break;
-      case "assert":
-        visit(e.expr, b);
-        visit(e.constraint, b);
-        break;
-      case "assertCond":
-        visit(e.condition, b);
-        break;
-      case "trust":
-        visit(e.expr, b);
-        if (e.constraint) visit(e.constraint, b);
-        break;
-      case "methodCall":
-        visit(e.receiver, b);
-        for (const a of e.args) visit(a, b);
-        break;
-      case "import": {
-        const newBound = new Set(b);
-        for (const name of e.names) newBound.add(name);
-        visit(e.body, newBound);
-        break;
-      }
-      case "typeOf":
-        visit(e.expr, b);
-        break;
-    }
-  }
-
-  visit(expr, bound);
-  return free;
-}
-
-/**
- * Convert a runtime value back to an expression for code generation.
- */
-export function exprFromValue(value: import("./value").Value): Expr {
-  switch (value.tag) {
-    case "number":
-      return { tag: "lit", value: value.value };
-    case "string":
-      return { tag: "lit", value: value.value };
-    case "bool":
-      return { tag: "lit", value: value.value };
-    case "null":
-      return { tag: "lit", value: null };
-    case "object": {
-      const fields: { name: string; value: Expr }[] = [];
-      for (const [name, val] of value.fields) {
-        fields.push({ name, value: exprFromValue(val) });
-      }
-      return { tag: "obj", fields };
-    }
-    case "array":
-      return { tag: "array", elements: value.elements.map(exprFromValue) };
-    case "closure":
-      // Use closureToResidual to properly stage the function body
-      return closureToResidual(value);
-    case "type":
-      throw new Error("Cannot convert type value to expression");
-    case "builtin":
-      return { tag: "var", name: value.name };
-  }
 }
