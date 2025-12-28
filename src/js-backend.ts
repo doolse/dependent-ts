@@ -8,7 +8,7 @@
  * - Stage sub-expressions on demand
  */
 
-import { Backend, BackendContext, isNowValue, isLaterValue, isLaterArrayValue } from "./backend";
+import { Backend, BackendContext, isNowValue, isLaterValue, isLaterArrayValue, isStagedClosureValue } from "./backend";
 import {
   JSExpr, JSStmt, JSPattern,
   jsLit, jsVar, jsBinop, jsUnary, jsCall, jsMethod,
@@ -16,7 +16,7 @@ import {
   jsIIFE, jsConst, jsConstPattern, jsReturn, jsExpr,
   jsVarPattern, jsArrayPattern, jsObjectPattern
 } from "./js-ast";
-import { SValue, Now, Later, LaterArray } from "./svalue";
+import { SValue, Now, Later, LaterArray, StagedClosure } from "./svalue";
 import { Value } from "./value";
 import { Expr, Pattern } from "./expr";
 import { Constraint } from "./constraint";
@@ -40,6 +40,12 @@ export class JSBackend implements Backend {
     if (isLaterArrayValue(sv)) {
       // Generate array from elements
       return jsArray(sv.elements.map(elem => ctx.generate(elem)));
+    }
+
+    if (isStagedClosureValue(sv)) {
+      // Convert StagedClosure to residual expression, then generate
+      const residual = ctx.closureToResidual(sv);
+      return this.generateFromExpr(residual, ctx);
     }
 
     // Later - generate from residual
@@ -76,8 +82,9 @@ export class JSBackend implements Backend {
         return jsArray(value.elements.map(e => this.generateFromValue(e, ctx)));
 
       case "closure":
-        // Generate function from closure
-        return this.generateClosure(value, ctx);
+        // With the new design, closures are StagedClosure SValues, not Now SValues with ClosureValue
+        // This path should not be reached
+        throw new Error("Unexpected closure Value - should be StagedClosure");
 
       case "type":
         throw new Error("Cannot generate code for type value");
@@ -85,19 +92,6 @@ export class JSBackend implements Backend {
       case "builtin":
         return jsVar(value.name);
     }
-  }
-
-  private generateClosure(closure: Value, ctx: BackendContext): JSExpr {
-    if (closure.tag !== "closure") {
-      throw new Error("Expected closure value");
-    }
-
-    // Convert closure to a residual expression - this properly stages the body
-    // with parameters as Later values, enabling compile-time evaluation
-    const residualExpr = ctx.closureToResidual(closure);
-
-    // Generate from the staged residual
-    return this.generateFromExpr(residualExpr, ctx);
   }
 
   private extractParamsFromBody(body: Expr): { params: string[]; body: Expr } {

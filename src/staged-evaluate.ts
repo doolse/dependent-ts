@@ -15,71 +15,17 @@
 import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, letPatternExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr, methodCall, importExpr, Pattern, patternVars } from "./expr";
 import { TSDeclarationLoader, FunctionSignatureInfo, buildSyntheticBody, getRegisteredConstraint } from "./ts-loader";
 import { lookupMethod } from "./methods";
-import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
+import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
 import { getBuiltin, getAllBuiltins, BuiltinDef, StagedBuiltinContext } from "./builtin-registry";
 import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, unify, constraintToString, tupleConstraint, arrayOfConstraint, anyC, neverC, indexSig } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
 import { extractAllRefinements, negateRefinement } from "./refinement";
-import { SValue, Now, Later, LaterArray, now, later, laterArray, isNow, isLater, isLaterArray, allNow } from "./svalue";
-
-// ============================================================================
-// Staged Environment
-// ============================================================================
-
-/**
- * Staged binding - value may be Now or Later.
- */
-export interface SBinding {
-  svalue: SValue;
-}
-
-/**
- * Staged environment maps names to staged bindings.
- */
-export class SEnv {
-  private constructor(private bindings: Map<string, SBinding>) {}
-
-  static empty(): SEnv {
-    return new SEnv(new Map());
-  }
-
-  get(name: string): SBinding {
-    const binding = this.bindings.get(name);
-    if (!binding) {
-      throw new Error(`Unbound variable: ${name}`);
-    }
-    return binding;
-  }
-
-  set(name: string, binding: SBinding): SEnv {
-    const newBindings = new Map(this.bindings);
-    newBindings.set(name, binding);
-    return new SEnv(newBindings);
-  }
-
-  has(name: string): boolean {
-    return this.bindings.has(name);
-  }
-
-  entries(): IterableIterator<[string, SBinding]> {
-    return this.bindings.entries();
-  }
-}
-
-// ============================================================================
-// Staged Closure
-// ============================================================================
-
-/**
- * A staged closure captures the staged environment.
- */
-export interface SClosure {
-  body: Expr;
-  env: SEnv;
-  name?: string;  // Optional name for recursive self-reference
-  // Note: params have been removed - all functions use args array with desugaring
-}
+import {
+  SValue, Now, Later, LaterArray, StagedClosure, SEnv, SBinding,
+  now, later, laterArray, laterRuntime, laterImport, stagedClosure, mergeCaptures,
+  isNow, isLater, isLaterArray, isStagedClosure, isRuntime, allNow
+} from "./svalue";
 
 // ============================================================================
 // Staging Errors
@@ -236,8 +182,11 @@ function evalVariable(name: string, env: SEnv, ctx: RefinementContext): SEvalRes
     } else if (isLaterArray(sv)) {
       // Preserve LaterArray structure with refined constraint
       return { svalue: laterArray(sv.elements, refined) };
+    } else if (isStagedClosure(sv)) {
+      // StagedClosure - update constraint
+      return { svalue: stagedClosure(sv.body, sv.params, sv.env, refined, sv.name, sv.siblings) };
     } else {
-      return { svalue: later(refined, sv.residual) };
+      return { svalue: later(refined, sv.residual, sv.captures) };
     }
   }
 
@@ -429,11 +378,11 @@ function evalLet(
   }
 
   // Body is Later - decide whether to emit a let binding
-  // For Later/LaterArray values: check original expression (to avoid duplicate evaluation of side effects)
+  // For Later/LaterArray/StagedClosure values: check original expression (to avoid duplicate evaluation of side effects)
   // For Now values with compound types (objects, arrays, closures): check original expression
   //   to preserve code structure and avoid duplicating large literals
   // For Now values with primitives: check residual (inlining is fine)
-  const shouldEmitLet = isLater(valueResult) || isLaterArray(valueResult)
+  const shouldEmitLet = isLater(valueResult) || isLaterArray(valueResult) || isStagedClosure(valueResult)
     ? usesVar(bodyExpr, name)
     : isCompoundValue(valueResult.value)
       ? usesVar(bodyExpr, name)
@@ -441,9 +390,7 @@ function evalLet(
 
   if (shouldEmitLet) {
     // Variable is used in body - need to emit a let binding
-    const valueResidual = isNow(valueResult)
-      ? valueToExpr(valueResult.value)
-      : svalueToResidual(valueResult);
+    const valueResidual = svalueToResidual(valueResult);
 
     return {
       svalue: later(
@@ -621,16 +568,13 @@ function evalLetPattern(
 }
 
 function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
-  // Functions are always Now (the closure itself is known)
+  // Functions are StagedClosure - they carry their captured environment directly
   // The type emerges from body analysis at call sites - no upfront inference needed
-  // Note: params is ignored here - body already contains let [params] = args in ... desugaring
-  const closure = closureVal(body, Env.empty()); // Placeholder env
+  // Note: params is extracted from the desugared body pattern
+  const extractedParams = extractParamsFromBody(body);
 
-  // Store the staged env in a side channel for call-time evaluation
-  stagedClosures.set(closure, { body, env });
-
-  // Return function with simple isFunction constraint - types derived at call site
-  return { svalue: now(closure, isFunction) };
+  // Return a StagedClosure with the captured environment
+  return { svalue: stagedClosure(body, extractedParams, env, isFunction) };
 }
 
 /**
@@ -638,20 +582,37 @@ function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
  * The function can call itself by name within its body.
  */
 function evalRecFn(name: string, params: string[], body: Expr, env: SEnv): SEvalResult {
-  // Create a closure with the name for self-reference
-  // Note: params is ignored here - body already contains let [params] = args in ... desugaring
-  const closure = closureVal(body, Env.empty(), name); // Placeholder env
+  // Create a StagedClosure with self-reference
+  // Note: params is extracted from the desugared body pattern
+  const extractedParams = extractParamsFromBody(body);
 
-  // Store the staged env in a side channel with self-binding
-  const selfSEnv = env.set(name, { svalue: now(closure, isFunction) });
-  stagedClosures.set(closure, { body, env: selfSEnv, name });
-
-  // Return function with simple isFunction constraint - types derived at call site
-  return { svalue: now(closure, isFunction) };
+  // The closure will reference itself by name - we'll set up the self-binding at call time
+  return { svalue: stagedClosure(body, extractedParams, env, isFunction, name) };
 }
 
-// Side channel for staged closures (maps closure value to staged closure info)
-const stagedClosures = new WeakMap<Value, SClosure>();
+/**
+ * Extract parameter names from a desugared function body.
+ * Body structure: let [param1, param2, ...] = args in actualBody
+ */
+function extractParamsFromBody(body: Expr): string[] {
+  if (body.tag === "letPattern" && body.value.tag === "var" && body.value.name === "args") {
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern") {
+      const paramNames: string[] = [];
+      for (const elem of pattern.elements) {
+        if (elem.tag === "varPattern") {
+          paramNames.push(elem.name);
+        } else {
+          // Complex pattern - can't extract simple param names
+          return [];
+        }
+      }
+      return paramNames;
+    }
+  }
+  // No parameter destructuring found
+  return [];
+}
 
 // Coinductive cycle detection: tracks recursive functions currently being evaluated
 // Maps function name to the assumed result constraint (from type inference)
@@ -707,26 +668,26 @@ function evalBuiltinCall(
     const builtinCtx: StagedBuiltinContext = {
       env,
       refinementCtx: ctx,
-      invokeClosure: (closure, closureArgs) => {
-        const sclosure = stagedClosures.get(closure);
-        if (!sclosure) {
-          throw new Error("Staged closure info not found for builtin invocation");
+      invokeClosure: (closureSV, closureArgs) => {
+        if (!isStagedClosure(closureSV)) {
+          throw new Error("invokeClosure requires a StagedClosure");
         }
-        let callEnv = sclosure.env;
-        if (sclosure.name) {
-          callEnv = callEnv.set(sclosure.name, { svalue: now(closure, isFunction) });
+        let callEnv = closureSV.env;
+        if (closureSV.name) {
+          callEnv = callEnv.set(closureSV.name, { svalue: closureSV });
         }
         // All functions use args array (params are desugared at parse time)
         callEnv = callEnv.set("args", { svalue: createArraySValue(closureArgs) });
-        return stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
+        return stagingEvaluate(closureSV.body, callEnv, RefinementContext.empty());
       },
       valueToExpr,
       svalueToResidual,
       now,
-      later,
+      later: (constraint, residual) => later(constraint, residual),
       laterArray,
       isNow,
       isLaterArray,
+      isStagedClosure,
     };
 
     return builtinDef.evaluate.handler(args, argExprs, builtinCtx);
@@ -752,108 +713,115 @@ function evalCall(
 
   requireConstraint(func.constraint, isFunction, "function call");
 
-  if (isLater(func) || isLaterArray(func)) {
-    // Function itself is not known - generate residual call
+  // Handle Later functions (opaque - can't inspect body)
+  if (isLater(func)) {
     const argResults = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
     const argResiduals = argResults.map(svalueToResidual);
+    const captures = mergeCaptures([func, ...argResults]);
 
     // We don't know the result constraint without knowing the function
     // Use 'any' as a conservative approximation
-    return { svalue: later({ tag: "any" }, call(svalueToResidual(func), ...argResiduals)) };
+    return { svalue: later({ tag: "any" }, call(svalueToResidual(func), ...argResiduals), captures) };
   }
 
-  // Function is Now
-  if (func.value.tag !== "closure") {
-    throw new Error("Cannot call non-function");
-  }
+  // Handle StagedClosure - we can analyze and evaluate the body
+  if (isStagedClosure(func)) {
+    // Evaluate arguments
+    const args = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
 
-  const sclosure = stagedClosures.get(func.value);
-  if (!sclosure) {
-    throw new Error("Staged closure info not found");
-  }
+    // Coinductive cycle detection for recursive functions with Later arguments
+    // This prevents infinite recursion when a recursive function is called with runtime values
+    if (func.name && args.some(isRuntime)) {
+      if (inProgressRecursiveCalls.has(func.name)) {
+        // Cycle detected! We're already evaluating this recursive function with Later args.
+        // Use the pre-computed result constraint and emit residual code.
+        const resultConstraint = inProgressRecursiveCalls.get(func.name)!;
+        const argResiduals = args.map(svalueToResidual);
+        const captures = mergeCaptures(args);
+        return {
+          svalue: later(resultConstraint, call(varRef(func.name), ...argResiduals), captures)
+        };
+      }
 
-  // With parser desugaring, all functions use args array - no param count check needed
+      // Not in a cycle yet - mark as in-progress and evaluate body
+      // Use 'any' as result constraint for cycle detection - types derived from body
+      inProgressRecursiveCalls.set(func.name, { tag: "any" });
 
-  // Evaluate arguments
-  const args = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
+      // Bind args array in the closure's environment
+      let callEnv = func.env;
+      callEnv = callEnv.set(func.name, { svalue: func });
+      // All functions use args array (params are desugared at parse time)
+      callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
 
-  // Coinductive cycle detection for recursive functions with Later arguments
-  // This prevents infinite recursion when a recursive function is called with runtime values
-  if (sclosure.name && args.some(isLater)) {
-    if (inProgressRecursiveCalls.has(sclosure.name)) {
-      // Cycle detected! We're already evaluating this recursive function with Later args.
-      // Use the pre-computed result constraint and emit residual code.
-      const resultConstraint = inProgressRecursiveCalls.get(sclosure.name)!;
-      const argResiduals = args.map(svalueToResidual);
-      return {
-        svalue: later(resultConstraint, call(varRef(sclosure.name), ...argResiduals))
-      };
+      try {
+        const result = stagingEvaluate(func.body, callEnv, RefinementContext.empty());
+
+        // Always use call expression as residual for recursive functions with Later args
+        // This ensures proper code generation instead of inlining the body
+        const argResiduals = args.map(svalueToResidual);
+        const callResidual = call(varRef(func.name), ...argResiduals);
+        const captures = mergeCaptures(args);
+
+        if (isNow(result.svalue)) {
+          return {
+            svalue: now(result.svalue.value, result.svalue.constraint, callResidual)
+          };
+        } else {
+          return {
+            svalue: later(result.svalue.constraint, callResidual, captures)
+          };
+        }
+      } finally {
+        inProgressRecursiveCalls.delete(func.name);
+      }
     }
 
-    // Not in a cycle yet - mark as in-progress and evaluate body
-    // Use 'any' as result constraint for cycle detection - types derived from body
-    inProgressRecursiveCalls.set(sclosure.name, { tag: "any" });
+    // Non-recursive function or all arguments are Now - evaluate normally
+    let callEnv = func.env;
 
-    // Bind args array in the closure's environment
-    let callEnv = sclosure.env;
-    callEnv = callEnv.set(sclosure.name, { svalue: func });
+    // Add self-binding for recursive functions
+    if (func.name) {
+      callEnv = callEnv.set(func.name, { svalue: func });
+    }
+
     // All functions use args array (params are desugared at parse time)
     callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
 
-    try {
-      const result = stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
+    // Evaluate body
+    const result = stagingEvaluate(func.body, callEnv, RefinementContext.empty());
 
-      // Always use call expression as residual for recursive functions with Later args
-      // This ensures proper code generation instead of inlining the body
-      const funcResidual = svalueToResidual(func);
+    // If any argument was runtime and function was bound to a name,
+    // emit a call expression instead of inlining the body.
+    // This prevents closure bodies from being duplicated at each call site.
+    if (args.some(isRuntime) && funcExpr.tag === "var") {
       const argResiduals = args.map(svalueToResidual);
-      const callResidual = call(funcResidual, ...argResiduals);
+      const callResidual = call(varRef(funcExpr.name), ...argResiduals);
+      const captures = mergeCaptures(args);
 
       if (isNow(result.svalue)) {
-        return {
-          svalue: now(result.svalue.value, result.svalue.constraint, callResidual)
-        };
+        return { svalue: now(result.svalue.value, result.svalue.constraint, callResidual) };
+      } else if (isStagedClosure(result.svalue)) {
+        // Result is a closure - return as-is (closures are compile-time known)
+        return result;
       } else {
-        return {
-          svalue: later(result.svalue.constraint, callResidual)
-        };
+        return { svalue: later(result.svalue.constraint, callResidual, captures) };
       }
-    } finally {
-      inProgressRecursiveCalls.delete(sclosure.name);
     }
+
+    return result;
   }
 
-  // Non-recursive function or all arguments are Now - evaluate normally
-  let callEnv = sclosure.env;
-
-  // Add self-binding for recursive functions
-  if (sclosure.name) {
-    callEnv = callEnv.set(sclosure.name, { svalue: func });
+  // Handle LaterArray (shouldn't happen, but handle for completeness)
+  if (isLaterArray(func)) {
+    throw new Error("Cannot call a LaterArray");
   }
 
-  // All functions use args array (params are desugared at parse time)
-  callEnv = callEnv.set("args", { svalue: createArraySValue(args) });
-
-  // Evaluate body
-  const result = stagingEvaluate(sclosure.body, callEnv, RefinementContext.empty());
-
-  // If any argument was Later/LaterArray and function has a residual (variable reference),
-  // emit a call expression instead of inlining the body.
-  // This prevents closure bodies from being duplicated at each call site.
-  const nowFunc = func as Now; // TypeScript doesn't track this narrowing through the control flow
-  if (args.some(sv => isLater(sv) || isLaterArray(sv)) && nowFunc.residual) {
-    const funcResidual = nowFunc.residual;
-    const argResiduals = args.map(svalueToResidual);
-    const callResidual = call(funcResidual, ...argResiduals);
-
-    if (isNow(result.svalue)) {
-      return { svalue: now(result.svalue.value, result.svalue.constraint, callResidual) };
-    } else {
-      return { svalue: later(result.svalue.constraint, callResidual) };
-    }
+  // Handle Now with closure Value (legacy path - shouldn't happen with new design)
+  if (isNow(func) && func.value.tag === "closure") {
+    throw new Error("Unexpected closure Value - should be StagedClosure");
   }
 
-  return result;
+  throw new Error("Cannot call non-function");
 }
 
 /**
@@ -906,7 +874,6 @@ function evalMethodCall(
   }
 
   // If receiver or any argument is Later/LaterArray, generate residual
-  const isRuntime = (sv: SValue) => isLater(sv) || isLaterArray(sv);
   if (isRuntime(recv) || args.some(isRuntime)) {
     const recvResidual = svalueToResidual(recv);
     const argResiduals = args.map(svalueToResidual);
@@ -916,6 +883,11 @@ function evalMethodCall(
     return {
       svalue: later(resultConstraint, methodCall(recvResidual, methodName, argResiduals))
     };
+  }
+
+  // StagedClosure shouldn't have methods called on it
+  if (isStagedClosure(recv)) {
+    throw new Error(`Cannot call method '${methodName}' on a closure`);
   }
 
   // All Now - execute at compile time
@@ -1226,8 +1198,8 @@ function evalRuntime(
   // Create a fresh variable for the residual
   const varName = name ?? freshVar("rt");
 
-  // Return a Later with the constraint and a variable reference
-  return { svalue: later(result.constraint, varRef(varName)) };
+  // Return a Later with runtime origin - no captures (this IS the origin)
+  return { svalue: laterRuntime(varName, result.constraint) };
 }
 
 /**
@@ -1244,7 +1216,7 @@ function evalAssert(
   // Evaluate the constraint expression - should be a Type value
   const constraintResult = stagingEvaluate(constraintExpr, env, ctx).svalue;
 
-  if (isLater(constraintResult) || isLaterArray(constraintResult)) {
+  if (isLater(constraintResult) || isLaterArray(constraintResult) || isStagedClosure(constraintResult)) {
     throw new StagingError("assert requires a compile-time known type constraint");
   }
 
@@ -1334,7 +1306,7 @@ function evalTrust(
   // Evaluate the constraint expression - should be a Type value
   const constraintResult = stagingEvaluate(constraintExpr, env, ctx).svalue;
 
-  if (isLater(constraintResult) || isLaterArray(constraintResult)) {
+  if (isLater(constraintResult) || isLaterArray(constraintResult) || isStagedClosure(constraintResult)) {
     throw new StagingError("trust requires a compile-time known type constraint");
   }
 
@@ -1348,13 +1320,17 @@ function evalTrust(
     return { svalue: now(valueResult.value, refinedConstraint) };
   }
 
-  // Value is Later/LaterArray - trust is purely a type-level operation, no residual
+  // Value is Later/LaterArray/StagedClosure - trust is purely a type-level operation, no residual
   // The trust "disappears" and just affects the constraint
   if (isLaterArray(valueResult)) {
     // Preserve LaterArray structure with refined constraint
     return { svalue: laterArray(valueResult.elements, refinedConstraint) };
   }
-  return { svalue: later(refinedConstraint, valueResult.residual) };
+  if (isStagedClosure(valueResult)) {
+    // Preserve StagedClosure with refined constraint
+    return { svalue: stagedClosure(valueResult.body, valueResult.params, valueResult.env, refinedConstraint, valueResult.name, valueResult.siblings) };
+  }
+  return { svalue: later(refinedConstraint, valueResult.residual, valueResult.captures) };
 }
 
 /**
@@ -1481,21 +1457,20 @@ function evalImport(
       // Create the impl binding (the actual imported function)
       const implName = `__${name}_impl`;
       newEnv = newEnv.set(implName, {
-        svalue: later(isFunction, varRef(name))
+        svalue: laterImport(name, modulePath, isFunction)
       });
 
       // Create synthetic closure with type-preserving body
       const syntheticBody = buildSyntheticBody(sig, implName, sig.paramTypes.length);
-      const closure = closureVal(syntheticBody, Env.empty());
+      const extractedParams = extractParamsFromBody(syntheticBody);
 
-      // Register with stagedClosures so it can be evaluated
-      stagedClosures.set(closure, { body: syntheticBody, env: newEnv });
-
-      // Bind the name to the synthetic closure (Now - closures are always Now)
-      newEnv = newEnv.set(name, { svalue: now(closure, isFunction) });
+      // Bind the name to a StagedClosure
+      newEnv = newEnv.set(name, {
+        svalue: stagedClosure(syntheticBody, extractedParams, newEnv, isFunction)
+      });
     } else {
-      // Non-generic imports: keep as Later binding
-      newEnv = newEnv.set(name, { svalue: later(constraint, varRef(name)) });
+      // Non-generic imports: keep as Later binding with import origin
+      newEnv = newEnv.set(name, { svalue: laterImport(name, modulePath, constraint) });
     }
   }
 
@@ -1507,15 +1482,23 @@ function evalImport(
     return { svalue: bodyResult };
   }
 
+  // If body is a StagedClosure, return it directly
+  if (isStagedClosure(bodyResult)) {
+    return { svalue: bodyResult };
+  }
+
   // Check if any imported names are actually used in the body
   const anyImportUsed = names.some(name => usesVar(bodyExpr, name));
 
   // If imports are used, wrap in residual import expression
   if (anyImportUsed) {
+    // Collect captures from body for the wrapper Later
+    const captures = isLater(bodyResult) ? bodyResult.captures : mergeCaptures(isLaterArray(bodyResult) ? bodyResult.elements : []);
     return {
       svalue: later(
         bodyResult.constraint,
-        importExpr(names, modulePath, svalueToResidual(bodyResult))
+        importExpr(names, modulePath, svalueToResidual(bodyResult)),
+        captures
       )
     };
   }
@@ -1639,38 +1622,26 @@ function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
 }
 
 /**
- * Internal implementation of closure to residual conversion.
- * Defined before valueToExpr so it can be called during value conversion.
+ * Convert a StagedClosure to a residual function expression.
+ * This stages the body with parameters bound as Later values.
  */
-function closureToResidualInternal(closure: Value): Expr {
-  if (closure.tag !== "closure") {
-    throw new Error("closureToResidual requires a closure value");
-  }
-
-  const sclosure = stagedClosures.get(closure);
-  if (!sclosure) {
-    // Fallback: no staged info, emit body as-is
-    return closure.name
-      ? { tag: "recfn", name: closure.name, params: [], body: closure.body }
-      : { tag: "fn", params: [], body: closure.body };
-  }
-
+function stagedClosureToResidual(sc: StagedClosure): Expr {
   // Extract parameter names from the desugared body pattern
   // Body structure: let [param1, param2, ...] = args in actualBody
-  const { paramNames, innerBody } = extractParamsFromBodyInternal(sclosure.body);
+  const { paramNames, innerBody } = extractParamsFromBodyInternal(sc.body);
 
   // Create an environment with parameters as Later values
-  let bodyEnv = sclosure.env;
+  let bodyEnv = sc.env;
 
   // Add self-reference for recursive functions
-  if (sclosure.name) {
-    bodyEnv = bodyEnv.set(sclosure.name, { svalue: now(closure, isFunction) });
+  if (sc.name) {
+    bodyEnv = bodyEnv.set(sc.name, { svalue: sc });
   }
 
   // Create Later bindings for each parameter
   const paramSValues: SValue[] = [];
   for (const paramName of paramNames) {
-    const paramSValue = later(anyC, varRef(paramName));
+    const paramSValue = laterRuntime(paramName, anyC);
     paramSValues.push(paramSValue);
     bodyEnv = bodyEnv.set(paramName, { svalue: paramSValue });
   }
@@ -1681,7 +1652,7 @@ function closureToResidualInternal(closure: Value): Expr {
   // Find free variables in the inner body that aren't bound in the environment
   // These are external references (globals, imports, etc.) - treat as Later
   const boundVars = new Set<string>(["args", ...paramNames]);
-  if (sclosure.name) boundVars.add(sclosure.name);
+  if (sc.name) boundVars.add(sc.name);
   const freeInBody = freeVars(innerBody, boundVars);
 
   for (const freeVar of freeInBody) {
@@ -1707,8 +1678,8 @@ function closureToResidualInternal(closure: Value): Expr {
   // Build the residual function
   const residualBody = svalueToResidual(bodyResult);
 
-  if (closure.name) {
-    return { tag: "recfn", name: closure.name, params: paramNames, body: residualBody };
+  if (sc.name) {
+    return { tag: "recfn", name: sc.name, params: paramNames, body: residualBody };
   }
   return { tag: "fn", params: paramNames, body: residualBody };
 }
@@ -1740,6 +1711,7 @@ function extractParamsFromBodyInternal(body: Expr): { paramNames: string[]; inne
 /**
  * Get the residual expression from an SValue.
  * For Later values, returns the residual.
+ * For StagedClosure, converts to a function expression.
  * For Now values with a residual (e.g., variable reference), uses that.
  * For Now values without a residual, converts the value to an expression.
  */
@@ -1750,6 +1722,10 @@ export function svalueToResidual(sv: SValue): Expr {
   if (isLaterArray(sv)) {
     // Compute array expression from elements
     return array(...sv.elements.map(svalueToResidual));
+  }
+  if (isStagedClosure(sv)) {
+    // Convert closure to function expression
+    return stagedClosureToResidual(sv);
   }
   // Now value - use residual if present, otherwise convert value
   return sv.residual ?? valueToExpr(sv.value);
@@ -2082,7 +2058,7 @@ export function runValue(expr: Expr): Value {
 // ============================================================================
 
 /**
- * Convert a closure to a residual expression by staging its body.
+ * Convert a StagedClosure to a residual function expression.
  *
  * This is used when emitting a function that was created at compile time
  * but needs to be output as code (e.g., React components).
@@ -2093,6 +2069,6 @@ export function runValue(expr: Expr): Value {
  * 3. Stage the body with those bindings
  * 4. Return a function expression with the residual body
  */
-export function closureToResidual(closure: Value): Expr {
-  return closureToResidualInternal(closure);
+export function closureToResidual(closure: StagedClosure): Expr {
+  return stagedClosureToResidual(closure);
 }

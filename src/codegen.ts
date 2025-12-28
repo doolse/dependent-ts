@@ -11,8 +11,8 @@
  */
 
 import { Expr } from "./expr";
-import { stage, stagingEvaluate, svalueToResidual, closureToResidual, SEnv } from "./staged-evaluate";
-import { SValue } from "./svalue";
+import { stage, stagingEvaluate, svalueToResidual, closureToResidual } from "./staged-evaluate";
+import { SValue, StagedClosure, SEnv } from "./svalue";
 import { Backend, BackendContext } from "./backend";
 import { JSBackend } from "./js-backend";
 import { JSExpr } from "./js-ast";

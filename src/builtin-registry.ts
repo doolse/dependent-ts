@@ -8,7 +8,7 @@
 import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar } from "./constraint";
 import { Value, numberVal, stringVal, boolVal, nullVal, arrayVal, typeVal, BuiltinValue, StringValue, NumberValue, ArrayValue, ClosureValue, constraintOf, valueToString } from "./value";
 import { Expr, methodCall, call, varRef } from "./expr";
-import type { SValue, Now, Later, LaterArray } from "./svalue";
+import type { SValue, Now, Later, LaterArray, StagedClosure } from "./svalue";
 import type { RefinementContext } from "./env";
 
 // Re-export for use by staged-evaluate
@@ -83,8 +83,8 @@ export type StagedBuiltinHandler = (
 export interface StagedBuiltinContext {
   env: SEnv;
   refinementCtx: RefinementContext;
-  /** Invoke a closure on arguments, returning staged result */
-  invokeClosure: (closure: ClosureValue, args: SValue[]) => SEvalResult;
+  /** Invoke a StagedClosure on arguments, returning staged result */
+  invokeClosure: (closure: StagedClosure, args: SValue[]) => SEvalResult;
   /** Convert a Now value to an expression for residual */
   valueToExpr: (value: Value) => Expr;
   /** Convert any SValue to a residual expression */
@@ -99,6 +99,8 @@ export interface StagedBuiltinContext {
   isNow: (sv: SValue) => sv is Now;
   /** Check if SValue is LaterArray */
   isLaterArray: (sv: SValue) => sv is LaterArray;
+  /** Check if SValue is StagedClosure */
+  isStagedClosure: (sv: SValue) => sv is StagedClosure;
 }
 
 // ============================================================================
@@ -243,16 +245,15 @@ registerBuiltin({
       const arr = args[0];
       const fn = args[1];
 
-      // If both are Now, try to execute at compile time
-      if (ctx.isNow(arr) && ctx.isNow(fn)) {
+      // If array is Now and fn is a StagedClosure, try to execute at compile time
+      if (ctx.isNow(arr) && ctx.isStagedClosure(fn)) {
         const arrVal = arr.value as ArrayValue;
-        const fnVal = fn.value as ClosureValue;
 
         const results: Value[] = [];
         let allNow = true;
         for (const elem of arrVal.elements) {
           const elemSV = ctx.now(elem, constraintOf(elem));
-          const result = ctx.invokeClosure(fnVal, [elemSV]);
+          const result = ctx.invokeClosure(fn, [elemSV]);
           if (!ctx.isNow(result.svalue)) {
             // Callback returned Later - fall back to residual
             allNow = false;
@@ -298,16 +299,15 @@ registerBuiltin({
       const arr = args[0];
       const fn = args[1];
 
-      // If both are Now, try to execute at compile time
-      if (ctx.isNow(arr) && ctx.isNow(fn)) {
+      // If array is Now and fn is a StagedClosure, try to execute at compile time
+      if (ctx.isNow(arr) && ctx.isStagedClosure(fn)) {
         const arrVal = arr.value as ArrayValue;
-        const fnVal = fn.value as ClosureValue;
 
         const results: Value[] = [];
         let allNow = true;
         for (const elem of arrVal.elements) {
           const elemSV = ctx.now(elem, constraintOf(elem));
-          const result = ctx.invokeClosure(fnVal, [elemSV]);
+          const result = ctx.invokeClosure(fn, [elemSV]);
           if (!ctx.isNow(result.svalue)) {
             // Callback returned Later - fall back to residual
             allNow = false;
@@ -613,18 +613,14 @@ registerBuiltin({
       if (!ctx.isNow(arrArg)) {
         throw new Error("comptimeFold() requires a compile-time known array");
       }
-      if (!ctx.isNow(fnArg)) {
-        throw new Error("comptimeFold() requires a compile-time known function");
+      if (!ctx.isStagedClosure(fnArg)) {
+        throw new Error("comptimeFold() requires a compile-time known function (StagedClosure)");
       }
       if (arrArg.value.tag !== "array") {
         throw new Error("comptimeFold() first argument must be an array");
       }
-      if (fnArg.value.tag !== "closure") {
-        throw new Error("comptimeFold() third argument must be a function");
-      }
 
       const arr = arrArg.value;
-      const fn = fnArg.value as ClosureValue;
 
       // With desugaring, all functions use args array - no param count check needed
       // The function should destructure args to get (acc, elem)
@@ -634,7 +630,7 @@ registerBuiltin({
 
       for (const elem of arr.elements) {
         const elemSV = ctx.now(elem, constraintOf(elem));
-        const result = ctx.invokeClosure(fn, [acc, elemSV]);
+        const result = ctx.invokeClosure(fnArg, [acc, elemSV]);
         acc = result.svalue;
       }
 

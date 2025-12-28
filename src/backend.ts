@@ -14,8 +14,8 @@
 import { Expr } from "./expr";
 import { Constraint } from "./constraint";
 import { Value } from "./value";
-import { SValue, Now, Later, LaterArray } from "./svalue";
-import { SEnv, SEvalResult } from "./staged-evaluate";
+import { SValue, Now, Later, LaterArray, StagedClosure, SEnv } from "./svalue";
+import { SEvalResult } from "./staged-evaluate";
 import { JSExpr } from "./js-ast";
 
 // ============================================================================
@@ -55,10 +55,10 @@ export interface BackendContext {
   generateExpr(expr: Expr): JSExpr;
 
   /**
-   * Convert a closure value to a residual expression.
+   * Convert a StagedClosure to a residual expression.
    * Stages the closure body with parameters as Later values.
    */
-  closureToResidual(closure: Value): Expr;
+  closureToResidual(closure: StagedClosure): Expr;
 }
 
 // ============================================================================
@@ -110,6 +110,13 @@ export function isLaterValue(sv: SValue): sv is Later {
  */
 export function isLaterArrayValue(sv: SValue): sv is LaterArray {
   return sv.stage === "later-array";
+}
+
+/**
+ * Check if an SValue is a staged closure.
+ */
+export function isStagedClosureValue(sv: SValue): sv is StagedClosure {
+  return sv.stage === "closure";
 }
 
 /**
