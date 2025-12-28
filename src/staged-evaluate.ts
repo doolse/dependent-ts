@@ -763,8 +763,12 @@ function evalCall(
 
         // Always use call expression as residual for recursive functions with Later args
         // This ensures proper code generation instead of inlining the body
+        // Use the variable name from the call expression if available, otherwise use the
+        // internal recursive name. This handles cases like `let sumField = fn sumRec(...)`
+        // where we want to call sumField, not sumRec.
         const argResiduals = args.map(svalueToResidual);
-        const callResidual = call(varRef(func.name), ...argResiduals);
+        const callName = funcExpr.tag === "var" ? funcExpr.name : func.name;
+        const callResidual = call(varRef(callName), ...argResiduals);
         const captures = mergeCaptures(args);
 
         if (isNow(result.svalue)) {
@@ -993,12 +997,9 @@ function evalField(
           return { svalue: now(numberVal(len), and(isNumber, { tag: "equals", value: len })) };
         }
       }
-      // For Later values, check if length is known from constraints
+      // For Later values, always return Later for length - the value could change at runtime
+      // even if the initial constraint has a specific length
       const lengthConstraint = extractLengthConstraint(objResult.constraint);
-      const knownLength = extractEqualsValue(lengthConstraint);
-      if (knownLength !== null && typeof knownLength === "number") {
-        return { svalue: now(numberVal(knownLength), lengthConstraint) };
-      }
       return { svalue: later(lengthConstraint, field(svalueToResidual(objResult), "length")) };
     }
   }

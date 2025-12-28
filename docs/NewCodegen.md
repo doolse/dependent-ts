@@ -566,3 +566,37 @@ interface SValueUtils {
 ```
 
 These utilities handle cycle detection, deduplication, and ordering consistently across all builtins.
+
+# Open Issues (from example regressions)
+
+## Side-Effecting Statements
+
+Currently `let _ = expr in body` drops `expr` entirely if `_` is unused in `body`. This breaks side-effecting calls:
+
+```
+let _ = setTodos(todos.concat([newTodo])) in
+setInputText("")
+```
+
+Compiles to just `setInputText("")` - the `setTodos` call is lost.
+
+**Potential solutions:**
+1. Effect syntax: `do expr in body` or `expr; body` that forces emission
+2. Heuristic: emit Later expressions with call residuals even if unused
+3. Explicit annotation: `effect(setTodos(...))` builtin that marks for emission
+
+## Function Inlining vs Named Emission
+
+Functions defined with `let` are being inlined at call sites instead of emitted as named functions:
+
+```
+let minLength = fn(n) => fn(s) => s.length >= n in
+let validate = fn() => [...].filter(...) in
+let handleSubmit = fn() => validate() in
+```
+
+Results in `validate()` body being duplicated at every call site, and `handleSubmit` being inlined at `onClick`.
+
+**Desired behavior:** Emit functions as `const validate = () => ...` and reference by name.
+
+**Related to:** The side-effect issue - both stem from aggressive inlining of Later expressions.
