@@ -4,19 +4,17 @@
  * Converts expressions (typically residual expressions from staged evaluation)
  * into JavaScript code strings that can be executed.
  *
- * Uses the new backend architecture:
+ * Pipeline:
  * 1. Stage the expression to get SValue
- * 2. Pass to backend to generate JS AST
+ * 2. Generate JS AST from SValue
  * 3. Print JS AST to string
  */
 
 import { Expr } from "./expr";
-import { stage, stagingEvaluate, svalueToResidual, closureToResidual } from "./staged-evaluate";
-import { SValue, StagedClosure, SEnv } from "./svalue";
-import { Backend, BackendContext } from "./backend";
-import { JSBackend } from "./js-backend";
-import { JSExpr } from "./js-ast";
+import { stage } from "./staged-evaluate";
+import { SValue } from "./svalue";
 import { printExpr } from "./js-printer";
+import { generateExpression } from "./svalue-module-generator";
 
 // ============================================================================
 // Code Generation Options
@@ -99,31 +97,8 @@ export function generateFunction(
  * Compile from an already-staged value.
  */
 export function compileFromSValue(sv: SValue, options: CodeGenOptions = {}): string {
-  const backend = new JSBackend();
-  const jsAst = generateWithBackend(sv, backend);
+  const jsAst = generateExpression(sv);
   return printExpr(jsAst, options.indent ? { indent: options.indent } : {});
-}
-
-/**
- * Generate JS AST using a backend.
- * This is the core of the new architecture - the backend has access
- * to staging machinery for on-demand evaluation.
- */
-export function generateWithBackend(sv: SValue, backend: Backend): JSExpr {
-  const emptyEnv = SEnv.empty();
-  const ctx: BackendContext = {
-    stage: (expr, env) => stagingEvaluate(expr, env ?? emptyEnv),
-    env: emptyEnv,
-    svalueToResidual,
-    closureToResidual,
-    generate: (innerSv) => backend.generate(innerSv, ctx),
-    generateExpr: (expr) => {
-      const result = stagingEvaluate(expr, emptyEnv);
-      return backend.generate(result.svalue, ctx);
-    }
-  };
-
-  return backend.generate(sv, ctx);
 }
 
 // ============================================================================

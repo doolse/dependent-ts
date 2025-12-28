@@ -19,13 +19,15 @@ import {
   jsArrow, jsNamedFunction, jsTernary, jsMember, jsIndex, jsObject, jsArray,
   jsConst, jsReturn, jsIIFE, jsExpr as jsExprStmt, jsConstPattern,
   jsImportDecl, jsExportDefault, jsModule,
-  jsVarPattern, jsArrayPattern, jsObjectPattern
+  jsVarPattern, jsArrayPattern, jsObjectPattern,
+  jsIf, jsThrow
 } from "./js-ast";
 import {
   SValue, Now, Later, LaterArray, StagedClosure, SEnv,
   isNow, isLater, isLaterArray, isStagedClosure,
   collectByOrigin, collectClosures
 } from "./svalue";
+import { closureToResidual } from "./staged-evaluate";
 import { Value } from "./value";
 import { Expr, Pattern } from "./expr";
 
@@ -102,6 +104,16 @@ export function generateESModule(sv: SValue): JSModule {
   }
 
   return jsModule(imports, statements, jsExportDefault(mainExpr));
+}
+
+/**
+ * Generate a JavaScript expression from an SValue.
+ * This is a simpler entry point for expression-level code generation
+ * (used by compile(), generateJS(), etc.)
+ */
+export function generateExpression(sv: SValue): JSExpr {
+  const ctx = createContext();
+  return generateSValue(sv, ctx);
 }
 
 // ============================================================================
@@ -348,6 +360,59 @@ function generateImportDecls(imports: Map<string, ImportInfo>): JSImportDecl[] {
 }
 
 // ============================================================================
+// Args Destructuring Optimization
+// ============================================================================
+
+/**
+ * Optimization: Extract params from `let [x, y] = args in body` pattern.
+ * This transforms `fn() => let [x, y] = args in body` to `fn(x, y) => body`.
+ */
+function extractParamsFromBody(body: Expr): { params: string[]; body: Expr } {
+  if (body.tag === "letPattern" && body.value.tag === "var" && body.value.name === "args") {
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern") {
+      const params: string[] = [];
+      for (const elem of pattern.elements) {
+        if (elem.tag === "varPattern") {
+          params.push(elem.name);
+        } else {
+          return { params: [], body };
+        }
+      }
+      return { params, body: body.body };
+    }
+  }
+  return { params: [], body };
+}
+
+/**
+ * Check if body has redundant args destructuring that matches the existing params.
+ * If so, return the inner body (stripping the letPattern).
+ */
+function stripRedundantArgsDestructuring(params: string[], body: Expr): Expr {
+  if (body.tag === "letPattern" && body.value.tag === "var" && body.value.name === "args") {
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern") {
+      // Check if pattern matches params
+      if (pattern.elements.length === params.length) {
+        let matches = true;
+        for (let i = 0; i < params.length; i++) {
+          const elem = pattern.elements[i];
+          if (elem.tag !== "varPattern" || elem.name !== params[i]) {
+            matches = false;
+            break;
+          }
+        }
+        if (matches) {
+          return body.body;
+        }
+      }
+    }
+  }
+  return body;
+}
+
+// ============================================================================
 // Phase 5: Top-Level Closure Generation
 // ============================================================================
 
@@ -364,17 +429,11 @@ function generateTopLevelClosures(
       // Mark as generated
       ctx.generatedClosures.add(sc);
 
-      // Generate the closure body
-      const bodyExpr = generateClosureBody(sc, ctx);
+      // Convert the StagedClosure to a residual function expression
+      const residual = closureToResidual(sc);
 
-      // Create arrow or named function
-      let fn: JSExpr;
-      if (group.length > 1) {
-        // Mutual recursion - use named function for self-reference
-        fn = jsNamedFunction(sc.name, sc.params, bodyExpr);
-      } else {
-        fn = jsArrow(sc.params, bodyExpr);
-      }
+      // Generate code from the residual expression
+      const fn = generateFromExpr(residual, ctx);
 
       stmts.push(jsConst(sc.name, fn));
     }
@@ -387,16 +446,7 @@ function generateTopLevelClosures(
  * Generate the body expression for a closure.
  */
 function generateClosureBody(sc: StagedClosure, ctx: ModuleGenContext): JSExpr | JSStmt[] {
-  // Generate the body expression
-  const bodyExpr = generateFromExpr(sc.body, ctx);
-
-  // Check if we should use statement form (for let chains)
-  if (sc.body.tag === "let" || sc.body.tag === "letPattern") {
-    const stmts = collectLetChainStmts(sc.body, ctx);
-    return stmts;
-  }
-
-  return bodyExpr;
+  return generateClosureBodyFromExpr(sc.body, ctx);
 }
 
 /**
@@ -473,14 +523,20 @@ function generateClosure(sc: StagedClosure, ctx: ModuleGenContext): JSExpr {
 }
 
 function generateInlineClosure(sc: StagedClosure, ctx: ModuleGenContext): JSExpr {
-  const bodyExpr = generateClosureBody(sc, ctx);
+  // Convert the StagedClosure to a residual function expression first
+  // This properly stages the body with parameters bound as Later values
+  // and converts `args` to the array of parameters
+  const residual = closureToResidual(sc);
 
-  if (sc.name) {
-    // Named recursive function
-    return jsNamedFunction(sc.name, sc.params, bodyExpr);
+  // Generate code from the residual expression
+  return generateFromExpr(residual, ctx);
+}
+
+function generateClosureBodyFromExpr(body: Expr, ctx: ModuleGenContext): JSExpr | JSStmt[] {
+  if (body.tag === "let" || body.tag === "letPattern") {
+    return collectLetChainStmts(body, ctx);
   }
-
-  return jsArrow(sc.params, bodyExpr);
+  return generateFromExpr(body, ctx);
 }
 
 function generateLaterArray(sv: LaterArray, ctx: ModuleGenContext): JSExpr {
@@ -642,14 +698,32 @@ function generateFromExpr(expr: Expr, ctx: ModuleGenContext): JSExpr {
       return generateBlock(expr.exprs, ctx);
 
     case "comptime":
+      return generateFromExpr(expr.expr, ctx);
+
     case "runtime":
+      // runtime annotation - generate variable reference if named
+      if (expr.name) {
+        return jsVar(expr.name);
+      }
       return generateFromExpr(expr.expr, ctx);
 
     case "assert":
+      // For assert(expr, constraint), the constraint was already checked at staging time
+      // where possible. The residual just evaluates the expression.
       return generateFromExpr(expr.expr, ctx);
 
-    case "assertCond":
-      return jsLit(true); // Assert conditions evaluate to true when passing
+    case "assertCond": {
+      // Generate: (() => { if (!cond) { throw new Error(msg); } return true; })()
+      const condJs = generateFromExpr(expr.condition, ctx);
+      const errorMsg = expr.message ?? "Assertion failed: condition is false";
+      return jsIIFE([
+        jsIf(
+          jsUnary("!", condJs),
+          [jsThrow(jsCall(jsVar("Error"), [jsLit(errorMsg)]))]
+        ),
+        jsReturn(jsLit(true))
+      ]);
+    }
 
     case "trust":
       return generateFromExpr(expr.expr, ctx);
@@ -729,6 +803,14 @@ function generateLetPattern(pattern: Pattern, value: Expr, body: Expr, ctx: Modu
 }
 
 function generateFnExpr(params: string[], body: Expr, ctx: ModuleGenContext): JSExpr {
+  // Check for args destructuring optimization
+  if (params.length === 0) {
+    const extracted = extractParamsFromBody(body);
+    if (extracted.params.length > 0) {
+      return generateFnExpr(extracted.params, extracted.body, ctx);
+    }
+  }
+
   if (body.tag === "let" || body.tag === "letPattern") {
     const stmts = collectLetChainStmts(body, ctx);
     return jsArrow(params, stmts);
@@ -737,6 +819,14 @@ function generateFnExpr(params: string[], body: Expr, ctx: ModuleGenContext): JS
 }
 
 function generateRecFnExpr(name: string, params: string[], body: Expr, ctx: ModuleGenContext): JSExpr {
+  // Check for args destructuring optimization
+  if (params.length === 0) {
+    const extracted = extractParamsFromBody(body);
+    if (extracted.params.length > 0) {
+      return generateRecFnExpr(name, extracted.params, extracted.body, ctx);
+    }
+  }
+
   if (body.tag === "let" || body.tag === "letPattern") {
     const stmts = collectLetChainStmts(body, ctx);
     return jsNamedFunction(name, params, stmts);

@@ -502,6 +502,11 @@ function printJSStmt(stmt: JSStmt, opts: Required<PrintOptions>, depth: number):
 
     case "jsBreak":
       return `${indent}break;`;
+
+    case "jsThrow": {
+      const valueCode = printJSExpr(stmt.value, opts, depth);
+      return `${indent}throw ${valueCode};`;
+    }
   }
 }
 

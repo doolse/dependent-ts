@@ -172,7 +172,8 @@ export type JSStmt =
   | JSExprStmt
   | JSContinue
   | JSBreak
-  | JSConstPattern;
+  | JSConstPattern
+  | JSThrow;
 
 /** Const declaration: const name = value; */
 export interface JSConst {
@@ -224,6 +225,12 @@ export interface JSContinue {
 /** Break statement */
 export interface JSBreak {
   tag: "jsBreak";
+}
+
+/** Throw statement: throw expr; */
+export interface JSThrow {
+  tag: "jsThrow";
+  value: JSExpr;
 }
 
 // ============================================================================
@@ -378,6 +385,11 @@ export const jsExpr = (expr: JSExpr): JSExprStmt => ({
 export const jsContinue: JSContinue = { tag: "jsContinue" };
 
 export const jsBreak: JSBreak = { tag: "jsBreak" };
+
+export const jsThrow = (value: JSExpr): JSThrow => ({
+  tag: "jsThrow",
+  value,
+});
 
 // Pattern constructors
 export const jsVarPattern = (name: string): JSVarPattern => ({
