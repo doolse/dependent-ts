@@ -810,10 +810,14 @@ function evalCall(
     // Evaluate body
     const result = stagingEvaluate(func.body, callEnv, RefinementContext.empty());
 
-    // If any argument was Later and function was bound to a name,
-    // emit a call expression instead of inlining the body.
+    // Emit a call expression instead of inlining the body when:
+    // 1. Function is called by name (funcExpr.tag === "var")
+    // 2. AND either:
+    //    a. Any argument was Later (hasLaterArg), OR
+    //    b. The result is Later/LaterArray (body couldn't be fully evaluated due to captured Later vars)
     // This prevents closure bodies from being duplicated at each call site.
-    if (hasLaterArg && funcExpr.tag === "var") {
+    const resultIsLater = isLater(result.svalue) || isLaterArray(result.svalue);
+    if (funcExpr.tag === "var" && (hasLaterArg || resultIsLater)) {
       const argResiduals = args.map(svalueToResidual);
       const callResidual = call(varRef(funcExpr.name), ...argResiduals);
       const captures = mergeCaptures(args);
