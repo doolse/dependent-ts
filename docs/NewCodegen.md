@@ -127,9 +127,9 @@ All these backends need to **analyze** the staged result:
 
 ```typescript
 type LaterOrigin =
-  | { kind: "runtime"; name: string }      // From runtime("name")
-  | { kind: "import"; module: string }     // From import { x } from "mod"
-  | { kind: "derived" };                   // Computed from other values
+  | { kind: "runtime"; name: string }                                      // From runtime("name")
+  | { kind: "import"; module: string; binding: string; isDefault?: boolean } // From import { x } from "mod"
+  | { kind: "derived" };                                                   // Computed from other values
 
 interface Now {
   stage: "now";
@@ -504,10 +504,65 @@ handler(args: SValue[], argExprs: Expr[], ctx: BuiltinContext): SEvalResult {
 }
 ```
 
-# Open Questions
+# Design Decisions
 
-1. Should `LaterArray` aggregate captures from elements, or just rely on walking elements?
+## 1. LaterArray: Walk Elements, Don't Pre-Aggregate
 
-2. How should imports be represented in captures vs as a separate structure?
+**Decision:** `LaterArray` should NOT pre-aggregate captures. Builtins walk elements on demand.
 
-3. Should there be a common "walk SValue tree" utility for builtins?
+**Rationale:**
+- **Position matters** - When emitting `[1, runtime("x"), 3]`, builtins need to know element 1 is Later. Aggregation loses positional information.
+- **Consumer decides deduplication** - Different builtins may want different deduplication strategies.
+- **Composition** - Arrays can nest. Pre-aggregating recursively duplicates data and adds complexity.
+- **Single source of truth** - Elements already carry their captures. Aggregating creates redundant data that can get out of sync.
+
+Walking is made cheap via shared utility functions (see below).
+
+## 2. Imports: Keep in Captures with Enriched Origin
+
+**Decision:** Imports remain in `captures` as `Later` values, distinguished by their `origin`. Enrich the import origin:
+
+```typescript
+type LaterOrigin =
+  | { kind: "runtime"; name: string }
+  | { kind: "import"; module: string; binding: string; isDefault?: boolean }
+  | { kind: "derived" };
+```
+
+**Rationale:**
+- Both runtime and import are "external dependencies" the residual references
+- Single place to find all dependencies
+- `collectByOrigin(env, "import")` cleanly separates them when needed
+- Deduplication (merging multiple imports from the same module into one statement) is an emission concern, not a data structure concern
+
+## 3. Shared SValue Walking Utilities
+
+**Decision:** Provide common utilities for walking SValue trees.
+
+**Rationale:** The patterns in this document are non-trivial:
+- Diamond dependencies (deduplication)
+- Sibling detection (mutual recursion)
+- Transitive capture collection
+- Topological ordering for emission
+
+These should be implemented once, correctly.
+
+**Proposed API:**
+
+```typescript
+interface SValueUtils {
+  // Collect Later values by origin type
+  collectByOrigin(root: SValue, kind: "runtime" | "import"): Map<string, Later>;
+
+  // Collect all closures including nested ones
+  collectClosures(root: SValue): StagedClosure[];
+
+  // Get dependencies in topological order for emission
+  topologicalOrder(root: SValue): SValue[];
+
+  // Find mutual recursion groups (strongly connected components)
+  findMutualGroups(closures: StagedClosure[]): StagedClosure[][];
+}
+```
+
+These utilities handle cycle detection, deduplication, and ordering consistently across all builtins.
