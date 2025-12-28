@@ -367,4 +367,86 @@ describe("Array HOF Method Calls", () => {
       expect(evalTo('[1, 2, 3, 4].filter(fn(x) => x > 2).map(fn(x) => x * 10)')).toEqual([30, 40]);
     });
   });
+
+  // describe("push-based filter optimization", () => {
+  //   it("generates push-based code for filter on array with runtime conditional", () => {
+  //     const code = parseAndCompile(`
+  //       let x = runtime(x: "") in
+  //       [if x == "" then null else x].filter(fn(v) => v != null)
+  //     `);
+  //     // Should generate push-based IIFE with conditionals
+  //     expect(code).toContain("_arr");
+  //     expect(code).toContain(".push(");
+  //     expect(code).not.toContain(".filter(");
+  //   });
+  //
+  //   it("eliminates null branches when filtering for not-null", () => {
+  //     const code = parseAndCompile(`
+  //       let x = runtime(x: "") in
+  //       [if x == "" then null else "error"].filter(fn(v) => v != null)
+  //     `);
+  //     // The null branch should be eliminated, only push happens when x !== ""
+  //     expect(code).toContain("_arr");
+  //     expect(code).toContain(".push(");
+  //     // Should not push null, only push "error"
+  //     expect(code).toContain('"error"');
+  //   });
+  //
+  //   it("evaluates predicate at compile time for static values", () => {
+  //     const code = parseAndCompile(`
+  //       let x = runtime(x: "") in
+  //       [null, x, "hello"].filter(fn(v) => v != null)
+  //     `);
+  //     // null should be eliminated, x needs runtime check, "hello" is unconditional
+  //     expect(code).toContain('"hello"');
+  //     expect(code).not.toContain(".filter(");
+  //   });
+  //
+  //   it("generates array literal when all elements pass statically", () => {
+  //     const code = parseAndCompile(`
+  //       [1, 2, 3].filter(fn(x) => x > 0)
+  //     `);
+  //     // Should evaluate at compile time to [1, 2, 3]
+  //     expect(code).toBe("[1, 2, 3]");
+  //   });
+  //
+  //   it("generates empty array when all elements fail statically", () => {
+  //     const code = parseAndCompile(`
+  //       [1, 2, 3].filter(fn(x) => x > 10)
+  //     `);
+  //     // Should evaluate at compile time to []
+  //     expect(code).toBe("[]");
+  //   });
+  // });
+  //
+  // describe("inline map optimization", () => {
+  //   it("applies mapper inline to array elements", () => {
+  //     const code = parseAndCompile(`
+  //       let x = runtime(x: 0) in
+  //       [1, x, 3].map(fn(n) => n * 2)
+  //     `);
+  //     // Static values should be computed, runtime values should have mapper applied
+  //     expect(code).toContain("2");  // 1 * 2
+  //     expect(code).toContain("6");  // 3 * 2
+  //   });
+  //
+  //   it("preserves conditional structure in mapped elements", () => {
+  //     const code = parseAndCompile(`
+  //       let cond = runtime(cond: true) in
+  //       [if cond then 1 else 2].map(fn(n) => n * 10)
+  //     `);
+  //     // Should preserve ternary structure with mapped values
+  //     expect(code).toContain("10");  // 1 * 10
+  //     expect(code).toContain("20");  // 2 * 10
+  //     expect(code).toContain("?");   // ternary operator
+  //   });
+  //
+  //   it("evaluates map at compile time for all-static arrays", () => {
+  //     const code = parseAndCompile(`
+  //       [1, 2, 3].map(fn(x) => x + 10)
+  //     `);
+  //     // Should evaluate at compile time
+  //     expect(code).toBe("[11, 12, 13]");
+  //   });
+  // });
 });

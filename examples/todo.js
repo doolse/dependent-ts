@@ -31,7 +31,8 @@ export default (props) => {
     cursor: "pointer"
   },
     onClick: () => inputText !== "" ? (() => {
-    const newTodo = { id: 0, text: inputText, completed: false };
+    const newTodo = { id: todos.length, text: inputText, completed: false };
+    setTodos(todos.concat([newTodo]));
     return setInputText("");
   })() : null,
     children: "Add"
@@ -80,7 +81,10 @@ export default (props) => {
   })
   }))
   }),
-    jsx("p", {
+    todos.length > 0 ? jsx("p", {
+    style: { color: "#666", marginTop: "20px" },
+    children: "Total: " + todos.length.toString() + " items"
+  }) : jsx("p", {
     style: { color: "#999", marginTop: "20px", fontStyle: "italic" },
     children: "No todos yet.Add one above!"
   })
