@@ -15,7 +15,7 @@
 import { Expr, BinOp, UnaryOp, varRef, binop, unary, ifExpr, letExpr, letPatternExpr, call, obj, field, array, index, block, lit, fn, recfn, assertExpr, assertCondExpr, trustExpr, methodCall, importExpr, Pattern, patternVars } from "./expr";
 import { TSDeclarationLoader, FunctionSignatureInfo, buildSyntheticBody, getRegisteredConstraint } from "./ts-loader";
 import { lookupMethod } from "./methods";
-import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
+import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
 import { getBuiltin, getAllBuiltins, BuiltinDef, StagedBuiltinContext } from "./builtin-registry";
 import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, unify, constraintToString, tupleConstraint, arrayOfConstraint, anyC, neverC, indexSig } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
@@ -729,22 +729,27 @@ function evalCall(
     // Evaluate arguments
     const args = argExprs.map(arg => stagingEvaluate(arg, env, ctx).svalue);
 
-    // Coinductive cycle detection for recursive functions with Later arguments
-    // This prevents infinite recursion when a recursive function is called with runtime values
-    if (func.name && args.some(isRuntime)) {
-      if (inProgressRecursiveCalls.has(func.name)) {
-        // Cycle detected! We're already evaluating this recursive function with Later args.
-        // Use the pre-computed result constraint and emit residual code.
-        const resultConstraint = inProgressRecursiveCalls.get(func.name)!;
-        const argResiduals = args.map(svalueToResidual);
-        const captures = mergeCaptures(args);
-        return {
-          svalue: later(resultConstraint, call(varRef(func.name), ...argResiduals), captures)
-        };
-      }
+    // Check if any arg requires residualization (Later or LaterArray)
+    // This includes values from runtime(), import, AND derived operations
+    const hasLaterArg = args.some(arg => isLater(arg) || isLaterArray(arg));
 
-      // Not in a cycle yet - mark as in-progress and evaluate body
-      // Use 'any' as result constraint for cycle detection - types derived from body
+    // Coinductive cycle detection - check FIRST, for any Later arg
+    // This prevents infinite recursion when analyzing recursive functions
+    if (func.name && hasLaterArg && inProgressRecursiveCalls.has(func.name)) {
+      // Cycle detected! We're already evaluating this recursive function with Later args.
+      // Use the pre-computed result constraint and emit residual code.
+      const resultConstraint = inProgressRecursiveCalls.get(func.name)!;
+      const argResiduals = args.map(svalueToResidual);
+      const captures = mergeCaptures(args);
+      return {
+        svalue: later(resultConstraint, call(varRef(func.name), ...argResiduals), captures)
+      };
+    }
+
+    // If we have Later args and this is a named recursive function, enter analysis mode
+    if (func.name && hasLaterArg) {
+      // Mark as in-progress for cycle detection
+      // Use 'any' as result constraint - types derived from body
       inProgressRecursiveCalls.set(func.name, { tag: "any" });
 
       // Bind args array in the closure's environment
@@ -776,7 +781,7 @@ function evalCall(
       }
     }
 
-    // Non-recursive function or all arguments are Now - evaluate normally
+    // Non-recursive function or all arguments are Now/StagedClosure - evaluate normally
     let callEnv = func.env;
 
     // Add self-binding for recursive functions
@@ -790,10 +795,10 @@ function evalCall(
     // Evaluate body
     const result = stagingEvaluate(func.body, callEnv, RefinementContext.empty());
 
-    // If any argument was runtime and function was bound to a name,
+    // If any argument was Later and function was bound to a name,
     // emit a call expression instead of inlining the body.
     // This prevents closure bodies from being duplicated at each call site.
-    if (args.some(isRuntime) && funcExpr.tag === "var") {
+    if (hasLaterArg && funcExpr.tag === "var") {
       const argResiduals = args.map(svalueToResidual);
       const callResidual = call(varRef(funcExpr.name), ...argResiduals);
       const captures = mergeCaptures(args);
@@ -973,6 +978,30 @@ function evalField(
   ctx: RefinementContext
 ): SEvalResult {
   const objResult = stagingEvaluate(objectExpr, env, ctx).svalue;
+
+  // Handle .length on strings and arrays
+  if (fieldName === "length") {
+    if (implies(objResult.constraint, isString) || implies(objResult.constraint, isArray)) {
+      // For Now values, compute the actual length
+      if (isNow(objResult)) {
+        if (objResult.value.tag === "string") {
+          const len = objResult.value.value.length;
+          return { svalue: now(numberVal(len), and(isNumber, { tag: "equals", value: len })) };
+        }
+        if (objResult.value.tag === "array") {
+          const len = objResult.value.elements.length;
+          return { svalue: now(numberVal(len), and(isNumber, { tag: "equals", value: len })) };
+        }
+      }
+      // For Later values, check if length is known from constraints
+      const lengthConstraint = extractLengthConstraint(objResult.constraint);
+      const knownLength = extractEqualsValue(lengthConstraint);
+      if (knownLength !== null && typeof knownLength === "number") {
+        return { svalue: now(numberVal(knownLength), lengthConstraint) };
+      }
+      return { svalue: later(lengthConstraint, field(svalueToResidual(objResult), "length")) };
+    }
+  }
 
   requireConstraint(objResult.constraint, isObject, `field access .${fieldName}`);
 
@@ -1672,16 +1701,28 @@ function stagedClosureToResidual(sc: StagedClosure): Expr {
     }
   }
 
-  // Stage the inner body (after parameter destructuring)
-  const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty()).svalue;
-
-  // Build the residual function
-  const residualBody = svalueToResidual(bodyResult);
-
+  // For recursive functions, set up cycle detection during body staging
+  // This prevents infinite recursion when the body calls itself
   if (sc.name) {
-    return { tag: "recfn", name: sc.name, params: paramNames, body: residualBody };
+    inProgressRecursiveCalls.set(sc.name, anyC);
   }
-  return { tag: "fn", params: paramNames, body: residualBody };
+
+  try {
+    // Stage the inner body (after parameter destructuring)
+    const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty()).svalue;
+
+    // Build the residual function
+    const residualBody = svalueToResidual(bodyResult);
+
+    if (sc.name) {
+      return { tag: "recfn", name: sc.name, params: paramNames, body: residualBody };
+    }
+    return { tag: "fn", params: paramNames, body: residualBody };
+  } finally {
+    if (sc.name) {
+      inProgressRecursiveCalls.delete(sc.name);
+    }
+  }
 }
 
 /**
@@ -1907,6 +1948,42 @@ function extractElementConstraint(arrConstraint: Constraint, idx: number): Const
   return { tag: "any" };
 }
 
+/**
+ * Extract length constraint from an array or string constraint.
+ * Returns isNumber if no length constraint is found.
+ */
+function extractLengthConstraint(constraint: Constraint): Constraint {
+  if (constraint.tag === "length") {
+    return constraint.constraint;
+  }
+  if (constraint.tag === "and") {
+    for (const c of constraint.constraints) {
+      if (c.tag === "length") {
+        return c.constraint;
+      }
+    }
+  }
+  return isNumber;
+}
+
+/**
+ * Extract a known equals value from a constraint.
+ * Returns the value if the constraint is equals(v) or and(isNumber, equals(v)), else null.
+ */
+function extractEqualsValue(constraint: Constraint): unknown {
+  if (constraint.tag === "equals") {
+    return constraint.value;
+  }
+  if (constraint.tag === "and") {
+    for (const c of constraint.constraints) {
+      if (c.tag === "equals") {
+        return c.value;
+      }
+    }
+  }
+  return null;
+}
+
 function extractElementsConstraint(arrConstraint: Constraint): Constraint {
   if (arrConstraint.tag === "elements") {
     return arrConstraint.constraint;
@@ -2021,6 +2098,26 @@ export function stageToExpr(expr: Expr): Expr {
 }
 
 /**
+ * Convert a StagedClosure to a ClosureValue for use in run() results.
+ * Requires all captured bindings to be Now values.
+ */
+function stagedClosureToValue(sc: StagedClosure): Value {
+  // Convert SEnv to Env by extracting Now values
+  let env = new Env();
+  for (const [name, binding] of sc.env.entries()) {
+    if (isNow(binding.svalue)) {
+      env = env.set(name, { value: binding.svalue.value, constraint: binding.svalue.constraint });
+    } else if (isStagedClosure(binding.svalue)) {
+      // Recursively convert nested closures
+      env = env.set(name, { value: stagedClosureToValue(binding.svalue), constraint: binding.svalue.constraint });
+    } else {
+      throw new Error(`StagedClosure has runtime dependency in captured variable '${name}' - use stage() for partial evaluation`);
+    }
+  }
+  return closureVal(sc.body, env, sc.name);
+}
+
+/**
  * Evaluate an expression with an initial environment.
  * Uses staged evaluation internally but requires all values to be compile-time known.
  * This is the primary entry point for running expressions.
@@ -2039,11 +2136,16 @@ export function run(expr: Expr, initialBindings?: Record<string, { value: Value;
 
   const result = stagingEvaluate(expr, env);
 
-  if (!isNow(result.svalue)) {
-    throw new Error("Expression has runtime dependencies - use stage() for partial evaluation");
+  if (isNow(result.svalue)) {
+    return { value: result.svalue.value, constraint: result.svalue.constraint };
   }
 
-  return { value: result.svalue.value, constraint: result.svalue.constraint };
+  if (isStagedClosure(result.svalue)) {
+    // Convert StagedClosure to ClosureValue
+    return { value: stagedClosureToValue(result.svalue), constraint: result.svalue.constraint };
+  }
+
+  throw new Error("Expression has runtime dependencies - use stage() for partial evaluation");
 }
 
 /**

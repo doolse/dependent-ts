@@ -13,13 +13,22 @@ export default (props) => {
   const minLength = (n) => (s) => s.length >= n;
   const validate = () => [
     isEmpty(email) ? "Email is required" : !isValidEmail(email) ? "Email must contain @ and ." : null,
-    isEmpty(password) ? "Password is required" : !minLength(8)(password) ? "Password must be at least 8 characters" : null,
+    isEmpty(password) ? "Password is required" : !(() => {
+    const [s] = [password];
+    return s.length >= 8;
+  })() ? "Password must be at least 8 characters" : null,
     isEmpty(age) ? "Age is required" : !isNumber(age) ? "Age must be a number" : null
   ].filter((x) => x !== null);
   const handleSubmit = () => {
-    const validationErrors = validate();
-    setErrors(validationErrors);
-    return validationErrors.length === 0 ? setSuccess(true) : setSuccess(false);
+    const validationErrors = [
+      isEmpty(email) ? "Email is required" : !isValidEmail(email) ? "Email must contain @ and ." : null,
+      isEmpty(password) ? "Password is required" : !(() => {
+      const [s] = [password];
+      return s.length >= 8;
+    })() ? "Password must be at least 8 characters" : null,
+      isEmpty(age) ? "Age is required" : !isNumber(age) ? "Age must be a number" : null
+    ].filter((x) => x !== null);
+    return setSuccess(false);
   };
   return jsxs("div", {
     style: {
@@ -144,28 +153,20 @@ export default (props) => {
     fontSize: "16px",
     cursor: "pointer"
   },
-    onClick: handleSubmit,
+    onClick: () => {
+    const validationErrors = [
+      isEmpty(email) ? "Email is required" : !isValidEmail(email) ? "Email must contain @ and ." : null,
+      isEmpty(password) ? "Password is required" : !(() => {
+      const [s] = [password];
+      return s.length >= 8;
+    })() ? "Password must be at least 8 characters" : null,
+      isEmpty(age) ? "Age is required" : !isNumber(age) ? "Age must be a number" : null
+    ].filter((x) => x !== null);
+    return setSuccess(false);
+  },
     children: "Validate and Submit"
   }),
-    errors.length > 0 ? jsxs("div", {
-    style: {
-    marginTop: "15px",
-    padding: "15px",
-    backgroundColor: "#ffebee",
-    borderRadius: "8px",
-    border: "1px solid #ef9a9a"
-  },
-    children: [
-    jsx("h4", {
-    style: { margin: "0 0 10px 0", color: "#c62828" },
-    children: "Validation Errors:"
-  }),
-    jsx("ul", {
-    style: { margin: 0, paddingLeft: "20px", color: "#c62828" },
-    children: errors.map((err) => jsx("li", { children: err }))
-  })
-  ]
-  }) : success ? jsx("div", {
+    success ? jsx("div", {
     style: {
     marginTop: "15px",
     padding: "15px",

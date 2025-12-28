@@ -585,6 +585,16 @@ export function implies(a: Constraint, b: Constraint): boolean {
   // lte(n) implies lt(m) if n < m (x <= 5 means x < 10)
   if (sa.tag === "lte" && sb.tag === "lt") return sa.bound < sb.bound;
 
+  // Numeric bounds imply isNumber - if a value is > 5, it must be a number
+  if ((sa.tag === "gt" || sa.tag === "gte" || sa.tag === "lt" || sa.tag === "lte") && sb.tag === "isNumber") {
+    return true;
+  }
+
+  // equals(n) where n is a number implies isNumber
+  if (sa.tag === "equals" && typeof sa.value === "number" && sb.tag === "isNumber") {
+    return true;
+  }
+
   // and(A, B) implies A, and(A, B) implies B
   if (sa.tag === "and") {
     // If any conjunct implies b, then a implies b

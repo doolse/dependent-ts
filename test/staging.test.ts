@@ -46,6 +46,7 @@ import {
   isNow,
   isLater,
   isLaterArray,
+  isStagedClosure,
   StagingError,
   resetVarCounter,
 } from "../src/index";
@@ -216,9 +217,9 @@ describe("If Expression Staging Tests", () => {
 });
 
 describe("Function Staging Tests", () => {
-  it("function definition is Now", () => {
+  it("function definition is StagedClosure", () => {
     const result = stage(fn(["x"], add(varRef("x"), num(1)))).svalue;
-    expect(isNow(result)).toBe(true);
+    expect(isStagedClosure(result)).toBe(true);
   });
 
   it("function call with Now args evaluates fully", () => {

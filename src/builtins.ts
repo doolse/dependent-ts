@@ -7,7 +7,7 @@
  * - impl: the actual implementation
  */
 
-import { Constraint, isNumber, isString, isBool, and, equals, gt, gte, lt, lte, implies, constraintToString, constraintEquals } from "./constraint";
+import { Constraint, isNumber, isString, isBool, and, or, equals, gt, gte, lt, lte, implies, constraintToString, constraintEquals } from "./constraint";
 import { Value, numberVal, stringVal, boolVal, constraintOf } from "./value";
 import type { BinOp, UnaryOp } from "./expr";
 
@@ -217,74 +217,106 @@ const binaryOps: Record<BinOp, BuiltinOp> = {
   },
 
   "<": {
-    params: [isNumber, isNumber],
+    params: [or(isNumber, isString), or(isNumber, isString)],
     result: ([left, right]) => {
-      const leftVal = extractLiteralNumber(left);
-      const rightVal = extractLiteralNumber(right);
-      if (leftVal !== null && rightVal !== null) {
-        return and(isBool, equals(leftVal < rightVal));
+      const leftNum = extractLiteralNumber(left);
+      const rightNum = extractLiteralNumber(right);
+      if (leftNum !== null && rightNum !== null) {
+        return and(isBool, equals(leftNum < rightNum));
+      }
+      const leftStr = extractLiteralString(left);
+      const rightStr = extractLiteralString(right);
+      if (leftStr !== null && rightStr !== null) {
+        return and(isBool, equals(leftStr < rightStr));
       }
       return isBool;
     },
     impl: ([a, b]) => {
-      if (a.tag !== "number" || b.tag !== "number") {
-        throw new Error("< requires numbers");
+      if (a.tag === "number" && b.tag === "number") {
+        return boolVal(a.value < b.value);
       }
-      return boolVal(a.value < b.value);
+      if (a.tag === "string" && b.tag === "string") {
+        return boolVal(a.value < b.value);
+      }
+      throw new Error("< requires both operands to be numbers or both to be strings");
     },
   },
 
   ">": {
-    params: [isNumber, isNumber],
+    params: [or(isNumber, isString), or(isNumber, isString)],
     result: ([left, right]) => {
-      const leftVal = extractLiteralNumber(left);
-      const rightVal = extractLiteralNumber(right);
-      if (leftVal !== null && rightVal !== null) {
-        return and(isBool, equals(leftVal > rightVal));
+      const leftNum = extractLiteralNumber(left);
+      const rightNum = extractLiteralNumber(right);
+      if (leftNum !== null && rightNum !== null) {
+        return and(isBool, equals(leftNum > rightNum));
+      }
+      const leftStr = extractLiteralString(left);
+      const rightStr = extractLiteralString(right);
+      if (leftStr !== null && rightStr !== null) {
+        return and(isBool, equals(leftStr > rightStr));
       }
       return isBool;
     },
     impl: ([a, b]) => {
-      if (a.tag !== "number" || b.tag !== "number") {
-        throw new Error("> requires numbers");
+      if (a.tag === "number" && b.tag === "number") {
+        return boolVal(a.value > b.value);
       }
-      return boolVal(a.value > b.value);
+      if (a.tag === "string" && b.tag === "string") {
+        return boolVal(a.value > b.value);
+      }
+      throw new Error("> requires both operands to be numbers or both to be strings");
     },
   },
 
   "<=": {
-    params: [isNumber, isNumber],
+    params: [or(isNumber, isString), or(isNumber, isString)],
     result: ([left, right]) => {
-      const leftVal = extractLiteralNumber(left);
-      const rightVal = extractLiteralNumber(right);
-      if (leftVal !== null && rightVal !== null) {
-        return and(isBool, equals(leftVal <= rightVal));
+      const leftNum = extractLiteralNumber(left);
+      const rightNum = extractLiteralNumber(right);
+      if (leftNum !== null && rightNum !== null) {
+        return and(isBool, equals(leftNum <= rightNum));
+      }
+      const leftStr = extractLiteralString(left);
+      const rightStr = extractLiteralString(right);
+      if (leftStr !== null && rightStr !== null) {
+        return and(isBool, equals(leftStr <= rightStr));
       }
       return isBool;
     },
     impl: ([a, b]) => {
-      if (a.tag !== "number" || b.tag !== "number") {
-        throw new Error("<= requires numbers");
+      if (a.tag === "number" && b.tag === "number") {
+        return boolVal(a.value <= b.value);
       }
-      return boolVal(a.value <= b.value);
+      if (a.tag === "string" && b.tag === "string") {
+        return boolVal(a.value <= b.value);
+      }
+      throw new Error("<= requires both operands to be numbers or both to be strings");
     },
   },
 
   ">=": {
-    params: [isNumber, isNumber],
+    params: [or(isNumber, isString), or(isNumber, isString)],
     result: ([left, right]) => {
-      const leftVal = extractLiteralNumber(left);
-      const rightVal = extractLiteralNumber(right);
-      if (leftVal !== null && rightVal !== null) {
-        return and(isBool, equals(leftVal >= rightVal));
+      const leftNum = extractLiteralNumber(left);
+      const rightNum = extractLiteralNumber(right);
+      if (leftNum !== null && rightNum !== null) {
+        return and(isBool, equals(leftNum >= rightNum));
+      }
+      const leftStr = extractLiteralString(left);
+      const rightStr = extractLiteralString(right);
+      if (leftStr !== null && rightStr !== null) {
+        return and(isBool, equals(leftStr >= rightStr));
       }
       return isBool;
     },
     impl: ([a, b]) => {
-      if (a.tag !== "number" || b.tag !== "number") {
-        throw new Error(">= requires numbers");
+      if (a.tag === "number" && b.tag === "number") {
+        return boolVal(a.value >= b.value);
       }
-      return boolVal(a.value >= b.value);
+      if (a.tag === "string" && b.tag === "string") {
+        return boolVal(a.value >= b.value);
+      }
+      throw new Error(">= requires both operands to be numbers or both to be strings");
     },
   },
 
