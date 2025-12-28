@@ -227,6 +227,32 @@ export interface JSBreak {
 }
 
 // ============================================================================
+// Module-Level Constructs
+// ============================================================================
+
+/** ES import declaration: import { names } from "module" or import name from "module" */
+export interface JSImportDecl {
+  tag: "jsImportDecl";
+  names: string[];
+  modulePath: string;
+  isDefault?: boolean;
+}
+
+/** ES export default declaration: export default <expr> */
+export interface JSExportDefault {
+  tag: "jsExportDefault";
+  value: JSExpr;
+}
+
+/** Complete ES module with imports, top-level statements, and export */
+export interface JSModule {
+  tag: "jsModule";
+  imports: JSImportDecl[];
+  statements: JSStmt[];
+  export: JSExportDefault;
+}
+
+// ============================================================================
 // Constructors
 // ============================================================================
 
@@ -373,4 +399,24 @@ export const jsConstPattern = (pattern: JSPattern, value: JSExpr): JSConstPatter
   tag: "jsConstPattern",
   pattern,
   value,
+});
+
+// Module constructors
+export const jsImportDecl = (names: string[], modulePath: string, isDefault?: boolean): JSImportDecl => ({
+  tag: "jsImportDecl",
+  names,
+  modulePath,
+  isDefault,
+});
+
+export const jsExportDefault = (value: JSExpr): JSExportDefault => ({
+  tag: "jsExportDefault",
+  value,
+});
+
+export const jsModule = (imports: JSImportDecl[], statements: JSStmt[], exp: JSExportDefault): JSModule => ({
+  tag: "jsModule",
+  imports,
+  statements,
+  export: exp,
 });

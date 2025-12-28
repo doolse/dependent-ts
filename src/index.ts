@@ -290,3 +290,50 @@ export {
   loadFromSource,
   loadExports,
 } from "./ts-loader";
+
+// JS AST Types
+export {
+  JSExpr,
+  JSStmt,
+  JSModule,
+  JSImportDecl,
+  JSExportDefault,
+  jsLit,
+  jsVar,
+  jsBinop,
+  jsUnary,
+  jsCall,
+  jsMethod,
+  jsArrow,
+  jsNamedFunction,
+  jsTernary,
+  jsMember,
+  jsIndex,
+  jsObject,
+  jsArray,
+  jsIIFE,
+  jsConst,
+  jsLet,
+  jsReturn,
+  jsIf,
+  jsForOf,
+  jsExpr,
+  jsContinue,
+  jsBreak,
+  jsImportDecl,
+  jsExportDefault,
+  jsModule,
+} from "./js-ast";
+
+// JS Printer
+export {
+  PrintOptions,
+  printExpr,
+  printStmts,
+  printModule,
+} from "./js-printer";
+
+// SValue Module Generator
+export {
+  generateESModule,
+} from "./svalue-module-generator";

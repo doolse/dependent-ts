@@ -787,6 +787,35 @@ registerBuiltin({
 });
 
 // ============================================================================
+// Compiler Builtins: Code Generation
+// ============================================================================
+
+import { generateESModule } from "./svalue-module-generator";
+import { printModule } from "./js-printer";
+
+registerBuiltin({
+  name: "esModule",
+  params: [{ name: "body", constraint: { tag: "any" } }],
+  resultType: () => isString,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const input = args[0];
+
+      // Generate the ES module AST
+      const module = generateESModule(input);
+
+      // Print to source string
+      const source = printModule(module);
+
+      // Return as compile-time string
+      return { svalue: ctx.now(stringVal(source), isString) };
+    }
+  }
+});
+
+// ============================================================================
 // Exported for initial environment setup
 // ============================================================================
 

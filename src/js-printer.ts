@@ -5,7 +5,7 @@
  * This is purely mechanical formatting - no semantic decisions.
  */
 
-import { JSExpr, JSStmt, JSPattern } from "./js-ast";
+import { JSExpr, JSStmt, JSPattern, JSModule, JSImportDecl, JSExportDefault } from "./js-ast";
 
 // ============================================================================
 // Options
@@ -38,6 +38,42 @@ export function printExpr(expr: JSExpr, options: PrintOptions = {}): string {
 export function printStmts(stmts: JSStmt[], options: PrintOptions = {}): string {
   const opts = { ...defaultOptions, ...options };
   return stmts.map((s) => printJSStmt(s, opts, 0)).join("\n");
+}
+
+/**
+ * Print an ES module to a string.
+ */
+export function printModule(mod: JSModule, options: PrintOptions = {}): string {
+  const opts = { ...defaultOptions, ...options };
+
+  const importStrs = mod.imports.map(printImportDecl);
+  const stmtStrs = mod.statements.map(s => printJSStmt(s, opts, 0));
+  const exportStr = printExportDefault(mod.export, opts);
+
+  const parts: string[] = [];
+  if (importStrs.length > 0) {
+    parts.push(...importStrs);
+    parts.push('');
+  }
+  if (stmtStrs.length > 0) {
+    parts.push(...stmtStrs);
+    parts.push('');
+  }
+  parts.push(exportStr);
+
+  return parts.join('\n') + '\n';
+}
+
+function printImportDecl(decl: JSImportDecl): string {
+  if (decl.isDefault) {
+    return `import ${printIdentifier(decl.names[0])} from ${JSON.stringify(decl.modulePath)};`;
+  }
+  const names = decl.names.map(printIdentifier).join(', ');
+  return `import { ${names} } from ${JSON.stringify(decl.modulePath)};`;
+}
+
+function printExportDefault(exp: JSExportDefault, opts: Required<PrintOptions>): string {
+  return `export default ${printJSExpr(exp.value, opts, 0)};`;
 }
 
 // ============================================================================

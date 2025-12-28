@@ -239,6 +239,9 @@ function evalBinaryOp(
   const leftResidual = svalueToResidual(left);
   const rightResidual = svalueToResidual(right);
 
+  // Merge captures from both operands for derived Later
+  const captures = mergeCaptures([left, right]);
+
   // Special case: + can be string concatenation
   if (op === "+") {
     const leftIsString = implies(left.constraint, isString);
@@ -249,7 +252,7 @@ function evalBinaryOp(
       requireConstraint(right.constraint, isString, "right of string +");
 
       const resultConstraint = stringConcat.result([left.constraint, right.constraint]);
-      return { svalue: later(resultConstraint, binop(op, leftResidual, rightResidual)) };
+      return { svalue: later(resultConstraint, binop(op, leftResidual, rightResidual), captures) };
     }
   }
 
@@ -261,7 +264,7 @@ function evalBinaryOp(
 
   const resultConstraint = builtin.result([left.constraint, right.constraint]);
 
-  return { svalue: later(resultConstraint, binop(op, leftResidual, rightResidual)) };
+  return { svalue: later(resultConstraint, binop(op, leftResidual, rightResidual), captures) };
 }
 
 function evalUnaryOp(
@@ -286,7 +289,8 @@ function evalUnaryOp(
   requireConstraint(operand.constraint, builtin.params[0], `operand of ${op}`);
 
   const resultConstraint = builtin.result([operand.constraint]);
-  return { svalue: later(resultConstraint, unary(op, svalueToResidual(operand))) };
+  const captures = mergeCaptures([operand]);
+  return { svalue: later(resultConstraint, unary(op, svalueToResidual(operand)), captures) };
 }
 
 function evalIf(
@@ -347,7 +351,10 @@ function evalIf(
   const thenResidual = svalueToResidual(thenResult);
   const elseResidual = svalueToResidual(elseResult);
 
-  return { svalue: later(resultConstraint, ifExpr(svalueToResidual(cond), thenResidual, elseResidual)) };
+  // Merge captures from condition and both branches
+  const captures = mergeCaptures([cond, thenResult, elseResult]);
+
+  return { svalue: later(resultConstraint, ifExpr(svalueToResidual(cond), thenResidual, elseResidual), captures) };
 }
 
 function evalLet(
@@ -364,7 +371,7 @@ function evalLet(
   // Simple residuals (varRef, lit) can be inlined safely.
   // For LaterArray, we keep the structure but may later need to emit a let binding.
   const boundValue = isLater(valueResult) && !isSimpleResidual(valueResult.residual)
-    ? later(valueResult.constraint, varRef(name))
+    ? later(valueResult.constraint, varRef(name), valueResult.captures, valueResult.origin)
     : valueResult;
 
   const newEnv = env.set(name, { svalue: boundValue });
@@ -392,10 +399,14 @@ function evalLet(
     // Variable is used in body - need to emit a let binding
     const valueResidual = svalueToResidual(valueResult);
 
+    // Merge captures from both the value and body
+    const captures = mergeCaptures([valueResult, bodyResult]);
+
     return {
       svalue: later(
         bodyResult.constraint,
-        letExpr(name, valueResidual, svalueToResidual(bodyResult))
+        letExpr(name, valueResidual, svalueToResidual(bodyResult)),
+        captures
       )
     };
   }
@@ -972,7 +983,9 @@ function evalObject(
   // Mark as closed object - no unlisted fields allowed
   fieldConstraints.push(indexSig(neverC));
   const constraint = and(...fieldConstraints);
-  return { svalue: later(constraint, obj(Object.fromEntries(residualFields.map(f => [f.name, f.value])))) };
+  // Merge captures from all field values
+  const captures = mergeCaptures(evaluatedFields.map(f => f.svalue));
+  return { svalue: later(constraint, obj(Object.fromEntries(residualFields.map(f => [f.name, f.value]))), captures) };
 }
 
 function evalField(
@@ -1000,7 +1013,8 @@ function evalField(
       // For Later values, always return Later for length - the value could change at runtime
       // even if the initial constraint has a specific length
       const lengthConstraint = extractLengthConstraint(objResult.constraint);
-      return { svalue: later(lengthConstraint, field(svalueToResidual(objResult), "length")) };
+      const captures = mergeCaptures([objResult]);
+      return { svalue: later(lengthConstraint, field(svalueToResidual(objResult), "length"), captures) };
     }
   }
 
@@ -1033,7 +1047,8 @@ function evalField(
     );
   }
 
-  return { svalue: later(fieldConstraint, field(svalueToResidual(objResult), fieldName)) };
+  const captures = mergeCaptures([objResult]);
+  return { svalue: later(fieldConstraint, field(svalueToResidual(objResult), fieldName), captures) };
 }
 
 /**
@@ -1179,7 +1194,8 @@ function evalIndex(
   const arrResidual = svalueToResidual(arr);
   const idxResidual = svalueToResidual(idx);
 
-  return { svalue: later(elementConstraint, index(arrResidual, idxResidual)) };
+  const captures = mergeCaptures([arr, idx]);
+  return { svalue: later(elementConstraint, index(arrResidual, idxResidual), captures) };
 }
 
 function evalBlock(
@@ -1278,7 +1294,8 @@ function evalAssert(
   const refinedConstraint = unify(valueResult.constraint, targetConstraint);
   const residualAssert = assertExpr(svalueToResidual(valueResult), constraintExpr, message);
 
-  return { svalue: later(refinedConstraint, residualAssert) };
+  const captures = mergeCaptures([valueResult]);
+  return { svalue: later(refinedConstraint, residualAssert, captures) };
 }
 
 /**
@@ -1311,7 +1328,8 @@ function evalAssertCond(
 
   // Condition is Later - generate residual assertion
   const residualAssert = assertCondExpr(svalueToResidual(condResult), message);
-  return { svalue: later(isBool, residualAssert) };
+  const captures = mergeCaptures([condResult]);
+  return { svalue: later(isBool, residualAssert, captures) };
 }
 
 /**
@@ -1523,7 +1541,8 @@ function evalImport(
   // If imports are used, wrap in residual import expression
   if (anyImportUsed) {
     // Collect captures from body for the wrapper Later
-    const captures = isLater(bodyResult) ? bodyResult.captures : mergeCaptures(isLaterArray(bodyResult) ? bodyResult.elements : []);
+    // Use mergeCaptures to include the bodyResult itself if it has import origin
+    const captures = mergeCaptures([bodyResult]);
     return {
       svalue: later(
         bodyResult.constraint,
