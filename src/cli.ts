@@ -17,23 +17,18 @@
 import * as fs from "fs";
 import * as path from "path";
 import { parse } from "./parser";
-import {
-  compile,
-  generateModule,
-  generateModuleWithImports,
-  generateJS,
-  CodeGenOptions,
-} from "./codegen";
+import { compile, CodeGenOptions } from "./codegen";
+import { stage, StagingError } from "./staged-evaluate";
+import { generateESModule } from "./svalue-module-generator";
+import { printModule } from "./js-printer";
 import { LexerError } from "./lexer";
 import { ParseError } from "./parser";
 import { TypeError } from "./builtins";
-import { StagingError } from "./staged-evaluate";
 
 interface CliOptions {
   inputFile: string;
   outputFile: string | null;
   asModule: boolean;
-  hoistImports: boolean;
   typescript: boolean;
   iife: boolean;
 }
@@ -48,7 +43,6 @@ Usage:
 Options:
   -o, --output <file>    Output file path (default: stdout)
   --no-module            Don't wrap as ES module (raw expression)
-  --no-hoist-imports     Don't hoist imports to module level
   --typescript           Generate TypeScript output
   --iife                 Wrap in an IIFE
   -h, --help             Show this help
@@ -65,7 +59,6 @@ function parseArgs(args: string[]): CliOptions | null {
     inputFile: "",
     outputFile: null,
     asModule: true,
-    hoistImports: true,
     typescript: false,
     iife: false,
   };
@@ -86,8 +79,6 @@ function parseArgs(args: string[]): CliOptions | null {
       options.outputFile = args[i];
     } else if (arg === "--no-module") {
       options.asModule = false;
-    } else if (arg === "--no-hoist-imports") {
-      options.hoistImports = false;
     } else if (arg === "--typescript") {
       options.typescript = true;
     } else if (arg === "--iife") {
@@ -175,11 +166,10 @@ function main(): void {
     const expr = parse(source);
 
     if (options.asModule) {
-      if (options.hoistImports) {
-        output = generateModuleWithImports(expr, codeGenOptions);
-      } else {
-        output = generateModule(expr, codeGenOptions);
-      }
+      // Stage the expression and generate ES module
+      const result = stage(expr);
+      const jsModule = generateESModule(result.svalue);
+      output = printModule(jsModule);
     } else {
       output = compile(expr, codeGenOptions);
     }

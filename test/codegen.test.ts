@@ -39,8 +39,6 @@ import {
 
   // Code generation
   generateJS,
-  generateModule,
-  generateFunction,
   compile,
   resetVarCounter,
 } from "../src/index";
@@ -214,13 +212,6 @@ describe("Function Generation Tests", () => {
     const code = generateJS(expr);
     expect(code).toContain("input");
   });
-
-  it("generateFunction creates named function", () => {
-    const expr = fn(["x", "y"], add(varRef("x"), varRef("y")));
-    const code = generateFunction("add", expr);
-    expect(code).toContain("function add(x, y)");
-    expect(code).toContain("return x + y");
-  });
 });
 
 describe("Object Generation Tests", () => {
@@ -374,11 +365,6 @@ describe("Edge Cases", () => {
   it("handles special property names", () => {
     const expr = obj({ "weird-name": num(1) });
     expect(generateJS(expr)).toContain('"weird-name"');
-  });
-
-  it("generateModule creates export", () => {
-    const code = generateModule(num(42));
-    expect(code.trim()).toBe("export default 42;");
   });
 });
 

@@ -258,9 +258,7 @@ export {
 export {
   CodeGenOptions,
   generateJS,
-  generateModule,
   generateModuleWithImports,
-  generateFunction,
   compile,
 } from "./codegen";
 
