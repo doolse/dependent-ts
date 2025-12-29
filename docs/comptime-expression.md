@@ -777,6 +777,32 @@ function emitSpecialization(closure: StagedClosure, name: string): string {
 - **Cross-module sharing**: Can specializations be shared across compilation units?
 - **Debug info**: How to map specialized functions back to source for stack traces?
 
+### Limitation: Automatic Specialization via `typeOf(x)`
+
+Currently, this pattern does NOT work:
+
+```
+let withDefault = fn(x) =>
+  let T = comptime(typeOf(x)) in
+  let defaultVal = comptime(if T == number then 0 else if T == string then "" else null) in
+  if x == null then defaultVal else x
+in
+withDefault(numValue);   // Want: x === null ? 0 : x
+withDefault(strValue);   // Want: x === null ? "" : x
+```
+
+**Why it fails:** When `withDefault` is bound to a name, the function definition is emitted via `stagedClosureToResidual`, which stages the body with generic `Later(any)` parameters - not the actual call-site types. So `typeOf(x)` returns `any` and a single generic function is emitted.
+
+**Desired behavior:** Specialization should happen when call sites produce different comptime values. The function should only be emitted when a call site requires it, and each call site that produces different comptime results should get its own specialized version.
+
+This would require:
+1. Delaying function emission until call sites are known
+2. Evaluating the body at each call site with actual argument types
+3. Grouping call sites by their post-comptime body structure
+4. Emitting one function per unique specialization
+
+This is essentially automatic monomorphization - the function acts like a template that gets specialized based on argument types at each call site.
+
 ## Current Inlining Behavior Analysis
 
 ### Observed Issue
