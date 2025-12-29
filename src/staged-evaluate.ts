@@ -842,6 +842,16 @@ function evalCall(
       }
     }
 
+    // If the function has a residual and returns a StagedClosure, propagate a residual
+    // to the result. This ensures curried functions like `minLength(8)(password)` emit
+    // `minLength(8)(password)` instead of inlining the body.
+    if (hasNameBinding && isStagedClosure(result.svalue) && !result.svalue.residual) {
+      const argResiduals = args.map(svalueToResidual);
+      const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
+      const callResidual = call(funcResidual, ...argResiduals);
+      return { svalue: { ...result.svalue, residual: callResidual } };
+    }
+
     return result;
   }
 

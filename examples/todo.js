@@ -32,8 +32,10 @@ export default (props) => {
   },
     onClick: () => inputText !== "" ? (() => {
     const newTodo = { id: todos.length, text: inputText, completed: false };
-    setTodos(todos.concat([newTodo]));
-    return setInputText("");
+    return (() => {
+      setTodos(todos.concat([newTodo]));
+      return setInputText("");
+    })();
   })() : null,
     children: "Add"
   })

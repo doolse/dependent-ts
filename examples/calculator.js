@@ -4,7 +4,7 @@ import { useState } from "react";
 export default (props) => {
   const [display, setDisplay] = useState("0");
   const [memory, setMemory] = useState(0);
-  const [operation, setOperation] = useState(null);
+  const [operation, setOperation] = useState("");
   const [waitingForOperand, setWaitingForOperand] = useState(false);
   const inputDigit = (digit) => waitingForOperand ? (() => {
     setDisplay(digit);
@@ -14,22 +14,21 @@ export default (props) => {
     setDisplay("0.");
     return setWaitingForOperand(false);
   })() : !display.includes(".") ? setDisplay(display + ".") : null;
-  const clear = () => {
+  const clear = () => (() => {
     setDisplay("0");
     setMemory(0);
     setOperation(null);
     return setWaitingForOperand(false);
-  };
-  const performOperation = (nextOp) => {
-    const inputValue = display;
+  })();
+  const performOperation = (nextOp) => (() => {
     setOperation(nextOp);
     setMemory(display);
     return setWaitingForOperand(true);
-  };
-  const calculate = () => setDisplay(memory + " " + operation + " " + display);
+  })();
+  const calculate = () => setDisplay(memory.toString() + " " + operation + " " + display);
   const applyFunction = (funcName) => {
     const n = display;
-    return funcName === "sqrt" ? setDisplay("sqrt(" + n + ")") : funcName === "square" ? setDisplay(n + "^2") : funcName === "factorial" ? setDisplay(n + "!") : setDisplay(n);
+    return funcName === "sqrt" ? setDisplay("sqrt(" + display + ")") : funcName === "square" ? setDisplay(display + "^2") : funcName === "factorial" ? setDisplay(display + "!") : setDisplay(display);
   };
   const buttonStyle = {
     padding: "15px",

@@ -18,8 +18,10 @@ export default (props) => {
   ].filter((x) => x !== null);
   const handleSubmit = () => {
     const validationErrors = validate();
-    setErrors(validationErrors);
-    return validationErrors.length === 0 ? setSuccess(true) : setSuccess(false);
+    return (() => {
+      setErrors(validationErrors);
+      return validationErrors.length === 0 ? setSuccess(true) : setSuccess(false);
+    })();
   };
   return jsxs("div", {
     style: {
