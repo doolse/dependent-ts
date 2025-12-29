@@ -7,16 +7,16 @@ export default (props) => {
   const [age, setAge] = useState("");
   const [errors, setErrors] = useState([]);
   const [success, setSuccess] = useState(false);
-  const isEmpty = function isEmpty(s) { return s.length === 0; };
-  const isValidEmail = function isValidEmail(s) { return s.includes("@") && s.includes("."); };
-  const isNumber = function isNumber(s) { return s.length === 0 ? false : s.split("").filter((c) => c < "0" || c > "9").length === 0; };
-  const minLength = function minLength(n) { return (s) => s.length >= n; };
-  const validate = function validate() { return [
+  const isEmpty = (s) => s.length === 0;
+  const isValidEmail = (s) => s.includes("@") && s.includes(".");
+  const isNumber = (s) => s.length === 0 ? false : s.split("").filter((c) => c < "0" || c > "9").length === 0;
+  const minLength = (n) => (s) => s.length >= n;
+  const validate = () => [
     isEmpty(email) ? "Email is required" : !isValidEmail(email) ? "Email must contain @ and ." : null,
     isEmpty(password) ? "Password is required" : !minLength(8)(password) ? "Password must be at least 8 characters" : null,
     isEmpty(age) ? "Age is required" : !isNumber(age) ? "Age must be a number" : null
-  ].filter((x) => x !== null); };
-  const handleSubmit = function handleSubmit() {
+  ].filter((x) => x !== null);
+  const handleSubmit = () => {
     const validationErrors = validate();
     return (() => {
       setErrors(validationErrors);

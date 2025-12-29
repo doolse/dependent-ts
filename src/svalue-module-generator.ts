@@ -1001,8 +1001,31 @@ function generateFromExpr(expr: Expr, ctx: ModuleGenContext): JSExpr {
       // Look up the assigned name for this specialization
       const bodyKey = exprToString(expr.body);
       const nameMap = ctx.specializationNames.get(expr.closure);
-      const name = nameMap?.get(bodyKey) ?? expr.closure.name ?? "fn";
-      return jsCall(jsVar(name), expr.args.map(a => generateFromExpr(a, ctx)));
+      const name = nameMap?.get(bodyKey);
+
+      if (name) {
+        // Found a pre-generated function name
+        return jsCall(jsVar(name), expr.args.map(a => generateFromExpr(a, ctx)));
+      }
+
+      if (expr.closure.name) {
+        // Named recursive function
+        return jsCall(jsVar(expr.closure.name), expr.args.map(a => generateFromExpr(a, ctx)));
+      }
+
+      // Check for closure with a residual (bound via let or returned from curried function)
+      // e.g., let isEmpty = fn(s) => ... creates a closure with residual: varRef("isEmpty")
+      // e.g., minLength(8) returns a closure with residual: call(varRef("minLength"), lit(8))
+      if (expr.closure.residual) {
+        // Generate the function expression from the residual, then call it with args
+        const funcExpr = generateFromExpr(expr.closure.residual, ctx);
+        return jsCall(funcExpr, expr.args.map(a => generateFromExpr(a, ctx)));
+      }
+
+      // Truly anonymous closure with no residual
+      // The body already contains the specialized code with args bound.
+      // Just generate the body directly.
+      return generateFromExpr(expr.body, ctx);
     }
   }
 }

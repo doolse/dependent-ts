@@ -399,8 +399,9 @@ function evalLet(
     boundValue = later(valueResult.constraint, varRef(name), valueResult.captures, valueResult.origin);
   } else if (isStagedClosure(valueResult)) {
     // Bind closure with residual pointing to the variable name
-    // Also set name if anonymous, so it can use the specializedCall path
-    boundValue = { ...valueResult, residual: varRef(name), name: valueResult.name ?? name };
+    // Keep name only if it's a recursive function (has explicit name from fn name(...) syntax)
+    // The binding name can be derived from residual.name when needed for codegen
+    boundValue = { ...valueResult, residual: varRef(name) };
   } else {
     boundValue = valueResult;
   }
@@ -1023,13 +1024,14 @@ function evalCall(
       } else {
         // Result is Later - emit specializedCall with the staged body
         const bodyResidual = svalueToResidual(result.svalue);
-        if (func.name) {
-          // Named closure - emit specializedCall for two-pass codegen
+        // Use specializedCall for bound closures (have a residual) that may need specialization
+        // This includes both named recursive functions and anonymous closures bound via let
+        if (func.residual || func.name) {
           const callResidual = specializedCall(func, bodyResidual, argResiduals);
           return { svalue: later(result.svalue.constraint, callResidual, captures) };
         } else {
-          // Anonymous closure (e.g., synthetic import wrapper) - use original call expression
-          const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
+          // Truly anonymous closure (e.g., synthetic import wrapper) - use original call expression
+          const funcResidual = varRef((funcExpr as { name: string }).name);
           const callResidual = call(funcResidual, ...argResiduals);
           return { svalue: later(result.svalue.constraint, callResidual, captures) };
         }

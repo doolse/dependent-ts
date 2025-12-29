@@ -55,7 +55,7 @@ export default (props) => {
   ];
   const [filterCategory, setFilterCategory] = useState("All");
   const categories = ["All", "Electronics", "Accessories", "Hardware"];
-  const filterByCategory = function filterByCategory(cat) { return (item) => cat === "All" ? true : item.category === cat; };
+  const filterByCategory = (cat) => (item) => cat === "All" ? true : item.category === cat;
   const filteredData = salesData.filter(filterByCategory(filterCategory));
   const sumField = function sumRec(arr, field, idx) { return idx >= arr.length ? 0 : (() => {
     const item = arr[idx];

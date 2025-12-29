@@ -781,16 +781,16 @@ describe("withDefault() specialization based on typeOf", () => {
     // IMPORTANT: typeOf must be evaluated BEFORE the null check, otherwise x is refined to null
     const code = compile(parse(`
       let withDefault = fn(x) =>
-        let isNumType = typeOf(x) == number in
-        if x == null then
-          if isNumType then 0 else ""
-        else x
+        let T = typeOf(x) in
+        let defaultVal = if T == number then 0 else 
+          if T == string then "" else false in
+        if x == null then defaultVal else x
       in
       let numVal = trust(runtime(n: 42), nullable(number)) in
       let strVal = trust(runtime(s: "hello"), nullable(string)) in
-      [withDefault(numVal), withDefault(strVal)]
+      let boolVal = trust(runtime(b: null), nullable(boolean)) in
+      [withDefault(numVal), withDefault(strVal), withDefault(boolVal), withDefault(strVal)]
     `));
-
     // Should have two specialized versions of withDefault
     expect(code).toContain("withDefault$0");
     expect(code).toContain("withDefault$1");
