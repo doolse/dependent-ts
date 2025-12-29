@@ -61,14 +61,6 @@ export interface Later {
  * A staged closure - a function with its captured staged environment.
  * Unlike Later (which is opaque), we can inspect the body and captures.
  */
-/**
- * Recorded specialization for a function - tracks arg constraints from a call site.
- */
-export interface Specialization {
-  name: string;            // Specialized function name (e.g., "fn$string")
-  argConstraints: Constraint[];
-}
-
 export interface StagedClosure {
   stage: "closure";
   body: Expr;              // The function body
@@ -78,7 +70,6 @@ export interface StagedClosure {
   siblings?: string[];     // Names in the same mutual recursion group
   constraint: Constraint;  // Always isFunction, but may have more info
   residual?: Expr;         // If set, use this expr when residualizing (e.g., varRef to bound name)
-  specializations?: Map<string, Specialization>;  // sig -> specialization (recorded during staging)
 }
 
 /**

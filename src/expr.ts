@@ -107,7 +107,8 @@ export type Expr =
   | MethodCallExpr
   | ImportExpr
   | TypeOfExpr
-  | DeferredClosureExpr;
+  | DeferredClosureExpr
+  | SpecializedCallExpr;
 
 export interface LitExpr {
   tag: "lit";
@@ -333,6 +334,18 @@ export interface DeferredClosureExpr {
   closure: StagedClosure;
 }
 
+/**
+ * Specialized function call for two-pass codegen.
+ * Contains the closure reference, pre-staged body, and argument residuals.
+ * Codegen collects these, deduplicates by body content, assigns names, then emits.
+ */
+export interface SpecializedCallExpr {
+  tag: "specializedCall";
+  closure: StagedClosure;  // Reference for grouping (uses object identity)
+  body: Expr;              // Pre-staged body for this call variant
+  args: Expr[];            // Argument residuals
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -458,6 +471,9 @@ export const typeOfExpr = (expr: Expr): TypeOfExpr =>
 export const deferredClosure = (closure: StagedClosure): DeferredClosureExpr =>
   ({ tag: "deferredClosure", closure });
 
+export const specializedCall = (closure: StagedClosure, body: Expr, args: Expr[]): SpecializedCallExpr =>
+  ({ tag: "specializedCall", closure, body, args });
+
 // ============================================================================
 // Pretty Printing
 // ============================================================================
@@ -545,5 +561,8 @@ export function exprToString(expr: Expr): string {
 
     case "deferredClosure":
       return `<deferred ${expr.closure.name ?? "fn"}>`;
+
+    case "specializedCall":
+      return `specializedCall(${expr.closure.name ?? "anon"}, ${exprToString(expr.body)}, [${expr.args.map(exprToString).join(", ")}])`;
   }
 }

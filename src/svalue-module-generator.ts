@@ -29,7 +29,7 @@ import {
 } from "./svalue";
 import { closureToResidual, stagingEvaluate, svalueToResidual, createArraySValue, freeVars } from "./staged-evaluate";
 import { Value } from "./value";
-import { Expr, Pattern, varRef } from "./expr";
+import { Expr, Pattern, varRef, exprToString } from "./expr";
 import { RefinementContext } from "./env";
 import { Constraint, and as andC, isFunction } from "./constraint";
 const anyC = { tag: "any" } as const;
@@ -42,6 +42,16 @@ interface ImportInfo {
   modulePath: string;
   bindings: Set<string>;
   defaultBinding?: string;
+}
+
+/**
+ * Information about a specialized function body.
+ */
+interface SpecializationInfo {
+  closure: StagedClosure;
+  bodyKey: string;      // exprToString(body) for deduplication
+  body: Expr;
+  isSelfCall: boolean;  // True if this is a self-recursive call marker
 }
 
 interface ModuleGenContext {
@@ -59,6 +69,9 @@ interface ModuleGenContext {
 
   // Runtime parameters collected during traversal
   runtimeParams: Map<string, Later>;
+
+  // Specialization name mapping: closure -> bodyKey -> functionName
+  specializationNames: Map<StagedClosure, Map<string, string>>;
 }
 
 function createContext(): ModuleGenContext {
@@ -68,7 +81,211 @@ function createContext(): ModuleGenContext {
     closureDeps: new Map(),
     imports: new Map(),
     runtimeParams: new Map(),
+    specializationNames: new Map(),
   };
+}
+
+// ============================================================================
+// Two-Pass Specialization Collection and Naming
+// ============================================================================
+
+/**
+ * Collect all specializedCall nodes from an expression tree.
+ * Groups them by closure identity for deduplication.
+ */
+function collectSpecializations(expr: Expr): Map<StagedClosure, SpecializationInfo[]> {
+  const result = new Map<StagedClosure, SpecializationInfo[]>();
+
+  function walk(e: Expr): void {
+    switch (e.tag) {
+      case "specializedCall": {
+        const bodyKey = exprToString(e.body);
+        const existing = result.get(e.closure) ?? [];
+        // Check if this is a self-recursive call marker (body === closure.body)
+        const isSelfCall = e.body === e.closure.body;
+        // Only add if this body isn't already collected (dedupe by bodyKey)
+        if (!existing.some(s => s.bodyKey === bodyKey)) {
+          existing.push({ closure: e.closure, bodyKey, body: e.body, isSelfCall });
+          result.set(e.closure, existing);
+        }
+        // Walk the args
+        for (const arg of e.args) {
+          walk(arg);
+        }
+        // If not a self-call marker, also walk the body for nested specializations
+        if (!isSelfCall) {
+          walk(e.body);
+        }
+        break;
+      }
+      case "lit":
+      case "var":
+      case "runtime":
+        break;
+      case "binop":
+        walk(e.left);
+        walk(e.right);
+        break;
+      case "unary":
+        walk(e.operand);
+        break;
+      case "if":
+        walk(e.cond);
+        walk(e.then);
+        walk(e.else);
+        break;
+      case "let":
+        walk(e.value);
+        walk(e.body);
+        break;
+      case "letPattern":
+        walk(e.value);
+        walk(e.body);
+        break;
+      case "fn":
+        walk(e.body);
+        break;
+      case "recfn":
+        walk(e.body);
+        break;
+      case "call":
+        walk(e.func);
+        for (const arg of e.args) {
+          walk(arg);
+        }
+        break;
+      case "obj":
+        for (const field of e.fields) {
+          walk(field.value);
+        }
+        break;
+      case "field":
+        walk(e.object);
+        break;
+      case "array":
+        for (const elem of e.elements) {
+          walk(elem);
+        }
+        break;
+      case "index":
+        walk(e.array);
+        walk(e.index);
+        break;
+      case "block":
+        for (const expr of e.exprs) {
+          walk(expr);
+        }
+        break;
+      case "comptime":
+        walk(e.expr);
+        break;
+      case "assert":
+        walk(e.expr);
+        walk(e.constraint);
+        break;
+      case "assertCond":
+        walk(e.condition);
+        break;
+      case "trust":
+        walk(e.expr);
+        if (e.constraint) walk(e.constraint);
+        break;
+      case "methodCall":
+        walk(e.receiver);
+        for (const arg of e.args) {
+          walk(arg);
+        }
+        break;
+      case "import":
+        walk(e.body);
+        break;
+      case "typeOf":
+        walk(e.expr);
+        break;
+      case "deferredClosure":
+        // Don't recurse into deferred closures - they're staged separately
+        break;
+    }
+  }
+
+  walk(expr);
+  return result;
+}
+
+/**
+ * Assign function names to specializations.
+ * If there's only one unique body, use the base name.
+ * If there are multiple, use suffixed names.
+ * @param specs - Map of closures to their specialization info
+ * @param baseNameOverride - Optional override for the base name (e.g., let binding name)
+ * Returns: closure -> bodyKey -> functionName
+ */
+function assignSpecializationNames(
+  specs: Map<StagedClosure, SpecializationInfo[]>,
+  baseNameOverride?: string
+): Map<StagedClosure, Map<string, string>> {
+  const result = new Map<StagedClosure, Map<string, string>>();
+
+  for (const [closure, bodies] of specs) {
+    // Use override if provided, otherwise use closure's name or "fn"
+    const baseName = baseNameOverride ?? closure.name ?? "fn";
+    const nameMap = new Map<string, string>();
+
+    // Filter out self-call markers - they use the same name as the real body
+    const realBodies = bodies.filter(b => !b.isSelfCall);
+
+    if (realBodies.length === 0) {
+      // Only self-calls, no real bodies - shouldn't happen, but handle it
+      // All calls will use the base name
+      for (const body of bodies) {
+        nameMap.set(body.bodyKey, baseName);
+      }
+    } else if (realBodies.length === 1) {
+      // Single version - use base name for all (including self-calls)
+      const fnName = baseName;
+      for (const body of bodies) {
+        nameMap.set(body.bodyKey, fnName);
+      }
+    } else {
+      // Multiple versions - use suffixed names
+      realBodies.forEach((spec, i) => {
+        nameMap.set(spec.bodyKey, `${baseName}$${i}`);
+      });
+      // Self-calls get assigned to the first real body's name
+      // (they should match one of the real bodies in practice)
+      for (const body of bodies) {
+        if (body.isSelfCall && !nameMap.has(body.bodyKey)) {
+          // Self-call that doesn't match any real body - use base name
+          nameMap.set(body.bodyKey, baseName);
+        }
+      }
+    }
+
+    result.set(closure, nameMap);
+  }
+
+  return result;
+}
+
+/**
+ * Collect specializations from an expression and populate the context.
+ * Used when generating let bindings that contain deferred closures.
+ */
+function prepareSpecializationsForExpr(expr: Expr, ctx: ModuleGenContext): void {
+  const specs = collectSpecializations(expr);
+  const names = assignSpecializationNames(specs);
+
+  // Merge into context
+  for (const [closure, nameMap] of names) {
+    const existing = ctx.specializationNames.get(closure);
+    if (existing) {
+      for (const [bodyKey, name] of nameMap) {
+        existing.set(bodyKey, name);
+      }
+    } else {
+      ctx.specializationNames.set(closure, nameMap);
+    }
+  }
 }
 
 // ============================================================================
@@ -458,25 +675,39 @@ function generateClosureBody(sc: StagedClosure, ctx: ModuleGenContext): JSExpr |
 function collectLetChainStmts(expr: Expr, ctx: ModuleGenContext): JSStmt[] {
   const stmts: JSStmt[] = [];
   let current = expr;
+  let currentCtx = ctx;
 
   while (current.tag === "let" || current.tag === "letPattern") {
     if (current.tag === "let") {
-      const valueJs = generateFromExpr(current.value, ctx);
-      if (current.name === "_") {
-        stmts.push(jsExprStmt(valueJs));
+      // Check for deferredClosure - needs special handling
+      if (current.value.tag === "deferredClosure") {
+        const deferredStmts = generateDeferredClosureBinding(
+          current.name,
+          current.value.closure,
+          current.body,
+          currentCtx
+        );
+        stmts.push(...deferredStmts.functionStmts);
+        currentCtx = deferredStmts.ctx;
+        current = current.body;
       } else {
-        stmts.push(jsConst(current.name, valueJs));
+        const valueJs = generateFromExpr(current.value, currentCtx);
+        if (current.name === "_") {
+          stmts.push(jsExprStmt(valueJs));
+        } else {
+          stmts.push(jsConst(current.name, valueJs));
+        }
+        current = current.body;
       }
-      current = current.body;
     } else {
-      const valueJs = generateFromExpr(current.value, ctx);
+      const valueJs = generateFromExpr(current.value, currentCtx);
       const pattern = convertPattern(current.pattern);
       stmts.push(jsConstPattern(pattern, valueJs));
       current = current.body;
     }
   }
 
-  stmts.push(jsReturn(generateFromExpr(current, ctx)));
+  stmts.push(jsReturn(generateFromExpr(current, currentCtx)));
   return stmts;
 }
 
@@ -747,27 +978,136 @@ function generateFromExpr(expr: Expr, ctx: ModuleGenContext): JSExpr {
 
     case "deferredClosure":
       return generateDeferredClosure(expr.closure, ctx);
+
+    case "specializedCall": {
+      // Look up the assigned name for this specialization
+      const bodyKey = exprToString(expr.body);
+      const nameMap = ctx.specializationNames.get(expr.closure);
+      const name = nameMap?.get(bodyKey) ?? expr.closure.name ?? "fn";
+      return jsCall(jsVar(name), expr.args.map(a => generateFromExpr(a, ctx)));
+    }
   }
 }
 
-function generateLet(name: string, value: Expr, body: Expr, ctx: ModuleGenContext): JSExpr {
-  // Special handling for deferredClosure with specializations
-  // We need to emit the specializations at the same scope level as the body,
-  // not inside an IIFE (which would make them inaccessible)
-  if (value.tag === "deferredClosure" && value.closure.specializations && value.closure.specializations.size > 0) {
+/**
+ * Generate statements for a deferred closure binding.
+ * This implements the two-pass specialization approach: collect specializedCall nodes,
+ * re-stage with parameter names, and generate a single function definition.
+ * Returns the function definition statements and the updated context.
+ */
+function generateDeferredClosureBinding(
+  name: string,
+  closure: StagedClosure,
+  body: Expr,
+  ctx: ModuleGenContext
+): { functionStmts: JSStmt[]; ctx: ModuleGenContext } {
+  // Phase 1: Collect specializations from the body
+  const specs = collectSpecializations(body);
+  const closureSpecs = specs.get(closure);
+
+  if (!closureSpecs || closureSpecs.length === 0) {
+    // No specializations - the function is never called with Later args
+    // Generate a generic deferred closure
     const stmts: JSStmt[] = [];
+    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+    return { functionStmts: stmts, ctx };
+  }
 
-    // Generate all specialized versions as const declarations
-    for (const specialization of value.closure.specializations.values()) {
-      const specializedFn = generateSpecializedClosure(value.closure, specialization, ctx);
-      stmts.push(jsConst(specialization.name, specializedFn));
+  // Phase 2: Assign names - use the let binding name, not the closure's recursive name
+  // Note: Since we re-stage the body with parameter names, all bodies should be identical.
+  // We use the let binding name directly instead of suffixed names.
+  const nameMap = new Map<string, string>();
+  for (const spec of closureSpecs) {
+    nameMap.set(spec.bodyKey, name);
+  }
+  const names = new Map<StagedClosure, Map<string, string>>([[closure, nameMap]]);
+
+  // Update context with the name mapping
+  const newCtx = { ...ctx, specializationNames: new Map([...ctx.specializationNames, ...names]) };
+
+  const stmts: JSStmt[] = [];
+
+  // Phase 3: Generate ONE function definition by re-staging with parameter names
+  // This ensures all calls get the same body, avoiding issues where spec.body
+  // contains call-site-specific argument references.
+  const { params: paramNames, body: innerBody } = extractParamsFromBody(closure.body);
+
+  // Set up environment with params as Later values (using param names as residuals)
+  let bodyEnv = closure.env;
+  const paramSValues: SValue[] = [];
+  for (const paramName of paramNames) {
+    const paramSValue = laterRuntime(paramName, anyC);
+    paramSValues.push(paramSValue);
+    bodyEnv = bodyEnv.set(paramName, { svalue: paramSValue });
+  }
+
+  // Create args array binding
+  const argsArray = createArraySValue(paramSValues);
+  bodyEnv = bodyEnv.set("args", { svalue: argsArray });
+
+  // Add self-reference for recursive functions, using the let binding name
+  let selfRef: StagedClosure | null = null;
+  if (closure.name) {
+    // Create a closure with the let binding name as the recursive reference.
+    // IMPORTANT: We also need to update the closure's env to include the self-reference,
+    // otherwise when the body calls itself, it won't find the binding.
+    // We use the let binding name as the closure's name so generated code uses that name.
+    selfRef = { ...closure, name };
+    // Update the selfRef's env to include itself under the original recursive name
+    selfRef.env = selfRef.env.set(closure.name, { svalue: selfRef });
+    bodyEnv = bodyEnv.set(closure.name, { svalue: selfRef });
+  }
+
+  // Find free variables in the inner body that aren't bound in the environment
+  const boundVars = new Set<string>(["args", ...paramNames]);
+  if (closure.name) boundVars.add(closure.name);
+  const freeInBody = freeVars(innerBody, boundVars);
+  for (const freeVar of freeInBody) {
+    if (!bodyEnv.has(freeVar)) {
+      bodyEnv = bodyEnv.set(freeVar, { svalue: later(anyC, varRef(freeVar)) });
     }
+  }
 
-    // Add body
+  // Stage the body with parameter-named Later values
+  const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty());
+  const residualBody = svalueToResidual(bodyResult.svalue);
+
+  // After re-staging, the residualBody contains specializedCall nodes where the closure
+  // is selfRef (not the original closure). Collect those bodyKeys and add them to the
+  // nameMap, then update the context's specializationNames to include selfRef.
+  if (selfRef) {
+    const restagedSpecs = collectSpecializations(residualBody);
+    const selfRefSpecs = restagedSpecs.get(selfRef);
+    if (selfRefSpecs) {
+      for (const spec of selfRefSpecs) {
+        nameMap.set(spec.bodyKey, name);
+      }
+    }
+    newCtx.specializationNames.set(selfRef, nameMap);
+  }
+
+  // Generate the function definition
+  if (closure.name) {
+    stmts.push(jsConst(name, generateRecFnExpr(name, paramNames, residualBody, newCtx)));
+  } else {
+    stmts.push(jsConst(name, generateFnExpr(paramNames, residualBody, newCtx)));
+  }
+
+  return { functionStmts: stmts, ctx: newCtx };
+}
+
+function generateLet(name: string, value: Expr, body: Expr, ctx: ModuleGenContext): JSExpr {
+  // Special handling for deferredClosure: use two-pass specialization
+  // Collect all specializedCall nodes from the body, dedupe, assign names, emit functions
+  if (value.tag === "deferredClosure") {
+    const result = generateDeferredClosureBinding(name, value.closure, body, ctx);
+
+    // Phase 4: Generate body with updated context
+    const stmts = [...result.functionStmts];
     if (body.tag === "let" || body.tag === "letPattern") {
-      stmts.push(...collectLetChainStmtsFromMiddle(body, ctx));
+      stmts.push(...collectLetChainStmtsFromMiddle(body, result.ctx));
     } else {
-      stmts.push(jsReturn(generateFromExpr(body, ctx)));
+      stmts.push(jsReturn(generateFromExpr(body, result.ctx)));
     }
 
     return jsIIFE(stmts);
@@ -795,25 +1135,39 @@ function generateLet(name: string, value: Expr, body: Expr, ctx: ModuleGenContex
 function collectLetChainStmtsFromMiddle(expr: Expr, ctx: ModuleGenContext): JSStmt[] {
   const stmts: JSStmt[] = [];
   let current = expr;
+  let currentCtx = ctx;
 
   while (current.tag === "let" || current.tag === "letPattern") {
     if (current.tag === "let") {
-      const valueJs = generateFromExpr(current.value, ctx);
-      if (current.name === "_") {
-        stmts.push(jsExprStmt(valueJs));
+      // Check for deferredClosure - needs special handling
+      if (current.value.tag === "deferredClosure") {
+        const deferredStmts = generateDeferredClosureBinding(
+          current.name,
+          current.value.closure,
+          current.body,
+          currentCtx
+        );
+        stmts.push(...deferredStmts.functionStmts);
+        currentCtx = deferredStmts.ctx;
+        current = current.body;
       } else {
-        stmts.push(jsConst(current.name, valueJs));
+        const valueJs = generateFromExpr(current.value, currentCtx);
+        if (current.name === "_") {
+          stmts.push(jsExprStmt(valueJs));
+        } else {
+          stmts.push(jsConst(current.name, valueJs));
+        }
+        current = current.body;
       }
-      current = current.body;
     } else {
-      const valueJs = generateFromExpr(current.value, ctx);
+      const valueJs = generateFromExpr(current.value, currentCtx);
       const pattern = convertPattern(current.pattern);
       stmts.push(jsConstPattern(pattern, valueJs));
       current = current.body;
     }
   }
 
-  stmts.push(jsReturn(generateFromExpr(current, ctx)));
+  stmts.push(jsReturn(generateFromExpr(current, currentCtx)));
   return stmts;
 }
 
@@ -869,79 +1223,8 @@ function generateRecFnExpr(name: string, params: string[], body: Expr, ctx: Modu
  * - Dead code elimination for uncalled functions
  * - Deferred errors (only surface when function needs to be emitted)
  */
-/**
- * Generate a specialized version of a closure for specific argument constraints.
- */
-function generateSpecializedClosure(
-  sc: StagedClosure,
-  specialization: { name: string; argConstraints: Constraint[] },
-  ctx: ModuleGenContext
-): JSExpr {
-  // Extract params from desugared body: let [a, b] = args in body
-  const { params: paramNames, body: innerBody } = extractParamsFromBody(sc.body);
-
-  // Set up environment with params using the ACTUAL constraints from call site
-  let bodyEnv = sc.env;
-
-  const paramSValues: SValue[] = [];
-  for (let i = 0; i < paramNames.length; i++) {
-    const paramName = paramNames[i];
-    // Use the actual constraint from the call site, not 'any'
-    const constraint = specialization.argConstraints[i] ?? anyC;
-    const paramSValue = laterRuntime(paramName, constraint);
-    paramSValues.push(paramSValue);
-    bodyEnv = bodyEnv.set(paramName, { svalue: paramSValue });
-  }
-
-  // Create args array binding
-  const argsArray = createArraySValue(paramSValues);
-  bodyEnv = bodyEnv.set("args", { svalue: argsArray });
-
-  // Add self-reference for recursive functions (use specialized name for self-calls)
-  if (sc.name) {
-    // Create a modified closure that records specializations on itself
-    bodyEnv = bodyEnv.set(sc.name, { svalue: sc });
-  }
-
-  // Find free variables in the inner body that aren't bound in the environment
-  const boundVars = new Set<string>(["args", ...paramNames]);
-  if (sc.name) boundVars.add(sc.name);
-  const freeInBody = freeVars(innerBody, boundVars);
-
-  for (const freeVar of freeInBody) {
-    if (!bodyEnv.has(freeVar)) {
-      bodyEnv = bodyEnv.set(freeVar, { svalue: later(anyC, varRef(freeVar)) });
-    }
-  }
-
-  // Stage the body with the specialized constraints
-  const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty());
-  const residualBody = svalueToResidual(bodyResult.svalue);
-
-  // Generate the function expression (use specialization.name for recursive self-reference)
-  if (sc.name) {
-    return generateRecFnExpr(specialization.name, paramNames, residualBody, ctx);
-  }
-  return generateFnExpr(paramNames, residualBody, ctx);
-}
-
 function generateDeferredClosure(sc: StagedClosure, ctx: ModuleGenContext): JSExpr {
-  // Check if we have specializations to emit
-  if (sc.specializations && sc.specializations.size > 0) {
-    // Generate all specialized versions in an IIFE
-    const stmts: JSStmt[] = [];
-
-    for (const specialization of sc.specializations.values()) {
-      const specializedFn = generateSpecializedClosure(sc, specialization, ctx);
-      stmts.push(jsConst(specialization.name, specializedFn));
-    }
-
-    // Return null since calls use specialized names directly
-    stmts.push(jsReturn(jsLit(null)));
-    return jsIIFE(stmts);
-  }
-
-  // No specializations - generate generic version with Later(any) params
+  // Generate generic version with Later(any) params
   // Extract params from desugared body: let [a, b] = args in body
   const { params: paramNames, body: innerBody } = extractParamsFromBody(sc.body);
 
