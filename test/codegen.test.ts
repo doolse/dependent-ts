@@ -303,11 +303,13 @@ describe("Block Generation Tests", () => {
     expect(eval(code)).toBe(3);
   });
 
-  it("generates last expression from block with runtime values", () => {
+  it("generates IIFE for block with runtime values to preserve side effects", () => {
     const expr = block(runtime(num(1), "a"), runtime(num(2), "b"), runtime(num(3), "c"));
     const code = generateJS(expr);
-    // Block evaluates to its last expression
-    expect(code.trim()).toBe("c");
+    // Block preserves all expressions for side effects, returns last
+    expect(code).toContain("a;");
+    expect(code).toContain("b;");
+    expect(code).toContain("return c;");
   });
 });
 
@@ -525,7 +527,7 @@ describe("Args Destructuring Optimization", () => {
 // Code Generation for Complex Cases
 // ============================================================================
 
-import { stage, isLater, assertExpr } from "../src/index";
+import { stage, isLater, assertExpr, parse } from "../src/index";
 
 describe("Code Generation for Complex Cases", () => {
   describe("Residual code for runtime assertions", () => {
@@ -538,5 +540,65 @@ describe("Code Generation for Complex Cases", () => {
         expect(result.svalue.residual.tag).toBe("assert");
       }
     });
+  });
+});
+
+// ============================================================================
+// Block Expression Parsing Tests
+// ============================================================================
+
+describe("Block Expression Parsing", () => {
+  it("parses single expression block", () => {
+    const code = compile(parse("{ 42 }"));
+    expect(eval(code)).toBe(42);
+  });
+
+  it("parses multi-expression block", () => {
+    const code = compile(parse("{ 1; 2; 3 }"));
+    expect(eval(code)).toBe(3);
+  });
+
+  it("allows trailing semicolon", () => {
+    const code = compile(parse("{ 1; 2; }"));
+    expect(eval(code)).toBe(2);
+  });
+
+  it("preserves side effects with Later values", () => {
+    const code = compile(parse(`
+      let f = runtime(f: fn() => 1) in
+      let g = runtime(g: fn() => 2) in
+      { f(); g() }
+    `));
+    // Should generate IIFE that calls both f() and g()
+    expect(code).toContain("f()");
+    expect(code).toContain("g()");
+  });
+
+  it("distinguishes blocks from objects", () => {
+    // Object - verify it parses as obj, not block
+    const objExpr = parse("{ x: 1 }");
+    expect(objExpr.tag).toBe("obj");
+    const objCode = compile(objExpr);
+    // Note: eval("{ x: 1 }") in JS is a labeled statement, need parens for object
+    expect(eval("(" + objCode + ")")).toEqual({ x: 1 });
+
+    // Block (single expression, no semicolon needed)
+    const blockExpr = parse("{ 1 }");
+    expect(blockExpr.tag).toBe("block");
+    const blockCode = compile(blockExpr);
+    expect(eval(blockCode)).toBe(1);
+  });
+
+  it("parses block with let expressions inside", () => {
+    const code = compile(parse("{ let x = 1 in x; let y = 2 in y }"));
+    expect(eval(code)).toBe(2);
+  });
+
+  it("empty braces parse as empty object", () => {
+    const expr = parse("{}");
+    expect(expr.tag).toBe("obj");
+    const code = compile(expr);
+    // Note: eval("{}") in JS is empty block, need parens for object
+    expect(eval("(" + code + ")")).toEqual({});
   });
 });

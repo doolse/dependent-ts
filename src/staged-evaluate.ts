@@ -1211,11 +1211,22 @@ function evalBlock(
     return { svalue: now(nullVal, isNull) };
   }
 
-  let lastResult: SValue = now(nullVal, isNull);
+  const results: SValue[] = [];
   for (const expr of exprs) {
-    lastResult = stagingEvaluate(expr, env, ctx).svalue;
+    results.push(stagingEvaluate(expr, env, ctx).svalue);
   }
-  return { svalue: lastResult };
+
+  const lastResult = results[results.length - 1];
+
+  // If all Now, just return last value
+  if (results.every(isNow)) {
+    return { svalue: lastResult };
+  }
+
+  // Build block residual from all expressions to preserve side effects
+  const residuals = results.map(svalueToResidual);
+  const captures = mergeCaptures(results);
+  return { svalue: later(lastResult.constraint, block(...residuals), captures) };
 }
 
 function evalComptime(

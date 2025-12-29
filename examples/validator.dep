@@ -36,11 +36,12 @@ fn(props) =>
 
   let handleSubmit = fn() =>
     let validationErrors = validate() in
-    let _ = setErrors(validationErrors) in
-    if validationErrors.length == 0 then
-      setSuccess(true)
-    else
-      setSuccess(false)
+    { setErrors(validationErrors);
+      if validationErrors.length == 0 then
+        setSuccess(true)
+      else
+        setSuccess(false)
+    }
   in
 
   <div style={{ fontFamily: "system-ui", padding: "20px", maxWidth: "400px", margin: "0 auto" }}>

@@ -18,8 +18,7 @@ import { useState } from "react" in
           onClick={fn() =>
             if inputText != "" then
               let newTodo = { id: todos.length, text: inputText, completed: false } in
-              let _ = setTodos(todos.concat([newTodo])) in
-              setInputText("")
+              { setTodos(todos.concat([newTodo])); setInputText("") }
             else
               null
           }>

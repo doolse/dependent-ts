@@ -43,6 +43,7 @@ import {
   field,
   array,
   index,
+  block,
   comptime,
   runtime,
   assertExpr,
@@ -522,9 +523,9 @@ export class Parser {
       return expr;
     }
 
-    // Object literal
+    // Object literal or block expression
     if (this.match("LBRACE")) {
-      return this.parseObject();
+      return this.parseObjectOrBlock();
     }
 
     // Array literal
@@ -555,6 +556,48 @@ export class Parser {
 
     this.expect("RBRACE", "Expected '}' after object fields");
     return obj(fields);
+  }
+
+  /**
+   * Parse either an object literal { field: value } or a block expression { expr; expr }.
+   * LBRACE has already been consumed by the caller.
+   */
+  private parseObjectOrBlock(): Expr {
+    // Empty braces = empty object
+    if (this.match("RBRACE")) {
+      return obj({});
+    }
+
+    // Distinguish object { ident: expr } from block { expr; ... }
+    if (this.check("IDENT") && this.peekNext()?.type === "COLON") {
+      // Object literal - reuse existing parseObject logic inline
+      const fields: Record<string, Expr> = {};
+      do {
+        const name = this.expect("IDENT", "Expected field name").value;
+        this.expect("COLON", "Expected ':' after field name");
+        const value = this.parseExpr();
+        fields[name] = value;
+      } while (this.match("COMMA"));
+      this.expect("RBRACE", "Expected '}' after object fields");
+      return obj(fields);
+    }
+
+    // Block expression
+    const exprs: Expr[] = [];
+    exprs.push(this.parseExpr());
+
+    while (this.match("SEMICOLON")) {
+      if (this.check("RBRACE")) break;  // Allow trailing semicolon
+      exprs.push(this.parseExpr());
+    }
+
+    this.expect("RBRACE", "Expected '}' after block");
+    return block(...exprs);
+  }
+
+  private peekNext(): Token | null {
+    if (this.pos + 1 >= this.tokens.length) return null;
+    return this.tokens[this.pos + 1];
   }
 
   private parseArray(): Expr {

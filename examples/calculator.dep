@@ -45,16 +45,14 @@ fn(props) =>
 
   let inputDigit = fn(digit) =>
     if waitingForOperand then
-      let _ = setDisplay(digit) in
-      setWaitingForOperand(false)
+      { setDisplay(digit); setWaitingForOperand(false) }
     else
       setDisplay(if display == "0" then digit else display + digit)
   in
 
   let inputDecimal = fn() =>
     if waitingForOperand then
-      let _ = setDisplay("0.") in
-      setWaitingForOperand(false)
+      { setDisplay("0."); setWaitingForOperand(false) }
     else if !display.includes(".") then
       setDisplay(display + ".")
     else
@@ -62,17 +60,12 @@ fn(props) =>
   in
 
   let clear = fn() =>
-    let _ = setDisplay("0") in
-    let _ = setMemory(0) in
-    let _ = setOperation(null) in
-    setWaitingForOperand(false)
+    { setDisplay("0"); setMemory(0); setOperation(null); setWaitingForOperand(false) }
   in
 
   let performOperation = fn(nextOp) =>
     let inputValue = display in
-    let _ = setOperation(nextOp) in
-    let _ = setMemory(display) in
-    setWaitingForOperand(true)
+    { setOperation(nextOp); setMemory(display); setWaitingForOperand(true) }
   in
 
   let calculate = fn() =>
