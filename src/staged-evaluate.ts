@@ -370,9 +370,16 @@ function evalLet(
   // lookups reference the variable instead of duplicating the expression.
   // Simple residuals (varRef, lit) can be inlined safely.
   // For LaterArray, we keep the structure but may later need to emit a let binding.
-  const boundValue = isLater(valueResult) && !isSimpleResidual(valueResult.residual)
-    ? later(valueResult.constraint, varRef(name), valueResult.captures, valueResult.origin)
-    : valueResult;
+  // For StagedClosure, set residual to varRef so subsequent uses reference the variable.
+  let boundValue: SValue;
+  if (isLater(valueResult) && !isSimpleResidual(valueResult.residual)) {
+    boundValue = later(valueResult.constraint, varRef(name), valueResult.captures, valueResult.origin);
+  } else if (isStagedClosure(valueResult)) {
+    // Bind closure with residual pointing to the variable name
+    boundValue = { ...valueResult, residual: varRef(name) };
+  } else {
+    boundValue = valueResult;
+  }
 
   const newEnv = env.set(name, { svalue: boundValue });
 
@@ -811,15 +818,18 @@ function evalCall(
     const result = stagingEvaluate(func.body, callEnv, RefinementContext.empty());
 
     // Emit a call expression instead of inlining the body when:
-    // 1. Function is called by name (funcExpr.tag === "var")
+    // 1. Function is called by name (funcExpr.tag === "var") OR has a residual (was bound to a name)
     // 2. AND either:
     //    a. Any argument was Later (hasLaterArg), OR
     //    b. The result is Later/LaterArray (body couldn't be fully evaluated due to captured Later vars)
     // This prevents closure bodies from being duplicated at each call site.
     const resultIsLater = isLater(result.svalue) || isLaterArray(result.svalue);
-    if (funcExpr.tag === "var" && (hasLaterArg || resultIsLater)) {
+    const hasNameBinding = funcExpr.tag === "var" || func.residual;
+    if (hasNameBinding && (hasLaterArg || resultIsLater)) {
       const argResiduals = args.map(svalueToResidual);
-      const callResidual = call(varRef(funcExpr.name), ...argResiduals);
+      // Use the function's residual if available, otherwise use the variable name from the call
+      const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
+      const callResidual = call(funcResidual, ...argResiduals);
       const captures = mergeCaptures(args);
 
       if (isNow(result.svalue)) {
@@ -1800,7 +1810,11 @@ export function svalueToResidual(sv: SValue): Expr {
     return array(...sv.elements.map(svalueToResidual));
   }
   if (isStagedClosure(sv)) {
-    // Convert closure to function expression
+    // If closure has a residual (e.g., was bound to a name), use it
+    if (sv.residual) {
+      return sv.residual;
+    }
+    // Otherwise convert closure to function expression
     return stagedClosureToResidual(sv);
   }
   // Now value - use residual if present, otherwise convert value

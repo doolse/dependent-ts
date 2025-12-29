@@ -69,6 +69,7 @@ export interface StagedClosure {
   name?: string;           // For recursive self-reference
   siblings?: string[];     // Names in the same mutual recursion group
   constraint: Constraint;  // Always isFunction, but may have more info
+  residual?: Expr;         // If set, use this expr when residualizing (e.g., varRef to bound name)
 }
 
 /**
