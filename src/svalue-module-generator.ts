@@ -576,7 +576,7 @@ function generateFromValue(value: Value, ctx: ModuleGenContext): JSExpr {
       throw new Error("Unexpected ClosureValue - should be StagedClosure");
 
     case "type":
-      throw new Error("Cannot generate code for TypeValue");
+      throw new Error("Types are compile-time only and cannot be used at runtime");
 
     case "builtin":
       return jsVar(value.name);

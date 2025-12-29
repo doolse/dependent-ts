@@ -3,8 +3,6 @@ import { useState } from "react";
 
 export default (props) => {
   const [count, setCount] = useState(0);
-  const factorial = function fac(n) { return n <= 1 ? 1 : n * fac(n - 1); };
-  const fib = function fibRec(n) { return n <= 1 ? n : fibRec(n - 1) + fibRec(n - 2); };
   return jsxs("div", {
     style: {
     fontFamily: "system-ui",

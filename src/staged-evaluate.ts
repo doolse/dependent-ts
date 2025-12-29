@@ -392,15 +392,21 @@ function evalLet(
   }
 
   // Body is Later - decide whether to emit a let binding
-  // For Later/LaterArray/StagedClosure values: check original expression (to avoid duplicate evaluation of side effects)
+  // For Later/LaterArray values: check original expression (to avoid duplicate evaluation of side effects)
+  // For StagedClosure values: check the residual - if the closure was fully specialized at all
+  //   call sites (e.g., generic functions like `id(number)`), its name won't appear in the residual
+  //   and we can skip emitting it. This is critical for type erasure - generic closures can't be
+  //   residualized because type parameters would become Later.
   // For Now values with compound types (objects, arrays, closures): check original expression
   //   to preserve code structure and avoid duplicating large literals
   // For Now values with primitives: check residual (inlining is fine)
-  const shouldEmitLet = isLater(valueResult) || isLaterArray(valueResult) || isStagedClosure(valueResult)
+  const shouldEmitLet = isLater(valueResult) || isLaterArray(valueResult)
     ? usesVar(bodyExpr, name)
-    : isCompoundValue(valueResult.value)
-      ? usesVar(bodyExpr, name)
-      : usesVar(svalueToResidual(bodyResult), name);
+    : isStagedClosure(valueResult)
+      ? usesVar(svalueToResidual(bodyResult), name)  // Check residual for closures
+      : isCompoundValue(valueResult.value)
+        ? usesVar(bodyExpr, name)
+        : usesVar(svalueToResidual(bodyResult), name);
 
   if (shouldEmitLet) {
     // Variable is used in body - need to emit a let binding
@@ -845,7 +851,11 @@ function evalCall(
     // If the function has a residual and returns a StagedClosure, propagate a residual
     // to the result. This ensures curried functions like `minLength(8)(password)` emit
     // `minLength(8)(password)` instead of inlining the body.
-    if (hasNameBinding && isStagedClosure(result.svalue) && !result.svalue.residual) {
+    // EXCEPTION: Skip if any argument is a TypeValue - types are erased and can't be residualized.
+    // For generic functions like `fn(T) => fn(x) => ...`, the call `id(number)` should NOT
+    // create a residual because `number` (a type) can't appear in generated JavaScript.
+    const hasTypeArg = args.some(a => isNow(a) && a.value.tag === "type");
+    if (hasNameBinding && isStagedClosure(result.svalue) && !result.svalue.residual && !hasTypeArg) {
       const argResiduals = args.map(svalueToResidual);
       const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
       const callResidual = call(funcResidual, ...argResiduals);
@@ -1222,6 +1232,36 @@ function evalIndex(
   return { svalue: later(elementConstraint, index(arrResidual, idxResidual), captures) };
 }
 
+/**
+ * Extract refinement info from a comptime(assert(var, type)) pattern.
+ * Returns the variable name and target constraint if the pattern matches.
+ */
+function extractComptimeAssertRefinement(
+  expr: Expr,
+  env: SEnv,
+  ctx: RefinementContext
+): { varName: string; constraint: Constraint } | null {
+  // Pattern: comptime(assert(var, type))
+  if (expr.tag !== "comptime") return null;
+
+  const inner = expr.expr;
+  if (inner.tag !== "assert") return null;
+
+  // Get the variable name from the assert expression
+  const valueExpr = inner.expr;
+  if (valueExpr.tag !== "var") return null;
+  const varName = valueExpr.name;
+
+  // Evaluate the constraint expression to get the type
+  const constraintExpr = inner.constraint;
+  const constraintResult = stagingEvaluate(constraintExpr, env, ctx).svalue;
+
+  if (!isNow(constraintResult)) return null;
+  if (constraintResult.value.tag !== "type") return null;
+
+  return { varName, constraint: constraintResult.value.constraint };
+}
+
 function evalBlock(
   exprs: Expr[],
   env: SEnv,
@@ -1232,8 +1272,18 @@ function evalBlock(
   }
 
   const results: SValue[] = [];
+  let currentCtx = ctx;
+
   for (const expr of exprs) {
-    results.push(stagingEvaluate(expr, env, ctx).svalue);
+    // Check for comptime(assert(var, type)) pattern and extract refinement
+    // This must be done BEFORE evaluating so the refinement flows to subsequent expressions
+    const refinement = extractComptimeAssertRefinement(expr, env, currentCtx);
+    if (refinement) {
+      // Add refinement to context for this and subsequent expressions
+      currentCtx = currentCtx.refine(refinement.varName, refinement.constraint);
+    }
+
+    results.push(stagingEvaluate(expr, env, currentCtx).svalue);
   }
 
   const lastResult = results[results.length - 1];
@@ -1244,8 +1294,23 @@ function evalBlock(
   }
 
   // Build block residual from all expressions to preserve side effects
-  const residuals = results.map(svalueToResidual);
-  const captures = mergeCaptures(results);
+  // Filter out Now(null) values from comptime assertions - they disappear
+  const filteredResults = results.filter((r, i) => {
+    // Keep the last result always
+    if (i === results.length - 1) return true;
+    // Filter out comptime(assert(...)) results - they are Now(null) and disappear
+    if (isNow(r) && r.value.tag === "null" && exprs[i].tag === "comptime") {
+      return false;
+    }
+    return true;
+  });
+
+  if (filteredResults.length === 1) {
+    return { svalue: filteredResults[0] };
+  }
+
+  const residuals = filteredResults.map(svalueToResidual);
+  const captures = mergeCaptures(filteredResults);
   return { svalue: later(lastResult.constraint, block(...residuals), captures) };
 }
 
@@ -1254,7 +1319,9 @@ function evalComptime(
   env: SEnv,
   ctx: RefinementContext
 ): SEvalResult {
-  const result = stagingEvaluate(expr, env, ctx).svalue;
+  // Enter comptime mode - this affects how assert() behaves
+  const comptimeCtx = ctx.enterComptime();
+  const result = stagingEvaluate(expr, env, comptimeCtx).svalue;
 
   if (isLater(result) || isLaterArray(result)) {
     throw new StagingError(
@@ -1286,6 +1353,13 @@ function evalRuntime(
 /**
  * Staged assertion - inserts runtime check if value is Later.
  * If value and constraint are both Now, checks immediately.
+ *
+ * In comptime mode (inside comptime(...)):
+ * - With Later value: refines constraint, returns Now(null), no runtime code
+ * - The refinement is a compile-time side effect that affects subsequent expressions
+ *
+ * Outside comptime mode:
+ * - With Later value: refines constraint AND generates runtime assertion code
  */
 function evalAssert(
   valueExpr: Expr,
@@ -1324,9 +1398,19 @@ function evalAssert(
     return { svalue: now(valueResult.value, refinedConstraint) };
   }
 
-  // Value is Later/LaterArray - generate residual assertion
-  // The residual will be: assert(value, type, message)
+  // Value is Later/LaterArray
   const refinedConstraint = unify(valueResult.constraint, targetConstraint);
+
+  // In comptime mode: refine type without generating runtime code
+  // The assertion "succeeds" at compile time (type is refined), returns null
+  if (ctx.inComptime) {
+    // Return Now(null) - the comptime assertion succeeded
+    // The refinement will be captured and propagated by evalBlock
+    return { svalue: now(nullVal, isNull) };
+  }
+
+  // Outside comptime: generate residual assertion
+  // The residual will be: assert(value, type, message)
   const residualAssert = assertExpr(svalueToResidual(valueResult), constraintExpr, message);
 
   const captures = mergeCaptures([valueResult]);
@@ -1717,6 +1801,22 @@ function stagedClosureToResidual(sc: StagedClosure): Expr {
   // Create an environment with parameters as Later values
   let bodyEnv = sc.env;
 
+  // TYPE ERASURE: Mark Now(TypeValue) bindings with a special residual.
+  // These bindings remain available for comptime operations (which look up
+  // the value directly), but if staging tries to residualize them, the
+  // error from valueToExpr will be triggered with a clear message.
+  // This enables generic functions like fn(T) => fn(x) => { comptime(assert(x, T)); x }
+  for (const [name, binding] of bodyEnv.entries()) {
+    const sv = binding.svalue;
+    if (isNow(sv) && sv.value.tag === "type" && !sv.residual) {
+      // Keep the type value for comptime lookups, but mark it
+      // so any attempt to residualize produces a clear error
+      bodyEnv = bodyEnv.set(name, {
+        svalue: now(sv.value, sv.constraint, varRef(`__erased_type_${name}__`))
+      });
+    }
+  }
+
   // Add self-reference for recursive functions
   if (sc.name) {
     bodyEnv = bodyEnv.set(sc.name, { svalue: sc });
@@ -1864,10 +1964,14 @@ function valueToExpr(v: Value): Expr {
       return funcExpr;
     }
     case "type":
-      // Types are referenced by their binding name in the environment
-      // For now, just convert to the constraint representation
-      // This is a simplified approach - could be improved
-      throw new Error("Cannot convert type value to expression directly");
+      // Types are compile-time only and cannot appear in generated JavaScript.
+      // If this error is reached, a type value is being used at runtime
+      // (e.g., returned from a function, used in a non-comptime context).
+      throw new StagingError(
+        `Type "${constraintToString(v.constraint)}" cannot be used at runtime. ` +
+        `Types are compile-time only and are erased from generated code. ` +
+        `Use comptime(assert(x, T)) for type refinement without runtime code.`
+      );
     case "builtin":
       // Builtins are referenced by name in the environment
       return varRef(v.name);

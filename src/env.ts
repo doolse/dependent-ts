@@ -118,13 +118,18 @@ export class Env {
  * This is separate from Env because:
  * - Env tracks variable bindings (what x IS)
  * - RefinementContext tracks learned facts (what we KNOW about x from control flow)
+ *
+ * Also tracks whether we're inside a comptime block, which affects assert behavior.
  */
 export class RefinementContext {
   // Maps variable names to additional constraints learned from control flow
   private refinements: Map<string, Constraint>;
+  // Whether we're inside a comptime(...) expression
+  readonly inComptime: boolean;
 
-  constructor(initial?: Map<string, Constraint>) {
+  constructor(initial?: Map<string, Constraint>, inComptime: boolean = false) {
     this.refinements = initial ?? new Map();
+    this.inComptime = inComptime;
   }
 
   /**
@@ -146,7 +151,15 @@ export class RefinementContext {
     } else {
       newRefinements.set(name, constraint);
     }
-    return new RefinementContext(newRefinements);
+    return new RefinementContext(newRefinements, this.inComptime);
+  }
+
+  /**
+   * Enter comptime mode for evaluating expressions inside comptime(...).
+   * In this mode, assert() refines types without generating runtime code.
+   */
+  enterComptime(): RefinementContext {
+    return new RefinementContext(new Map(this.refinements), true);
   }
 
   /**
