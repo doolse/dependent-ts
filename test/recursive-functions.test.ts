@@ -169,9 +169,10 @@ describe("Recursive Functions", () => {
       // Should be Later (runtime value) not infinite loop
       expect(isLater(result.svalue)).toBe(true);
       if (isLater(result.svalue)) {
-        // The residual should contain the function structure
+        // The residual contains a deferred closure (staging happens during codegen)
         const residual = exprToString(result.svalue.residual);
-        expect(residual).toContain("if");
+        // With deferred staging, the residual shows the deferred closure
+        expect(residual).toContain("deferred");
         expect(residual).toContain("fact");
       }
     });

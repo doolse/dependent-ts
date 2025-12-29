@@ -25,11 +25,14 @@ import {
 import {
   SValue, Now, Later, LaterArray, StagedClosure, SEnv,
   isNow, isLater, isLaterArray, isStagedClosure,
-  collectByOrigin, collectClosures
+  collectByOrigin, collectClosures, laterRuntime, later
 } from "./svalue";
-import { closureToResidual } from "./staged-evaluate";
+import { closureToResidual, stagingEvaluate, svalueToResidual, createArraySValue, freeVars } from "./staged-evaluate";
 import { Value } from "./value";
-import { Expr, Pattern } from "./expr";
+import { Expr, Pattern, varRef } from "./expr";
+import { RefinementContext } from "./env";
+import { Constraint, and as andC, isFunction } from "./constraint";
+const anyC = { tag: "any" } as const;
 
 // ============================================================================
 // Generator Context
@@ -741,10 +744,35 @@ function generateFromExpr(expr: Expr, ctx: ModuleGenContext): JSExpr {
 
     case "typeOf":
       throw new Error("typeOf cannot appear in residual code");
+
+    case "deferredClosure":
+      return generateDeferredClosure(expr.closure, ctx);
   }
 }
 
 function generateLet(name: string, value: Expr, body: Expr, ctx: ModuleGenContext): JSExpr {
+  // Special handling for deferredClosure with specializations
+  // We need to emit the specializations at the same scope level as the body,
+  // not inside an IIFE (which would make them inaccessible)
+  if (value.tag === "deferredClosure" && value.closure.specializations && value.closure.specializations.size > 0) {
+    const stmts: JSStmt[] = [];
+
+    // Generate all specialized versions as const declarations
+    for (const specialization of value.closure.specializations.values()) {
+      const specializedFn = generateSpecializedClosure(value.closure, specialization, ctx);
+      stmts.push(jsConst(specialization.name, specializedFn));
+    }
+
+    // Add body
+    if (body.tag === "let" || body.tag === "letPattern") {
+      stmts.push(...collectLetChainStmtsFromMiddle(body, ctx));
+    } else {
+      stmts.push(jsReturn(generateFromExpr(body, ctx)));
+    }
+
+    return jsIIFE(stmts);
+  }
+
   const valueJs = generateFromExpr(value, ctx);
 
   if (name === "_") {
@@ -832,6 +860,132 @@ function generateRecFnExpr(name: string, params: string[], body: Expr, ctx: Modu
     return jsNamedFunction(name, params, stmts);
   }
   return jsNamedFunction(name, params, generateFromExpr(body, ctx));
+}
+
+/**
+ * Generate code for a deferred closure.
+ * This stages the function body during code generation, enabling:
+ * - Specialization at call sites with Now args
+ * - Dead code elimination for uncalled functions
+ * - Deferred errors (only surface when function needs to be emitted)
+ */
+/**
+ * Generate a specialized version of a closure for specific argument constraints.
+ */
+function generateSpecializedClosure(
+  sc: StagedClosure,
+  specialization: { name: string; argConstraints: Constraint[] },
+  ctx: ModuleGenContext
+): JSExpr {
+  // Extract params from desugared body: let [a, b] = args in body
+  const { params: paramNames, body: innerBody } = extractParamsFromBody(sc.body);
+
+  // Set up environment with params using the ACTUAL constraints from call site
+  let bodyEnv = sc.env;
+
+  const paramSValues: SValue[] = [];
+  for (let i = 0; i < paramNames.length; i++) {
+    const paramName = paramNames[i];
+    // Use the actual constraint from the call site, not 'any'
+    const constraint = specialization.argConstraints[i] ?? anyC;
+    const paramSValue = laterRuntime(paramName, constraint);
+    paramSValues.push(paramSValue);
+    bodyEnv = bodyEnv.set(paramName, { svalue: paramSValue });
+  }
+
+  // Create args array binding
+  const argsArray = createArraySValue(paramSValues);
+  bodyEnv = bodyEnv.set("args", { svalue: argsArray });
+
+  // Add self-reference for recursive functions (use specialized name for self-calls)
+  if (sc.name) {
+    // Create a modified closure that records specializations on itself
+    bodyEnv = bodyEnv.set(sc.name, { svalue: sc });
+  }
+
+  // Find free variables in the inner body that aren't bound in the environment
+  const boundVars = new Set<string>(["args", ...paramNames]);
+  if (sc.name) boundVars.add(sc.name);
+  const freeInBody = freeVars(innerBody, boundVars);
+
+  for (const freeVar of freeInBody) {
+    if (!bodyEnv.has(freeVar)) {
+      bodyEnv = bodyEnv.set(freeVar, { svalue: later(anyC, varRef(freeVar)) });
+    }
+  }
+
+  // Stage the body with the specialized constraints
+  const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty());
+  const residualBody = svalueToResidual(bodyResult.svalue);
+
+  // Generate the function expression (use specialization.name for recursive self-reference)
+  if (sc.name) {
+    return generateRecFnExpr(specialization.name, paramNames, residualBody, ctx);
+  }
+  return generateFnExpr(paramNames, residualBody, ctx);
+}
+
+function generateDeferredClosure(sc: StagedClosure, ctx: ModuleGenContext): JSExpr {
+  // Check if we have specializations to emit
+  if (sc.specializations && sc.specializations.size > 0) {
+    // Generate all specialized versions in an IIFE
+    const stmts: JSStmt[] = [];
+
+    for (const specialization of sc.specializations.values()) {
+      const specializedFn = generateSpecializedClosure(sc, specialization, ctx);
+      stmts.push(jsConst(specialization.name, specializedFn));
+    }
+
+    // Return null since calls use specialized names directly
+    stmts.push(jsReturn(jsLit(null)));
+    return jsIIFE(stmts);
+  }
+
+  // No specializations - generate generic version with Later(any) params
+  // Extract params from desugared body: let [a, b] = args in body
+  const { params: paramNames, body: innerBody } = extractParamsFromBody(sc.body);
+
+  // Set up environment with params as Later
+  let bodyEnv = sc.env;
+
+  const paramSValues: SValue[] = [];
+  for (const paramName of paramNames) {
+    const paramSValue = laterRuntime(paramName, anyC);
+    paramSValues.push(paramSValue);
+    bodyEnv = bodyEnv.set(paramName, { svalue: paramSValue });
+  }
+
+  // Create args array binding
+  const argsArray = createArraySValue(paramSValues);
+  bodyEnv = bodyEnv.set("args", { svalue: argsArray });
+
+  // Add self-reference for recursive functions
+  if (sc.name) {
+    bodyEnv = bodyEnv.set(sc.name, { svalue: sc });
+  }
+
+  // Find free variables in the inner body that aren't bound in the environment
+  // These are external references (globals, imports, etc.) - treat as Later
+  const boundVars = new Set<string>(["args", ...paramNames]);
+  if (sc.name) boundVars.add(sc.name);
+  const freeInBody = freeVars(innerBody, boundVars);
+
+  for (const freeVar of freeInBody) {
+    if (!bodyEnv.has(freeVar)) {
+      // External reference - bind as Later
+      bodyEnv = bodyEnv.set(freeVar, { svalue: later(anyC, varRef(freeVar)) });
+    }
+  }
+
+  // Stage the body NOW (during codegen)
+  const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty());
+  const residualBody = svalueToResidual(bodyResult.svalue);
+
+  // Generate the function expression
+  if (sc.name) {
+    return generateRecFnExpr(sc.name, paramNames, residualBody, ctx);
+  }
+  return generateFnExpr(paramNames, residualBody, ctx);
 }
 
 function generateBlock(exprs: Expr[], ctx: ModuleGenContext): JSExpr {

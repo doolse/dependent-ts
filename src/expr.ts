@@ -3,6 +3,8 @@
  * Simple, focused on core language constructs.
  */
 
+import type { StagedClosure } from "./svalue";
+
 // ============================================================================
 // Pattern Types (for destructuring)
 // ============================================================================
@@ -104,7 +106,8 @@ export type Expr =
   | TrustExpr
   | MethodCallExpr
   | ImportExpr
-  | TypeOfExpr;
+  | TypeOfExpr
+  | DeferredClosureExpr;
 
 export interface LitExpr {
   tag: "lit";
@@ -320,6 +323,16 @@ export interface TypeOfExpr {
   expr: Expr;           // The expression to get the type of
 }
 
+/**
+ * Deferred closure for delayed staging.
+ * The closure body is staged during code generation, not during initial staging.
+ * This enables specialization at call sites and dead code elimination.
+ */
+export interface DeferredClosureExpr {
+  tag: "deferredClosure";
+  closure: StagedClosure;
+}
+
 // ============================================================================
 // Constructors
 // ============================================================================
@@ -442,6 +455,9 @@ export const importExpr = (names: string[], modulePath: string, body: Expr): Imp
 export const typeOfExpr = (expr: Expr): TypeOfExpr =>
   ({ tag: "typeOf", expr });
 
+export const deferredClosure = (closure: StagedClosure): DeferredClosureExpr =>
+  ({ tag: "deferredClosure", closure });
+
 // ============================================================================
 // Pretty Printing
 // ============================================================================
@@ -526,5 +542,8 @@ export function exprToString(expr: Expr): string {
 
     case "typeOf":
       return `typeOf(${exprToString(expr.expr)})`;
+
+    case "deferredClosure":
+      return `<deferred ${expr.closure.name ?? "fn"}>`;
   }
 }

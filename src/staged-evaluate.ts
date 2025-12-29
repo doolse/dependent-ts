@@ -141,6 +141,10 @@ export function stagingEvaluate(
 
     case "typeOf":
       return evalTypeOf(expr.expr, env, ctx);
+
+    case "deferredClosure":
+      // deferredClosure is only used during code generation
+      throw new Error("deferredClosure cannot be evaluated - it is only used during codegen");
   }
 }
 
@@ -397,19 +401,29 @@ function evalLet(
   //   call sites (e.g., generic functions like `id(number)`), its name won't appear in the residual
   //   and we can skip emitting it. This is critical for type erasure - generic closures can't be
   //   residualized because type parameters would become Later.
+  //   EXCEPTION: If the closure has specializations, we MUST emit the let so specializations are defined.
+  //   Note: Specializations are added to boundValue during body evaluation, not valueResult.
   // For Now values with compound types (objects, arrays, closures): check original expression
   //   to preserve code structure and avoid duplicating large literals
   // For Now values with primitives: check residual (inlining is fine)
+  const closureHasSpecializations = isStagedClosure(boundValue) &&
+    boundValue.specializations && boundValue.specializations.size > 0;
   const shouldEmitLet = isLater(valueResult) || isLaterArray(valueResult)
     ? usesVar(bodyExpr, name)
     : isStagedClosure(valueResult)
-      ? usesVar(svalueToResidual(bodyResult), name)  // Check residual for closures
+      ? closureHasSpecializations || usesVar(svalueToResidual(bodyResult), name)
       : isCompoundValue(valueResult.value)
         ? usesVar(bodyExpr, name)
         : usesVar(svalueToResidual(bodyResult), name);
 
   if (shouldEmitLet) {
     // Variable is used in body - need to emit a let binding
+    // For closures, copy specializations from boundValue to valueResult before generating residual
+    // (specializations are recorded on boundValue during body evaluation, but we need them
+    // on valueResult to get a proper deferredClosure, not just the varRef residual)
+    if (isStagedClosure(valueResult) && isStagedClosure(boundValue) && boundValue.specializations) {
+      valueResult.specializations = boundValue.specializations;
+    }
     const valueResidual = svalueToResidual(valueResult);
 
     // Merge captures from both the value and body
@@ -642,6 +656,128 @@ function extractParamsFromBody(body: Expr): string[] {
 // Maps function name to the assumed result constraint (from type inference)
 const inProgressRecursiveCalls = new Map<string, Constraint>();
 
+// ============================================================================
+// Specialization Helpers - record call-site constraints on closures
+// ============================================================================
+
+import type { Specialization } from "./svalue";
+
+/**
+ * Normalize a constraint for specialization purposes.
+ * Removes value refinements (equals, gt, lt, etc.) but keeps type structure.
+ * This prevents explosion of specializations for recursive functions.
+ */
+function normalizeConstraintForSpecialization(c: Constraint): Constraint {
+  switch (c.tag) {
+    case "isNumber":
+    case "isString":
+    case "isBool":
+    case "isNull":
+    case "isFunction":
+    case "any":
+    case "never":
+      return c;
+
+    // Value refinements - simplify to just the base type
+    case "equals":
+      // equals(5) → isNumber, equals("foo") → isString, etc.
+      const val = c.value;
+      if (typeof val === "number") return { tag: "isNumber" };
+      if (typeof val === "string") return { tag: "isString" };
+      if (typeof val === "boolean") return { tag: "isBool" };
+      if (val === null) return { tag: "isNull" };
+      return { tag: "any" };
+
+    case "gt":
+    case "gte":
+    case "lt":
+    case "lte":
+      return { tag: "isNumber" };
+
+    case "hasField":
+      return { tag: "hasField", name: c.name, constraint: normalizeConstraintForSpecialization(c.constraint) };
+
+    case "elements":
+      return { tag: "elements", constraint: normalizeConstraintForSpecialization(c.constraint) };
+
+    case "length":
+      // length(n) is structural but specific lengths can be normalized
+      return { tag: "isArray" };
+
+    case "elementAt":
+      return { tag: "elementAt", index: c.index, constraint: normalizeConstraintForSpecialization(c.constraint) };
+
+    case "index":
+      return { tag: "index", constraint: normalizeConstraintForSpecialization(c.constraint) };
+
+    case "var":
+    case "isUndefined":
+      return c;
+
+    case "isType":
+      return { tag: "isType", constraint: normalizeConstraintForSpecialization(c.constraint) };
+
+    case "isObject":
+    case "isArray":
+      return c;
+
+    case "and":
+      // Keep structural constraints, filter out value refinements
+      const normalized = c.constraints
+        .map(normalizeConstraintForSpecialization)
+        .filter((nc, i, arr) => {
+          // Remove duplicates
+          return arr.findIndex(x => constraintToString(x) === constraintToString(nc)) === i;
+        });
+      if (normalized.length === 0) return { tag: "any" };
+      if (normalized.length === 1) return normalized[0];
+      return { tag: "and", constraints: normalized };
+
+    case "or":
+      return { tag: "or", constraints: c.constraints.map(normalizeConstraintForSpecialization) };
+
+    case "not":
+      return { tag: "not", constraint: normalizeConstraintForSpecialization(c.constraint) };
+
+    case "rec":
+    case "recVar":
+      return c;
+
+    default:
+      return c;
+  }
+}
+
+/**
+ * Create a canonical key from constraints for deduplication.
+ */
+function constraintsToKey(argConstraints: Constraint[]): string {
+  return argConstraints.map(c => constraintToString(normalizeConstraintForSpecialization(c))).join("_");
+}
+
+/**
+ * Record a function specialization on the closure for specific argument constraints.
+ * Returns the specialized function name to use in the call residual.
+ * Mutates the closure's specializations map.
+ */
+function recordSpecialization(closure: StagedClosure, argConstraints: Constraint[]): string {
+  const baseName = closure.name ?? "fn";
+  const sig = constraintsToKey(argConstraints);
+
+  if (!closure.specializations) {
+    closure.specializations = new Map();
+  }
+
+  if (!closure.specializations.has(sig)) {
+    // Generate a mangled name: baseName$sig (but sanitize for valid JS identifier)
+    const safeSig = sig.replace(/[^a-zA-Z0-9_]/g, "_");
+    const specializedName = safeSig ? `${baseName}$${safeSig}` : baseName;
+    closure.specializations.set(sig, { name: specializedName, argConstraints });
+  }
+
+  return closure.specializations.get(sig)!.name;
+}
+
 /**
  * Evaluate a call to a builtin function.
  */
@@ -763,10 +899,12 @@ function evalCall(
       // Cycle detected! We're already evaluating this recursive function with Later args.
       // Use the pre-computed result constraint and emit residual code.
       const resultConstraint = inProgressRecursiveCalls.get(func.name)!;
+      const argConstraints = args.map(a => a.constraint);
+      const specializedName = recordSpecialization(func, argConstraints);
       const argResiduals = args.map(svalueToResidual);
       const captures = mergeCaptures(args);
       return {
-        svalue: later(resultConstraint, call(varRef(func.name), ...argResiduals), captures)
+        svalue: later(resultConstraint, call(varRef(specializedName), ...argResiduals), captures)
       };
     }
 
@@ -787,19 +925,21 @@ function evalCall(
 
         // Always use call expression as residual for recursive functions with Later args
         // This ensures proper code generation instead of inlining the body
-        // Use the variable name from the call expression if available, otherwise use the
-        // internal recursive name. This handles cases like `let sumField = fn sumRec(...)`
-        // where we want to call sumField, not sumRec.
         const argResiduals = args.map(svalueToResidual);
-        const callName = funcExpr.tag === "var" ? funcExpr.name : func.name;
-        const callResidual = call(varRef(callName), ...argResiduals);
         const captures = mergeCaptures(args);
 
         if (isNow(result.svalue)) {
+          // Result is fully computed - use original call name (no specialization needed)
+          const callName = funcExpr.tag === "var" ? funcExpr.name : func.name;
+          const callResidual = call(varRef(callName), ...argResiduals);
           return {
             svalue: now(result.svalue.value, result.svalue.constraint, callResidual)
           };
         } else {
+          // Result is Later - record specialization and use specialized name
+          const argConstraints = args.map(a => a.constraint);
+          const specializedName = recordSpecialization(func, argConstraints);
+          const callResidual = call(varRef(specializedName), ...argResiduals);
           return {
             svalue: later(result.svalue.constraint, callResidual, captures)
           };
@@ -833,17 +973,29 @@ function evalCall(
     const hasNameBinding = funcExpr.tag === "var" || func.residual;
     if (hasNameBinding && (hasLaterArg || resultIsLater)) {
       const argResiduals = args.map(svalueToResidual);
-      // Use the function's residual if available, otherwise use the variable name from the call
-      const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
-      const callResidual = call(funcResidual, ...argResiduals);
       const captures = mergeCaptures(args);
 
       if (isNow(result.svalue)) {
+        // Result is fully computed - use original call residual (no specialization needed)
+        const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
+        const callResidual = call(funcResidual, ...argResiduals);
         return { svalue: now(result.svalue.value, result.svalue.constraint, callResidual) };
       } else if (isStagedClosure(result.svalue)) {
         // Result is a closure - return as-is (closures are compile-time known)
         return result;
       } else {
+        // Result is Later - determine call residual
+        let callResidual: Expr;
+        if (func.name) {
+          // Named closure - record specialization and use specialized name
+          const argConstraints = args.map(a => a.constraint);
+          const specializedName = recordSpecialization(func, argConstraints);
+          callResidual = call(varRef(specializedName), ...argResiduals);
+        } else {
+          // Anonymous closure (e.g., synthetic import wrapper) - use original call expression
+          const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
+          callResidual = call(funcResidual, ...argResiduals);
+        }
         return { svalue: later(result.svalue.constraint, callResidual, captures) };
       }
     }
@@ -1089,7 +1241,7 @@ function evalField(
  * Create an array SValue from a list of SValues.
  * Used for creating the `args` array binding in function calls.
  */
-function createArraySValue(elements: SValue[]): SValue {
+export function createArraySValue(elements: SValue[]): SValue {
   const allNow = elements.every(isNow);
 
   const constraints: Constraint[] = [isArray];
@@ -1682,7 +1834,7 @@ function evalImport(
 /**
  * Get free variables in an expression (variables not bound within the expression).
  */
-function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
+export function freeVars(expr: Expr, bound: Set<string> = new Set()): Set<string> {
   const free = new Set<string>();
 
   function visit(e: Expr, b: Set<string>): void {
@@ -1924,8 +2076,8 @@ export function svalueToResidual(sv: SValue): Expr {
     if (sv.residual) {
       return sv.residual;
     }
-    // Otherwise convert closure to function expression
-    return stagedClosureToResidual(sv);
+    // Defer staging to codegen - enables specialization at call sites
+    return { tag: "deferredClosure", closure: sv };
   }
   // Now value - use residual if present, otherwise convert value
   return sv.residual ?? valueToExpr(sv.value);
@@ -2041,6 +2193,10 @@ function usesVar(expr: Expr, name: string): boolean {
       return usesVar(expr.body, name);
     case "typeOf":
       return usesVar(expr.expr, name);
+    case "deferredClosure":
+      // Check if variable is used in the closure body
+      // The closure may also capture the variable from its environment
+      return usesVar(expr.closure.body, name);
   }
 }
 
