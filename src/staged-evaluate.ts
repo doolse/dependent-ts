@@ -38,6 +38,21 @@ export class StagingError extends Error {
   }
 }
 
+/**
+ * Error thrown when comptime evaluation requires a Now value but got Later.
+ * Tracks which parameters (if any) caused the failure, enabling targeted specialization.
+ */
+export class ComptimeRequiresNowError extends StagingError {
+  /** Parameters that were Later when they needed to be Now */
+  readonly laterParams: Set<string>;
+
+  constructor(message: string, laterParams: Set<string> = new Set()) {
+    super(message);
+    this.name = "ComptimeRequiresNowError";
+    this.laterParams = laterParams;
+  }
+}
+
 // ============================================================================
 // Variable Counter for Residual Generation
 // ============================================================================
@@ -384,7 +399,8 @@ function evalLet(
     boundValue = later(valueResult.constraint, varRef(name), valueResult.captures, valueResult.origin);
   } else if (isStagedClosure(valueResult)) {
     // Bind closure with residual pointing to the variable name
-    boundValue = { ...valueResult, residual: varRef(name) };
+    // Also set name if anonymous, so it can use the specializedCall path
+    boundValue = { ...valueResult, residual: varRef(name), name: valueResult.name ?? name };
   } else {
     boundValue = valueResult;
   }
@@ -607,14 +623,152 @@ function evalLetPattern(
   return { svalue: bodyResult };
 }
 
+/**
+ * Find parameters used inside comptime() expressions in a function body.
+ * These parameters must be Now at call sites for specialization to occur.
+ */
+function findComptimeParams(body: Expr, params: Set<string>): Set<string> {
+  const result = new Set<string>();
+
+  function walk(expr: Expr, inComptime: boolean): void {
+    switch (expr.tag) {
+      case "comptime":
+        // Everything inside comptime that references params needs those params to be Now
+        walk(expr.expr, true);
+        break;
+
+      case "var":
+        if (inComptime && params.has(expr.name)) {
+          result.add(expr.name);
+        }
+        break;
+
+      case "lit":
+      case "runtime":
+        break;
+
+      case "binop":
+        walk(expr.left, inComptime);
+        walk(expr.right, inComptime);
+        break;
+
+      case "unary":
+        walk(expr.operand, inComptime);
+        break;
+
+      case "if":
+        walk(expr.cond, inComptime);
+        walk(expr.then, inComptime);
+        walk(expr.else, inComptime);
+        break;
+
+      case "let":
+        walk(expr.value, inComptime);
+        walk(expr.body, inComptime);
+        break;
+
+      case "letPattern":
+        walk(expr.value, inComptime);
+        walk(expr.body, inComptime);
+        break;
+
+      case "fn":
+        // Don't recurse into nested function bodies - they have their own scope
+        break;
+
+      case "recfn":
+        // Don't recurse into nested function bodies
+        break;
+
+      case "call":
+        walk(expr.func, inComptime);
+        for (const arg of expr.args) {
+          walk(arg, inComptime);
+        }
+        break;
+
+      case "obj":
+        for (const field of expr.fields) {
+          walk(field.value, inComptime);
+        }
+        break;
+
+      case "field":
+        walk(expr.object, inComptime);
+        break;
+
+      case "array":
+        for (const elem of expr.elements) {
+          walk(elem, inComptime);
+        }
+        break;
+
+      case "index":
+        walk(expr.array, inComptime);
+        walk(expr.index, inComptime);
+        break;
+
+      case "block":
+        for (const e of expr.exprs) {
+          walk(e, inComptime);
+        }
+        break;
+
+      case "assert":
+        walk(expr.expr, inComptime);
+        walk(expr.constraint, inComptime);
+        break;
+
+      case "assertCond":
+        walk(expr.condition, inComptime);
+        break;
+
+      case "trust":
+        walk(expr.expr, inComptime);
+        if (expr.constraint) walk(expr.constraint, inComptime);
+        break;
+
+      case "methodCall":
+        walk(expr.receiver, inComptime);
+        for (const arg of expr.args) {
+          walk(arg, inComptime);
+        }
+        break;
+
+      case "import":
+        walk(expr.body, inComptime);
+        break;
+
+      case "typeOf":
+        // typeOf returns a Type value which is comptime-only.
+        // So variables used inside typeOf need to be known at comptime
+        // for the type result to be meaningful/usable.
+        walk(expr.expr, true);
+        break;
+
+      case "deferredClosure":
+      case "specializedCall":
+        // These are codegen-only nodes, shouldn't appear during analysis
+        break;
+    }
+  }
+
+  walk(body, false);
+  return result;
+}
+
 function evalFn(params: string[], body: Expr, env: SEnv): SEvalResult {
   // Functions are StagedClosure - they carry their captured environment directly
   // The type emerges from body analysis at call sites - no upfront inference needed
   // Note: params is extracted from the desugared body pattern
   const extractedParams = extractParamsFromBody(body);
 
+  // Find params used inside comptime() - these need specialization
+  const paramSet = new Set(extractedParams);
+  const comptimeParams = findComptimeParams(body, paramSet);
+
   // Return a StagedClosure with the captured environment
-  return { svalue: stagedClosure(body, extractedParams, env, isFunction) };
+  return { svalue: stagedClosure(body, extractedParams, env, isFunction, undefined, undefined, comptimeParams) };
 }
 
 /**
@@ -626,8 +780,12 @@ function evalRecFn(name: string, params: string[], body: Expr, env: SEnv): SEval
   // Note: params is extracted from the desugared body pattern
   const extractedParams = extractParamsFromBody(body);
 
+  // Find params used inside comptime() - these need specialization
+  const paramSet = new Set(extractedParams);
+  const comptimeParams = findComptimeParams(body, paramSet);
+
   // The closure will reference itself by name - we'll set up the self-binding at call time
-  return { svalue: stagedClosure(body, extractedParams, env, isFunction, name) };
+  return { svalue: stagedClosure(body, extractedParams, env, isFunction, name, undefined, comptimeParams) };
 }
 
 /**
@@ -1354,10 +1512,16 @@ function evalComptime(
   const result = stagingEvaluate(expr, env, comptimeCtx).svalue;
 
   if (isLater(result) || isLaterArray(result)) {
-    throw new StagingError(
+    // Extract variable names from the Later residual - these are the params
+    // that need to be Now for comptime to succeed
+    const residual = isLater(result) ? result.residual : svalueToResidual(result);
+    const laterVars = freeVars(residual);
+
+    throw new ComptimeRequiresNowError(
       `comptime expression evaluated to runtime value. ` +
       `Expression: ${exprToString(expr)}, ` +
-      `Constraint: ${constraintToString(result.constraint)}`
+      `Constraint: ${constraintToString(result.constraint)}`,
+      laterVars
     );
   }
 
@@ -1376,8 +1540,15 @@ function evalRuntime(
   // Create a fresh variable for the residual
   const varName = name ?? freshVar("rt");
 
+  // If the expression evaluated to a TypeValue (e.g., runtime(string)),
+  // use the inner constraint, not the Type wrapper
+  let constraint = result.constraint;
+  if (isNow(result) && result.value.tag === "type") {
+    constraint = result.value.constraint;
+  }
+
   // Return a Later with runtime origin - no captures (this IS the origin)
-  return { svalue: laterRuntime(varName, result.constraint) };
+  return { svalue: laterRuntime(varName, constraint) };
 }
 
 /**

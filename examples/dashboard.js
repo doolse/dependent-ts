@@ -55,20 +55,20 @@ export default (props) => {
   ];
   const [filterCategory, setFilterCategory] = useState("All");
   const categories = ["All", "Electronics", "Accessories", "Hardware"];
-  const filterByCategory = (cat) => (item) => cat === "All" ? true : item.category === cat;
+  const filterByCategory = function filterByCategory(cat) { return (item) => cat === "All" ? true : item.category === cat; };
   const filteredData = salesData.filter(filterByCategory(filterCategory));
-  const sumField = function sumField(arr, field, idx) { return idx >= arr.length ? 0 : (() => {
+  const sumField = function sumRec(arr, field, idx) { return idx >= arr.length ? 0 : (() => {
     const item = arr[idx];
     const value = field === "amount" ? item.amount * item.quantity : item.quantity;
-    return value + sumField(arr, field, idx + 1);
+    return value + sumRec(arr, field, idx + 1);
   })(); };
   const totalRevenue = sumField(filteredData, "amount", 0);
   const totalQuantity = sumField(filteredData, "quantity", 0);
-  const findMax = function findMax(arr, idx, currentMax) { return idx >= arr.length ? currentMax : (() => {
+  const findMax = function maxRec(arr, idx, currentMax) { return idx >= arr.length ? currentMax : (() => {
     const item = arr[idx];
     const value = item.amount * item.quantity;
     const newMax = value > currentMax ? value : currentMax;
-    return findMax(arr, idx + 1, newMax);
+    return maxRec(arr, idx + 1, newMax);
   })(); };
   const maxSale = findMax(filteredData, 0, 0);
   const cardStyle = {

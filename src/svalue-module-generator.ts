@@ -25,8 +25,9 @@ import {
 import {
   SValue, Now, Later, LaterArray, StagedClosure, SEnv,
   isNow, isLater, isLaterArray, isStagedClosure,
-  collectByOrigin, collectClosures, laterRuntime, later
+  collectByOrigin, collectClosures, laterRuntime, later, now
 } from "./svalue";
+import { numberVal, stringVal, boolVal, nullVal, constraintOf } from "./value";
 import { closureToResidual, stagingEvaluate, svalueToResidual, createArraySValue, freeVars } from "./staged-evaluate";
 import { Value } from "./value";
 import { Expr, Pattern, varRef, exprToString } from "./expr";
@@ -51,6 +52,7 @@ interface SpecializationInfo {
   closure: StagedClosure;
   bodyKey: string;      // exprToString(body) for deduplication
   body: Expr;
+  args: Expr[];         // Argument expressions from the call
   isSelfCall: boolean;  // True if this is a self-recursive call marker
 }
 
@@ -105,7 +107,7 @@ function collectSpecializations(expr: Expr): Map<StagedClosure, SpecializationIn
         const isSelfCall = e.body === e.closure.body;
         // Only add if this body isn't already collected (dedupe by bodyKey)
         if (!existing.some(s => s.bodyKey === bodyKey)) {
-          existing.push({ closure: e.closure, bodyKey, body: e.body, isSelfCall });
+          existing.push({ closure: e.closure, bodyKey, body: e.body, args: e.args, isSelfCall });
           result.set(e.closure, existing);
         }
         // Walk the args
@@ -602,6 +604,22 @@ function extractParamsFromBody(body: Expr): { params: string[]; body: Expr } {
       return { params, body: body.body };
     }
   }
+  // Also handle specialized body: `let [x, y] = [arg1, arg2] in body`
+  // This pattern appears when a specializedCall body has args baked in
+  if (body.tag === "letPattern" && body.value.tag === "array") {
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern") {
+      const params: string[] = [];
+      for (const elem of pattern.elements) {
+        if (elem.tag === "varPattern") {
+          params.push(elem.name);
+        } else {
+          return { params: [], body };
+        }
+      }
+      return { params, body: body.body };
+    }
+  }
   return { params: [], body };
 }
 
@@ -990,10 +1008,39 @@ function generateFromExpr(expr: Expr, ctx: ModuleGenContext): JSExpr {
 }
 
 /**
+ * Extract a Now SValue from a literal expression.
+ * Returns undefined if the expression is not a literal.
+ */
+function exprToNowValue(expr: Expr): Now | undefined {
+  if (expr.tag !== "lit") return undefined;
+  const v = expr.value;
+  if (typeof v === "number") {
+    const val = numberVal(v);
+    return now(val, constraintOf(val));
+  }
+  if (typeof v === "string") {
+    const val = stringVal(v);
+    return now(val, constraintOf(val));
+  }
+  if (typeof v === "boolean") {
+    const val = boolVal(v);
+    return now(val, constraintOf(val));
+  }
+  if (v === null) {
+    return now(nullVal, { tag: "isNull" });
+  }
+  return undefined;
+}
+
+/**
  * Generate statements for a deferred closure binding.
- * This implements the two-pass specialization approach: collect specializedCall nodes,
- * re-stage with parameter names, and generate a single function definition.
- * Returns the function definition statements and the updated context.
+ *
+ * Uses comptimeParams to determine specialization strategy:
+ * - If comptimeParams is empty: generate a generic function with all params as Later
+ * - If comptimeParams has values: specialize on those params, keep others as Later
+ *
+ * This ensures that only explicitly comptime-required params get baked in,
+ * while other params remain as proper runtime parameters.
  */
 function generateDeferredClosureBinding(
   name: string,
@@ -1001,99 +1048,234 @@ function generateDeferredClosureBinding(
   body: Expr,
   ctx: ModuleGenContext
 ): { functionStmts: JSStmt[]; ctx: ModuleGenContext } {
-  // Phase 1: Collect specializations from the body
+  const stmts: JSStmt[] = [];
+
+  // Get params from the original closure body
+  const { params: paramNames, body: innerBody } = extractParamsFromBody(closure.body);
+
+  // If no comptimeParams, generate a fully generic function
+  if (!closure.comptimeParams || closure.comptimeParams.size === 0) {
+    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+
+    // Still need to map any specializedCall nodes to the let binding name
+    // so that calls use `findMax` instead of the inner recursive name `maxRec`
+    const specs = collectSpecializations(body);
+    const closureSpecs = specs.get(closure);
+    if (closureSpecs && closureSpecs.length > 0) {
+      const nameMap = new Map<string, string>();
+      for (const spec of closureSpecs) {
+        nameMap.set(spec.bodyKey, name);
+      }
+      const newCtx = {
+        ...ctx,
+        specializationNames: new Map([...ctx.specializationNames, [closure, nameMap]])
+      };
+      return { functionStmts: stmts, ctx: newCtx };
+    }
+
+    return { functionStmts: stmts, ctx };
+  }
+
+  // Collect specializedCall nodes to find call sites with comptime arg values
   const specs = collectSpecializations(body);
   const closureSpecs = specs.get(closure);
 
   if (!closureSpecs || closureSpecs.length === 0) {
-    // No specializations - the function is never called with Later args
-    // Generate a generic deferred closure
-    const stmts: JSStmt[] = [];
+    // No calls found - generate generic version
     stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
     return { functionStmts: stmts, ctx };
   }
 
-  // Phase 2: Assign names - use the let binding name, not the closure's recursive name
-  // Note: Since we re-stage the body with parameter names, all bodies should be identical.
-  // We use the let binding name directly instead of suffixed names.
+  // Filter to real calls (not self-call markers)
+  const realSpecs = closureSpecs.filter(s => !s.isSelfCall);
+
+  if (realSpecs.length === 0) {
+    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+    return { functionStmts: stmts, ctx };
+  }
+
+  // Build param index map
+  const paramIndex = new Map<string, number>();
+  paramNames.forEach((p, i) => paramIndex.set(p, i));
+
+  // Group calls by unique specialized bodies
+  // For typeOf-based specialization, args may not be literals but bodies are unique
+  // For comptime-based specialization, we can also extract literal args for re-staging
+  // Key: bodyKey (unique body string), Value: { comptimeArgs?: Map<paramName, Now>, specs: SpecializationInfo[], body: Expr }
+  const groups = new Map<string, { comptimeArgs: Map<string, Now> | null; specs: SpecializationInfo[]; body: Expr }>();
+
+  for (const spec of realSpecs) {
+    // Try to extract comptime arg values from this call (for re-staging approach)
+    const comptimeArgs = new Map<string, Now>();
+    let hasAllLiteralArgs = true;
+
+    for (const paramName of closure.comptimeParams) {
+      const idx = paramIndex.get(paramName);
+      if (idx === undefined || idx >= spec.args.length) {
+        hasAllLiteralArgs = false;
+        break;
+      }
+      const argExpr = spec.args[idx];
+      const nowVal = exprToNowValue(argExpr);
+      if (!nowVal) {
+        // Arg is not a literal - can't use re-staging approach
+        hasAllLiteralArgs = false;
+        break;
+      }
+      comptimeArgs.set(paramName, nowVal);
+    }
+
+    // Group by bodyKey - this handles both literal args and constraint-based specialization
+    const key = spec.bodyKey;
+
+    if (!groups.has(key)) {
+      groups.set(key, {
+        comptimeArgs: hasAllLiteralArgs ? comptimeArgs : null,
+        specs: [],
+        body: spec.body  // Use the already-specialized body
+      });
+    }
+    groups.get(key)!.specs.push(spec);
+  }
+
+  if (groups.size === 0) {
+    // No valid specializations - generate generic
+    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+    return { functionStmts: stmts, ctx };
+  }
+
+  // Set up name mapping for specializedCall codegen
   const nameMap = new Map<string, string>();
+  const groupArray = Array.from(groups.values());
+
+  // Assign function names
+  const groupNames: string[] = [];
+  if (groupArray.length === 1) {
+    groupNames.push(name);
+  } else {
+    groupArray.forEach((_, i) => groupNames.push(`${name}$${i}`));
+  }
+
+  // Map each spec's bodyKey to its function name
+  groupArray.forEach((group, i) => {
+    const fnName = groupNames[i];
+    for (const spec of group.specs) {
+      nameMap.set(spec.bodyKey, fnName);
+    }
+  });
+
+  // Also map self-call markers
   for (const spec of closureSpecs) {
-    nameMap.set(spec.bodyKey, name);
-  }
-  const names = new Map<StagedClosure, Map<string, string>>([[closure, nameMap]]);
-
-  // Update context with the name mapping
-  const newCtx = { ...ctx, specializationNames: new Map([...ctx.specializationNames, ...names]) };
-
-  const stmts: JSStmt[] = [];
-
-  // Phase 3: Generate ONE function definition by re-staging with parameter names
-  // This ensures all calls get the same body, avoiding issues where spec.body
-  // contains call-site-specific argument references.
-  const { params: paramNames, body: innerBody } = extractParamsFromBody(closure.body);
-
-  // Set up environment with params as Later values (using param names as residuals)
-  let bodyEnv = closure.env;
-  const paramSValues: SValue[] = [];
-  for (const paramName of paramNames) {
-    const paramSValue = laterRuntime(paramName, anyC);
-    paramSValues.push(paramSValue);
-    bodyEnv = bodyEnv.set(paramName, { svalue: paramSValue });
-  }
-
-  // Create args array binding
-  const argsArray = createArraySValue(paramSValues);
-  bodyEnv = bodyEnv.set("args", { svalue: argsArray });
-
-  // Add self-reference for recursive functions, using the let binding name
-  let selfRef: StagedClosure | null = null;
-  if (closure.name) {
-    // Create a closure with the let binding name as the recursive reference.
-    // IMPORTANT: We also need to update the closure's env to include the self-reference,
-    // otherwise when the body calls itself, it won't find the binding.
-    // We use the let binding name as the closure's name so generated code uses that name.
-    selfRef = { ...closure, name };
-    // Update the selfRef's env to include itself under the original recursive name
-    selfRef.env = selfRef.env.set(closure.name, { svalue: selfRef });
-    bodyEnv = bodyEnv.set(closure.name, { svalue: selfRef });
-  }
-
-  // Find free variables in the inner body that aren't bound in the environment
-  const boundVars = new Set<string>(["args", ...paramNames]);
-  if (closure.name) boundVars.add(closure.name);
-  const freeInBody = freeVars(innerBody, boundVars);
-  for (const freeVar of freeInBody) {
-    if (!bodyEnv.has(freeVar)) {
-      bodyEnv = bodyEnv.set(freeVar, { svalue: later(anyC, varRef(freeVar)) });
+    if (spec.isSelfCall && !nameMap.has(spec.bodyKey)) {
+      // Self-calls need to be mapped based on which group they're called from
+      // For now, map to base name - this will be refined per-group below
+      nameMap.set(spec.bodyKey, name);
     }
   }
 
-  // Stage the body with parameter-named Later values
-  const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty());
-  const residualBody = svalueToResidual(bodyResult.svalue);
+  const newCtx = {
+    ...ctx,
+    specializationNames: new Map([...ctx.specializationNames, [closure, nameMap]])
+  };
 
-  // After re-staging, the residualBody contains specializedCall nodes where the closure
-  // is selfRef (not the original closure). Collect those bodyKeys and add them to the
-  // nameMap, then update the context's specializationNames to include selfRef.
-  if (selfRef) {
-    const restagedSpecs = collectSpecializations(residualBody);
-    const selfRefSpecs = restagedSpecs.get(selfRef);
-    if (selfRefSpecs) {
-      for (const spec of selfRefSpecs) {
-        nameMap.set(spec.bodyKey, name);
+  // Generate each specialized function
+  groupArray.forEach((group, i) => {
+    const fnName = groupNames[i];
+    let residualBody: Expr;
+
+    if (group.comptimeArgs) {
+      // We have literal comptime args - use re-staging approach for cleaner output
+      let bodyEnv = closure.env;
+      const paramSValues: SValue[] = [];
+
+      for (const paramName of paramNames) {
+        if (closure.comptimeParams!.has(paramName)) {
+          // Comptime param - bind to its Now value
+          const nowVal = group.comptimeArgs.get(paramName)!;
+          paramSValues.push(nowVal);
+          bodyEnv = bodyEnv.set(paramName, { svalue: nowVal });
+        } else {
+          // Runtime param - bind as Later
+          const laterVal = laterRuntime(paramName, anyC);
+          paramSValues.push(laterVal);
+          bodyEnv = bodyEnv.set(paramName, { svalue: laterVal });
+        }
+      }
+
+      // Bind args array
+      const argsArray = createArraySValue(paramSValues);
+      bodyEnv = bodyEnv.set("args", { svalue: argsArray });
+
+      // Add self-reference for recursive functions
+      if (closure.name) {
+        bodyEnv = bodyEnv.set(closure.name, { svalue: closure });
+      }
+
+      // Find and bind free variables as Later
+      const boundVars = new Set<string>(["args", ...paramNames]);
+      if (closure.name) boundVars.add(closure.name);
+      const freeInBody = freeVars(innerBody, boundVars);
+
+      for (const freeVar of freeInBody) {
+        if (!bodyEnv.has(freeVar)) {
+          bodyEnv = bodyEnv.set(freeVar, { svalue: later(anyC, varRef(freeVar)) });
+        }
+      }
+
+      // Stage the body with this environment
+      const bodyResult = stagingEvaluate(innerBody, bodyEnv, RefinementContext.empty());
+      residualBody = svalueToResidual(bodyResult.svalue);
+    } else {
+      // No literal comptime args (e.g., typeOf-based specialization)
+      // Use the already-specialized body from the specializedCall node
+      // The body already has the correct specialized code, just need to strip the param binding
+      residualBody = extractBodyWithoutParamBinding(group.body, paramNames);
+    }
+
+    // Handle self-recursive calls in this version's body
+    const specsInBody = collectSpecializations(residualBody);
+    const selfSpecs = specsInBody.get(closure);
+    if (selfSpecs) {
+      for (const s of selfSpecs) {
+        nameMap.set(s.bodyKey, fnName);
       }
     }
-    newCtx.specializationNames.set(selfRef, nameMap);
-  }
 
-  // Generate the function definition
-  if (closure.name) {
-    stmts.push(jsConst(name, generateRecFnExpr(name, paramNames, residualBody, newCtx)));
-  } else {
-    stmts.push(jsConst(name, generateFnExpr(paramNames, residualBody, newCtx)));
-  }
+    // Generate the function
+    if (closure.name) {
+      stmts.push(jsConst(fnName, generateRecFnExpr(fnName, paramNames, residualBody, newCtx)));
+    } else {
+      stmts.push(jsConst(fnName, generateFnExpr(paramNames, residualBody, newCtx)));
+    }
+  });
 
   return { functionStmts: stmts, ctx: newCtx };
+}
+
+/**
+ * Extract the actual function body from a specialized call body.
+ * The body has the form: let [param1, param2, ...] = [arg1, arg2, ...] in actualBody
+ * We strip the outer let binding to get just the specialized actualBody.
+ */
+function extractBodyWithoutParamBinding(body: Expr, paramNames: string[]): Expr {
+  if (body.tag === "letPattern") {
+    // Expected form: let [x, y, ...] = [a, b, ...] in actualBody
+    const pattern = body.pattern;
+    if (pattern.tag === "arrayPattern") {
+      // Verify pattern matches expected params
+      const patternVars = pattern.elements
+        .filter(e => e.tag === "varPattern")
+        .map(e => (e as { tag: "varPattern"; name: string }).name);
+
+      // If pattern matches our params, extract the inner body
+      if (patternVars.length === paramNames.length &&
+          patternVars.every((v, i) => v === paramNames[i])) {
+        return body.body;
+      }
+    }
+  }
+  // If we can't extract, return the body as-is
+  return body;
 }
 
 function generateLet(name: string, value: Expr, body: Expr, ctx: ModuleGenContext): JSExpr {

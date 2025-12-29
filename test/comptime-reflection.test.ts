@@ -768,6 +768,74 @@ describe("extractAllFieldNames() handles complex constraints", () => {
 // extractFieldConstraint() Direct Tests
 // ============================================================================
 
+// ============================================================================
+// withDefault() Specialization Tests
+// ============================================================================
+
+import { compile } from "../src/index";
+
+describe("withDefault() specialization based on typeOf", () => {
+  it("specializes withDefault based on typeOf(x) with nullable types", () => {
+    // withDefault returns different defaults based on the type of the argument
+    // When called with nullable number, returns 0; when called with nullable string, returns ""
+    // IMPORTANT: typeOf must be evaluated BEFORE the null check, otherwise x is refined to null
+    const code = compile(parse(`
+      let withDefault = fn(x) =>
+        let isNumType = typeOf(x) == number in
+        if x == null then
+          if isNumType then 0 else ""
+        else x
+      in
+      let numVal = trust(runtime(n: 42), nullable(number)) in
+      let strVal = trust(runtime(s: "hello"), nullable(string)) in
+      [withDefault(numVal), withDefault(strVal)]
+    `));
+
+    // Should have two specialized versions of withDefault
+    expect(code).toContain("withDefault$0");
+    expect(code).toContain("withDefault$1");
+
+    // One version should return 0, the other ""
+    expect(code).toMatch(/x === null \? 0 : x/);
+    expect(code).toMatch(/x === null \? "" : x/);
+  });
+
+  it("specializes withDefault when called with nullable number", () => {
+    const code = compile(parse(`
+      let withDefault = fn(x) =>
+        let isNumType = typeOf(x) == number in
+        if x == null then
+          if isNumType then 0 else ""
+        else x
+      in
+      let maybeNum = trust(runtime(n: 42), nullable(number)) in
+      withDefault(maybeNum)
+    `));
+
+    // Single call site, should use the let binding name
+    expect(code).toContain("withDefault");
+    // Should have the number default
+    expect(code).toMatch(/x === null \? 0 : x/);
+  });
+
+  it("specializes withDefault when called with nullable string", () => {
+    const code = compile(parse(`
+      let withDefault = fn(x) =>
+        let isNumType = typeOf(x) == number in
+        if x == null then
+          if isNumType then 0 else ""
+        else x
+      in
+      let maybeStr = trust(runtime(s: "test"), nullable(string)) in
+      withDefault(maybeStr)
+    `));
+
+    expect(code).toContain("withDefault");
+    // Should have the string default
+    expect(code).toMatch(/x === null \? "" : x/);
+  });
+});
+
 describe("extractFieldConstraint() handles complex constraints", () => {
   it("extracts constraint from simple hasField", () => {
     const c = hasField("name", isString);

@@ -534,9 +534,19 @@ function valueEquals(a: Value, b: Value): boolean {
     case "closure":
       // Closures are never equal
       return false;
-    case "type":
-      // Compare types by structural equality of their constraints
-      return constraintEquals(a.constraint, (b as typeof a).constraint);
+    case "type": {
+      // Compare types by checking if the left type is a subtype of the right
+      // This allows equals(42) == isNumber to be true, since equals(42) implies isNumber
+      // Special case: never implies everything, but Type(never) shouldn't equal any real type
+      const aConstraint = a.constraint;
+      const bConstraint = (b as typeof a).constraint;
+      if (aConstraint.tag === "never" || bConstraint.tag === "never") {
+        // never only equals never
+        return aConstraint.tag === "never" && bConstraint.tag === "never";
+      }
+      // Check if either constraint implies the other (flexible type matching)
+      return implies(aConstraint, bConstraint) || implies(bConstraint, aConstraint);
+    }
     case "builtin":
       // Compare builtins by name
       return a.name === (b as typeof a).name;

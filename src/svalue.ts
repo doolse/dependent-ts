@@ -70,6 +70,7 @@ export interface StagedClosure {
   siblings?: string[];     // Names in the same mutual recursion group
   constraint: Constraint;  // Always isFunction, but may have more info
   residual?: Expr;         // If set, use this expr when residualizing (e.g., varRef to bound name)
+  comptimeParams?: Set<string>;  // Params used inside comptime() - must be Now at call sites for specialization
 }
 
 /**
@@ -213,11 +214,13 @@ export function stagedClosure(
   env: SEnv,
   constraint: Constraint,
   name?: string,
-  siblings?: string[]
+  siblings?: string[],
+  comptimeParams?: Set<string>
 ): StagedClosure {
   const result: StagedClosure = { stage: "closure", body, params, env, constraint };
   if (name !== undefined) result.name = name;
   if (siblings !== undefined && siblings.length > 0) result.siblings = siblings;
+  if (comptimeParams !== undefined && comptimeParams.size > 0) result.comptimeParams = comptimeParams;
   return result;
 }
 

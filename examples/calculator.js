@@ -6,27 +6,27 @@ export default (props) => {
   const [memory, setMemory] = useState(0);
   const [operation, setOperation] = useState("");
   const [waitingForOperand, setWaitingForOperand] = useState(false);
-  const inputDigit = (digit) => waitingForOperand ? (() => {
+  const inputDigit = function inputDigit(digit) { return waitingForOperand ? (() => {
     setDisplay(digit);
     return setWaitingForOperand(false);
-  })() : setDisplay(display === "0" ? digit : display + digit);
-  const inputDecimal = () => waitingForOperand ? (() => {
+  })() : setDisplay(display === "0" ? digit : display + digit); };
+  const inputDecimal = function inputDecimal() { return waitingForOperand ? (() => {
     setDisplay("0.");
     return setWaitingForOperand(false);
-  })() : !display.includes(".") ? setDisplay(display + ".") : null;
-  const clear = () => (() => {
+  })() : !display.includes(".") ? setDisplay(display + ".") : null; };
+  const clear = function clear() { return (() => {
     setDisplay("0");
     setMemory(0);
     setOperation(null);
     return setWaitingForOperand(false);
-  })();
-  const performOperation = (nextOp) => (() => {
+  })(); };
+  const performOperation = function performOperation(nextOp) { return (() => {
     setOperation(nextOp);
     setMemory(display);
     return setWaitingForOperand(true);
-  })();
-  const calculate = () => setDisplay(memory.toString() + " " + operation + " " + display);
-  const applyFunction = (funcName) => {
+  })(); };
+  const calculate = function calculate() { return setDisplay(memory.toString() + " " + operation + " " + display); };
+  const applyFunction = function applyFunction(funcName) {
     const n = display;
     return funcName === "sqrt" ? setDisplay("sqrt(" + display + ")") : funcName === "square" ? setDisplay(display + "^2") : funcName === "factorial" ? setDisplay(display + "!") : setDisplay(display);
   };
