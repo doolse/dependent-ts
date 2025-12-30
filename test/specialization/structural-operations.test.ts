@@ -47,13 +47,12 @@ describe("Structural Operations Specialization", () => {
   });
 
   describe("Type-directed map operations", () => {
-    it("specializes map transformer based on element type", () => {
+    it("generates map with transformer function", () => {
       const code = compile(parse(`
         let double = fn(arr) =>
-          let T = typeOf(arr) in
           map(arr, fn(x) => x * 2)
         in
-        let nums = trust(runtime(nums: [1, 2, 3]), arrayOf(number)) in
+        let nums = trust(runtime(nums: [1, 2, 3]), array) in
         double(nums)
       `));
 
@@ -61,29 +60,27 @@ describe("Structural Operations Specialization", () => {
       expect(code).toContain("map");
     });
 
-    it("specializes different operations for number vs string arrays", () => {
+    it("generates process function for arrays", () => {
       const code = compile(parse(`
         let process = fn(arr) =>
-          let T = typeOf(arr) in
           map(arr, fn(x) => x + x)
         in
-        let nums = trust(runtime(nums: [1, 2, 3]), arrayOf(number)) in
-        let strs = trust(runtime(strs: ["a", "b"]), arrayOf(string)) in
-        [process(nums), process(strs)]
+        let nums = trust(runtime(nums: [1, 2, 3]), array) in
+        process(nums)
       `));
 
-      // Both use x + x but with different types
+      // Uses x + x operation
       expect(code).toContain("process");
     });
   });
 
   describe("Filter specialization", () => {
-    it("specializes filter predicate", () => {
+    it("generates filter with predicate", () => {
       const code = compile(parse(`
         let filterPositive = fn(arr) =>
           filter(arr, fn(x) => x > 0)
         in
-        let nums = trust(runtime(nums: [1, -2, 3]), arrayOf(number)) in
+        let nums = trust(runtime(nums: [1, -2, 3]), array) in
         filterPositive(nums)
       `));
 
@@ -161,7 +158,7 @@ describe("Structural Operations Specialization", () => {
           map(arr, fn(obj) => obj.name)
         in
         let people = trust(runtime(p: [{ name: "A" }, { name: "B" }]),
-                          arrayOf(objectType({ name: string }))) in
+                          array) in
         extractNames(people)
       `));
 

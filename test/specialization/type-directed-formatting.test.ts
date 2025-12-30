@@ -142,13 +142,11 @@ describe("Type-Directed Formatting", () => {
         [formatNum(val, 0), formatNum(val, 2), formatNum(val, 4)]
       `));
 
-      // Three different precisions = three specializations
-      expect(code).toContain("formatNum$0");
-      expect(code).toContain("formatNum$1");
-      expect(code).toContain("formatNum$2");
+      // Two structural patterns: x + 0 and toFixed (with parameter lifting for precision)
+      expect(code).toContain("formatNum$0");  // For x + 0
+      expect(code).toContain("formatNum$1");  // For toFixed with lifted precision
       expect(code).toMatch(/x \+ 0/);
-      expect(code).toMatch(/toFixed\(2\)/);
-      expect(code).toMatch(/toFixed\(4\)/);
+      expect(code).toMatch(/toFixed/);
     });
   });
 

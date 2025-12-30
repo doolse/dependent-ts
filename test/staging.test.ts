@@ -49,6 +49,9 @@ import {
   isStagedClosure,
   StagingError,
   resetVarCounter,
+
+  // Parser
+  parse,
 } from "../src/index";
 
 beforeEach(() => {
@@ -417,10 +420,23 @@ describe("Comptime Enforcement", () => {
 });
 
 describe("Staging Boundary Issues", () => {
-  it("comptime field access on runtime object fails", () => {
+  it("comptime field access on runtime object with known constraint succeeds", () => {
+    // When the constraint has field info (from the literal), comptime can extract it
     const expr = letExpr("obj", runtime(obj({ x: num(5) }), "obj"),
       comptime(field(varRef("obj"), "x"))
     );
+    const result = stage(expr);
+    expect(result.svalue.stage).toBe("now");
+    expect((result.svalue as any).value.value).toBe(5);
+  });
+
+  it("comptime field access on runtime object without constraint info fails", () => {
+    // When the constraint doesn't have the field value, comptime fails
+    // Use trust to give object type without specific field value
+    const expr = parse(`
+      let obj = trust(runtime(o: { x: 5 }), { x: number }) in
+      comptime(obj.x)
+    `);
     expect(() => stage(expr)).toThrow();
   });
 

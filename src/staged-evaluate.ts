@@ -392,18 +392,13 @@ function evalLet(
   // For Later values with complex residuals, update to use varRef so subsequent
   // lookups reference the variable instead of duplicating the expression.
   // Simple residuals (varRef, lit) can be inlined safely.
-  // EXCEPTION: Keep obj residuals that have literal fields - needed for discriminated union specialization
   // For LaterArray, we keep the structure but may later need to emit a let binding.
   // For StagedClosure, set residual to varRef so subsequent uses reference the variable.
+  // NOTE: Discriminant optimization requires explicit comptime() - no special handling here.
   let boundValue: SValue;
   if (isLater(valueResult) && !isSimpleResidual(valueResult.residual)) {
-    // Keep original residual for object literals with literal fields (for discriminant access)
-    if (valueResult.residual.tag === "obj" &&
-        valueResult.residual.fields.some(f => f.value.tag === "lit")) {
-      boundValue = valueResult;  // Keep original obj residual
-    } else {
-      boundValue = later(valueResult.constraint, varRef(name), valueResult.captures, valueResult.origin);
-    }
+    // Always replace with varRef - discriminant optimization requires explicit comptime()
+    boundValue = later(valueResult.constraint, varRef(name), valueResult.captures, valueResult.origin);
   } else if (isStagedClosure(valueResult)) {
     // Bind closure with residual pointing to the variable name
     // Keep name only if it's a recursive function (has explicit name from fn name(...) syntax)
@@ -486,13 +481,9 @@ function extractFromPattern(
           // Preserve Now values and StagedClosures directly
           // StagedClosures are compile-time known and should be kept as-is
           bindings.push({ name: pat.name, svalue: val });
-        } else if (isLater(val) && val.residual.tag === "obj" &&
-                   val.residual.fields.some(f => f.value.tag === "lit")) {
-          // Keep original obj residual for objects with literal fields
-          // This enables discriminant field access to return Now values
-          bindings.push({ name: pat.name, svalue: val });
         } else {
           // Override residual to use the variable name - the letPattern will bind it
+          // NOTE: Discriminant optimization requires explicit comptime() - no special handling here
           bindings.push({ name: pat.name, svalue: later(val.constraint, varRef(pat.name)) });
         }
         break;
@@ -645,6 +636,13 @@ function evalLetPattern(
 function findComptimeParams(body: Expr, params: Set<string>): Set<string> {
   const result = new Set<string>();
 
+  // Skip the initial parameter destructuring pattern (let [a,b,...] = args in ...)
+  // so that the parameter variables don't shadow themselves in localBindings
+  let startBody = body;
+  if (body.tag === "letPattern" && body.value.tag === "var" && body.value.name === "args") {
+    startBody = body.body;
+  }
+
   function walk(expr: Expr, inComptime: boolean, localBindings: Set<string>): void {
     switch (expr.tag) {
       case "comptime":
@@ -794,7 +792,7 @@ function findComptimeParams(body: Expr, params: Set<string>): Set<string> {
     }
   }
 
-  walk(body, false, new Set<string>());
+  walk(startBody, false, new Set<string>());
   return result;
 }
 
@@ -1322,23 +1320,13 @@ function evalField(
     );
   }
 
-  // Check if this field is a literal in the residual object expression.
-  // This enables branch elimination for discriminant fields that were
-  // literals in the source (e.g., { kind: "circle", radius: runtimeValue }).
-  const objResidual = svalueToResidual(objResult);
-  if (objResidual.tag === "obj") {
-    const fieldEntry = objResidual.fields.find(f => f.name === fieldName);
-    if (fieldEntry && fieldEntry.value.tag === "lit") {
-      const v = fieldEntry.value.value;
-      let value: Value | undefined;
-      if (typeof v === "number") value = numberVal(v);
-      else if (typeof v === "string") value = stringVal(v);
-      else if (typeof v === "boolean") value = boolVal(v);
-      else if (v === null) value = nullVal;
-
-      if (value !== undefined) {
-        return { svalue: now(value, fieldConstraint) };
-      }
+  // In comptime context, check if the field has an exact known value via constraints.
+  // This enables branch elimination for discriminant fields when using comptime().
+  // NOTE: Only extract when in comptime context - discriminant optimization requires explicit comptime()
+  if (ctx.inComptime) {
+    const exactValue = extractExactValueFromConstraint(fieldConstraint);
+    if (exactValue !== undefined) {
+      return { svalue: now(exactValue, fieldConstraint) };
     }
   }
 
@@ -2488,6 +2476,26 @@ function extractEqualsValue(constraint: Constraint): unknown {
     }
   }
   return null;
+}
+
+/**
+ * Extract an exact Value from a constraint if it's a known literal.
+ * Used for comptime field access to enable branch elimination.
+ */
+function extractExactValueFromConstraint(constraint: Constraint): Value | undefined {
+  const v = extractEqualsValue(constraint);
+  if (v === null) {
+    // Check if it's literally null (the null value)
+    if (constraint.tag === "isNull" ||
+        (constraint.tag === "and" && constraint.constraints.some(c => c.tag === "isNull"))) {
+      return nullVal;
+    }
+    return undefined;
+  }
+  if (typeof v === "number") return numberVal(v);
+  if (typeof v === "string") return stringVal(v);
+  if (typeof v === "boolean") return boolVal(v);
+  return undefined;
 }
 
 function extractElementsConstraint(arrConstraint: Constraint): Constraint {
