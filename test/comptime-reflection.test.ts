@@ -782,7 +782,7 @@ describe("withDefault() specialization based on typeOf", () => {
     const code = compile(parse(`
       let withDefault = fn(x) =>
         let T = typeOf(x) in
-        let defaultVal = if T == number then 0 else 
+        let defaultVal = if T == number then 0 else
           if T == string then "" else false in
         if x == null then defaultVal else x
       in
@@ -791,13 +791,19 @@ describe("withDefault() specialization based on typeOf", () => {
       let boolVal = trust(runtime(b: null), nullable(boolean)) in
       [withDefault(numVal), withDefault(strVal), withDefault(boolVal), withDefault(strVal)]
     `));
-    // Should have two specialized versions of withDefault
-    expect(code).toContain("withDefault$0");
-    expect(code).toContain("withDefault$1");
 
-    // One version should return 0, the other ""
-    expect(code).toMatch(/x === null \? 0 : x/);
-    expect(code).toMatch(/x === null \? "" : x/);
+    // With JS clustering, all type-based specializations merge into ONE parameterized function
+    // because they have identical JS structure (only the default literal differs)
+    expect(code).toContain("withDefault");
+
+    // The function should take the default value as a parameter
+    // and check x === null ? <default> : x
+    expect(code).toMatch(/x === null \? _p0 : x/);
+
+    // Call sites should pass the default value as first argument
+    expect(code).toContain("withDefault(0,");
+    expect(code).toContain('withDefault("",');
+    expect(code).toContain("withDefault(false,");
   });
 
   it("specializes withDefault when called with nullable number", () => {

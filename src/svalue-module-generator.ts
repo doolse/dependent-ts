@@ -33,6 +33,13 @@ import { Value } from "./value";
 import { Expr, Pattern, varRef, exprToString } from "./expr";
 import { RefinementContext } from "./env";
 import { Constraint, and as andC, isFunction } from "./constraint";
+import {
+  clusterByJS,
+  ClusterableSpec,
+  JSCluster,
+  applyTemplate,
+  getParameterValues,
+} from "./js-clustering";
 const anyC = { tag: "any" } as const;
 
 // ============================================================================
@@ -56,6 +63,16 @@ interface SpecializationInfo {
   isSelfCall: boolean;  // True if this is a self-recursive call marker
 }
 
+/**
+ * Information about extra arguments needed for JS-clustered specializations.
+ * When multiple specializations are merged via JS clustering, call sites need
+ * to pass the varying literal values as extra arguments.
+ */
+interface ClusterCallInfo {
+  functionName: string;
+  extraArgs: JSExpr[];  // The hole values to pass as extra arguments
+}
+
 interface ModuleGenContext {
   // Named closures to emit at top-level (name -> closure)
   namedClosures: Map<string, StagedClosure>;
@@ -74,6 +91,10 @@ interface ModuleGenContext {
 
   // Specialization name mapping: closure -> bodyKey -> functionName
   specializationNames: Map<StagedClosure, Map<string, string>>;
+
+  // JS clustering info: closure -> bodyKey -> ClusterCallInfo
+  // Used when generating calls to clustered functions
+  clusterCallInfo: Map<StagedClosure, Map<string, ClusterCallInfo>>;
 }
 
 function createContext(): ModuleGenContext {
@@ -84,6 +105,7 @@ function createContext(): ModuleGenContext {
     imports: new Map(),
     runtimeParams: new Map(),
     specializationNames: new Map(),
+    clusterCallInfo: new Map(),
   };
 }
 
@@ -1000,6 +1022,15 @@ function generateFromExpr(expr: Expr, ctx: ModuleGenContext): JSExpr {
     case "specializedCall": {
       // Look up the assigned name for this specialization
       const bodyKey = exprToString(expr.body);
+
+      // Check for JS-clustered function (has extra args from hole values)
+      const clusterInfo = ctx.clusterCallInfo.get(expr.closure)?.get(bodyKey);
+      if (clusterInfo) {
+        // Clustered function: pass extra args (hole values) before regular args
+        const regularArgs = expr.args.map(a => generateFromExpr(a, ctx));
+        return jsCall(jsVar(clusterInfo.functionName), [...clusterInfo.extraArgs, ...regularArgs]);
+      }
+
       const nameMap = ctx.specializationNames.get(expr.closure);
       const name = nameMap?.get(bodyKey);
 
@@ -1167,43 +1198,23 @@ function generateDeferredClosureBinding(
     return { functionStmts: stmts, ctx };
   }
 
-  // Set up name mapping for specializedCall codegen
-  const nameMap = new Map<string, string>();
-  const groupArray = Array.from(groups.values());
+  // ============================================================================
+  // JS Clustering: Generate JS for each group and cluster by structure
+  // ============================================================================
 
-  // Assign function names
-  const groupNames: string[] = [];
-  if (groupArray.length === 1) {
-    groupNames.push(name);
-  } else {
-    groupArray.forEach((_, i) => groupNames.push(`${name}$${i}`));
+  // First, generate residual bodies and JS for each group
+  interface GroupWithJS {
+    bodyKey: string;
+    comptimeArgs: Map<string, Now> | null;
+    specs: SpecializationInfo[];
+    body: Expr;
+    residualBody: Expr;
+    jsBody: JSExpr;
   }
 
-  // Map each spec's bodyKey to its function name
-  groupArray.forEach((group, i) => {
-    const fnName = groupNames[i];
-    for (const spec of group.specs) {
-      nameMap.set(spec.bodyKey, fnName);
-    }
-  });
+  const groupsWithJS: GroupWithJS[] = [];
 
-  // Also map self-call markers
-  for (const spec of closureSpecs) {
-    if (spec.isSelfCall && !nameMap.has(spec.bodyKey)) {
-      // Self-calls need to be mapped based on which group they're called from
-      // For now, map to base name - this will be refined per-group below
-      nameMap.set(spec.bodyKey, name);
-    }
-  }
-
-  const newCtx = {
-    ...ctx,
-    specializationNames: new Map([...ctx.specializationNames, [closure, nameMap]])
-  };
-
-  // Generate each specialized function
-  groupArray.forEach((group, i) => {
-    const fnName = groupNames[i];
+  for (const [bodyKey, group] of groups) {
     let residualBody: Expr;
 
     if (group.comptimeArgs) {
@@ -1251,26 +1262,143 @@ function generateDeferredClosureBinding(
     } else {
       // No literal comptime args (e.g., typeOf-based specialization)
       // Use the already-specialized body from the specializedCall node
-      // The body already has the correct specialized code, just need to strip the param binding
       residualBody = extractBodyWithoutParamBinding(group.body, paramNames);
     }
 
-    // Handle self-recursive calls in this version's body
-    const specsInBody = collectSpecializations(residualBody);
-    const selfSpecs = specsInBody.get(closure);
-    if (selfSpecs) {
-      for (const s of selfSpecs) {
-        nameMap.set(s.bodyKey, fnName);
+    // Generate JS for this residual body
+    const jsBody = generateFromExpr(residualBody, ctx);
+
+    groupsWithJS.push({
+      bodyKey,
+      comptimeArgs: group.comptimeArgs,
+      specs: group.specs,
+      body: group.body,
+      residualBody,
+      jsBody,
+    });
+  }
+
+  // Cluster by JS structure
+  const clusterableSpecs: ClusterableSpec<string>[] = groupsWithJS.map(g => ({
+    id: g.bodyKey,
+    jsExpr: g.jsBody,
+    argValues: [], // We'll use the group data for values
+  }));
+
+  const jsClusters = clusterByJS(clusterableSpecs);
+
+  // Set up name mapping and cluster call info
+  const nameMap = new Map<string, string>();
+  const clusterCallInfoMap = new Map<string, ClusterCallInfo>();
+
+  // Assign function names to clusters
+  let fnIndex = 0;
+  const clusterNames: string[] = [];
+  if (jsClusters.length === 1 && jsClusters[0].members.length === groupsWithJS.length) {
+    // All groups merged into one cluster - use base name
+    clusterNames.push(name);
+  } else {
+    for (const cluster of jsClusters) {
+      if (cluster.members.length === 1) {
+        // Single-member cluster - use indexed name if there are multiple clusters
+        clusterNames.push(jsClusters.length > 1 ? `${name}$${fnIndex++}` : name);
+      } else {
+        // Multi-member cluster - use indexed name
+        clusterNames.push(jsClusters.length > 1 || fnIndex > 0 ? `${name}$${fnIndex++}` : name);
       }
     }
+  }
 
-    // Generate the function
-    if (closure.name) {
-      stmts.push(jsConst(fnName, generateRecFnExpr(fnName, paramNames, residualBody, newCtx)));
+  // Process each JS cluster
+  jsClusters.forEach((cluster, clusterIdx) => {
+    const fnName = clusterNames[clusterIdx];
+
+    if (cluster.members.length === 1) {
+      // Single-member cluster: generate function as before
+      const bodyKey = cluster.members[0].id;
+      const groupData = groupsWithJS.find(g => g.bodyKey === bodyKey)!;
+
+      // Map all specs in this group to the function name
+      for (const spec of groupData.specs) {
+        nameMap.set(spec.bodyKey, fnName);
+      }
+
+      // Handle self-recursive calls
+      const specsInBody = collectSpecializations(groupData.residualBody);
+      const selfSpecs = specsInBody.get(closure);
+      if (selfSpecs) {
+        for (const s of selfSpecs) {
+          nameMap.set(s.bodyKey, fnName);
+        }
+      }
+
+      // Generate the function
+      if (closure.name) {
+        stmts.push(jsConst(fnName, generateRecFnExpr(fnName, paramNames, groupData.residualBody, ctx)));
+      } else {
+        stmts.push(jsConst(fnName, generateFnExpr(paramNames, groupData.residualBody, ctx)));
+      }
     } else {
-      stmts.push(jsConst(fnName, generateFnExpr(paramNames, residualBody, newCtx)));
+      // Multi-member cluster: generate parameterized function
+      // The template has holes that need to become parameters
+
+      // Generate parameter names for the holes
+      const holeParamNames: string[] = [];
+      for (let i = 0; i < cluster.parameterCount; i++) {
+        holeParamNames.push(`_p${i}`);
+      }
+
+      // Apply template to get the parameterized body
+      const representativeBodyKey = cluster.members[0].id;
+      const representativeGroup = groupsWithJS.find(g => g.bodyKey === representativeBodyKey)!;
+      const templateBody = applyTemplate(
+        representativeGroup.jsBody,
+        cluster.template.holes,
+        cluster.parameterMapping,
+        holeParamNames
+      );
+
+      // For each member, compute the hole values and store cluster call info
+      for (const member of cluster.members) {
+        const groupData = groupsWithJS.find(g => g.bodyKey === member.id)!;
+
+        // Get the parameter values for this member
+        const paramValues = getParameterValues(member, cluster);
+
+        // Store cluster call info for each spec
+        for (const spec of groupData.specs) {
+          nameMap.set(spec.bodyKey, fnName);
+          clusterCallInfoMap.set(spec.bodyKey, {
+            functionName: fnName,
+            extraArgs: paramValues.map(v => jsLit(v)),
+          });
+        }
+      }
+
+      // Generate the parameterized function
+      // Function signature: (holeParams..., originalParams...) => body
+      const allParams = [...holeParamNames, ...paramNames];
+
+      if (closure.name) {
+        stmts.push(jsConst(fnName, jsNamedFunction(fnName, allParams, templateBody)));
+      } else {
+        stmts.push(jsConst(fnName, jsArrow(allParams, templateBody)));
+      }
     }
   });
+
+  // Also map self-call markers
+  for (const spec of closureSpecs) {
+    if (spec.isSelfCall && !nameMap.has(spec.bodyKey)) {
+      nameMap.set(spec.bodyKey, name);
+    }
+  }
+
+  const newCtx = {
+    ...ctx,
+    specializationNames: new Map([...ctx.specializationNames, [closure, nameMap]]),
+    clusterCallInfo: new Map([...ctx.clusterCallInfo, [closure, clusterCallInfoMap]]),
+  };
 
   return { functionStmts: stmts, ctx: newCtx };
 }
