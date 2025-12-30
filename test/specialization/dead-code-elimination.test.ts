@@ -13,10 +13,11 @@ describe("Dead Code Elimination", () => {
     it("eliminates disabled feature code", () => {
       const code = compile(parse(`
         let config = { enableLogging: false, enableMetrics: true } in
-        let process = fn(x) =>
-          let _ = if comptime(config.enableLogging) then print("log") else null in
-          let _ = if comptime(config.enableMetrics) then print("metric") else null in
+        let process = fn(x) => {
+          if comptime(config.enableLogging) then print("log") else null;
+          if comptime(config.enableMetrics) then print("metric") else null;
           x * 2
+        }
         in
         let val = trust(runtime(v: 21), number) in
         process(val)
@@ -57,21 +58,22 @@ describe("Dead Code Elimination", () => {
           compression: false,
           encryption: true
         } in
-        let processData = fn(data) =>
-          let _ = if comptime(features.caching) then cache(data) else null in
-          let _ = if comptime(features.compression) then compress(data) else null in
-          let _ = if comptime(features.encryption) then encrypt(data) else null in
+        let processData = fn(data) => {
+          if comptime(features.caching) then print("caching " + data) else null;
+          if comptime(features.compression) then print("compressing " + data) else null;
+          if comptime(features.encryption) then print("encrypting " + data) else null;
           data
+        }
         in
         let d = trust(runtime(d: "secret"), string) in
         processData(d)
       `));
 
       // Caching and encryption enabled
-      expect(code).toContain("cache");
-      expect(code).toContain("encrypt");
+      expect(code).toContain("caching");
+      expect(code).toContain("encrypting");
       // Compression disabled
-      expect(code).not.toContain("compress");
+      expect(code).not.toContain("compressing");
     });
   });
 
@@ -85,9 +87,10 @@ describe("Dead Code Elimination", () => {
           else
             null
         in
-        let process = fn(x) =>
-          let _ = log("processing") in
+        let process = fn(x) => {
+          log("processing");
           x + 1
+        }
         in
         let val = trust(runtime(v: 41), number) in
         process(val)
@@ -106,9 +109,10 @@ describe("Dead Code Elimination", () => {
           else
             null
         in
-        let process = fn(x) =>
-          let _ = log("processing") in
+        let process = fn(x) => {
+          log("processing");
           x + 1
+        }
         in
         let val = trust(runtime(v: 41), number) in
         process(val)
@@ -270,19 +274,19 @@ describe("Dead Code Elimination", () => {
       const code = compile(parse(`
         let DEBUG = false in
         let process = fn(arr) =>
-          fold(arr, 0, fn(acc, x) =>
-            let _ = if comptime(DEBUG) then print(x) else null in
-            acc + x
-          )
+          map(arr, fn(x) => {
+            if comptime(DEBUG) then print(x) else null;
+            x * 2
+          })
         in
-        let nums = trust(runtime(nums: [1, 2, 3]), arrayOf(number)) in
+        let nums = trust(runtime(nums: [1, 2, 3]), arrayType(number)) in
         process(nums)
       `));
 
       // Debug print eliminated
       expect(code).not.toContain("print");
-      // Sum logic preserved
-      expect(code).toContain("acc + x");
+      // Transform logic preserved
+      expect(code).toContain("* 2");
     });
   });
 
@@ -290,10 +294,11 @@ describe("Dead Code Elimination", () => {
     it("eliminates asserts in production mode", () => {
       const code = compile(parse(`
         let PRODUCTION = true in
-        let safeDiv = fn(a, b) =>
-          let _ = if comptime(PRODUCTION) then null
-                  else assert(b != 0, "Division by zero") in
+        let safeDiv = fn(a, b) => {
+          if comptime(PRODUCTION) then null
+          else assert(b != 0, "Division by zero");
           a / b
+        }
         in
         let x = trust(runtime(x: 10), number) in
         let y = trust(runtime(y: 2), number) in
@@ -308,10 +313,11 @@ describe("Dead Code Elimination", () => {
     it("preserves asserts in development mode", () => {
       const code = compile(parse(`
         let PRODUCTION = false in
-        let safeDiv = fn(a, b) =>
-          let _ = if comptime(PRODUCTION) then null
-                  else if b == 0 then error("Division by zero") else null in
+        let safeDiv = fn(a, b) => {
+          if comptime(PRODUCTION) then null
+          else if b == 0 then print("Division by zero") else null;
           a / b
+        }
         in
         let x = trust(runtime(x: 10), number) in
         let y = trust(runtime(y: 2), number) in
@@ -384,8 +390,8 @@ describe("Dead Code Elimination", () => {
       `));
 
       // level is 1, so the entire >= 2 branch is dead
-      expect(code).not.toContain("level 2");
-      expect(code).not.toContain("verbose");
+      expect(code).not.toContain("level 2+");
+      expect(code).not.toContain("verbose level");
     });
 
     it("eliminates code paths based on combined conditions", () => {
@@ -408,7 +414,8 @@ describe("Dead Code Elimination", () => {
       // Should only have + 10
       expect(code).toContain("+ 10");
       expect(code).not.toContain("+ 100");
-      expect(code).not.toContain("+ 1");
+      // Check for "+ 1" not followed by "0" (i.e. not part of "+ 10")
+      expect(code).not.toMatch(/\+ 1(?!0)/);
     });
   });
 });

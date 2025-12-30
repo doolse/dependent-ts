@@ -28,28 +28,28 @@ describe("print() builtin", () => {
     consoleSpy.mockRestore();
   });
 
-  describe("Pure evaluation", () => {
-    it("print(value) outputs value to console", () => {
-      parseAndRun("print(42)");
+  describe("Compile-time printing (comptimePrint)", () => {
+    it("comptimePrint(value) outputs value to console", () => {
+      parseAndRun("comptimePrint(42)");
       expect(consoleSpy).toHaveBeenCalledWith("42");
     });
 
-    it("print(string) outputs string", () => {
-      parseAndRun('print("Hello, World!")');
+    it("comptimePrint(string) outputs string", () => {
+      parseAndRun('comptimePrint("Hello, World!")');
       expect(consoleSpy).toHaveBeenCalledWith('"Hello, World!"');
     });
 
-    it("print returns null", () => {
-      const result = parseAndRun("print(42)");
+    it("comptimePrint returns null", () => {
+      const result = parseAndRun("comptimePrint(42)");
       expect(result.value.tag).toBe("null");
       expect(implies(result.constraint, isNull)).toBe(true);
     });
 
-    it("print can be used in let binding", () => {
+    it("comptimePrint can be used in let binding", () => {
       const result = parseAndRun(`
-        let x = print(1) in
-        let y = print(2) in
-        let z = print(3) in
+        let x = comptimePrint(1) in
+        let y = comptimePrint(2) in
+        let z = comptimePrint(3) in
         "done"
       `);
       expect(consoleSpy).toHaveBeenCalledTimes(3);
@@ -59,26 +59,28 @@ describe("print() builtin", () => {
       expect(result.value.tag).toBe("string");
     });
 
-    it("print works with expressions", () => {
-      parseAndRun("print(1 + 2 * 3)");
+    it("comptimePrint works with expressions", () => {
+      parseAndRun("comptimePrint(1 + 2 * 3)");
       expect(consoleSpy).toHaveBeenCalledWith("7");
     });
 
-    it("print works with objects", () => {
-      parseAndRun('print({ name: "Alice", age: 30 })');
+    it("comptimePrint works with objects", () => {
+      parseAndRun('comptimePrint({ name: "Alice", age: 30 })');
       expect(consoleSpy).toHaveBeenCalledWith('{ name: "Alice", age: 30 }');
     });
 
-    it("print works with arrays", () => {
-      parseAndRun("print([1, 2, 3])");
+    it("comptimePrint works with arrays", () => {
+      parseAndRun("comptimePrint([1, 2, 3])");
       expect(consoleSpy).toHaveBeenCalledWith("[1, 2, 3]");
     });
   });
 
   describe("Staged evaluation", () => {
-    it("print with Now value prints at compile time", () => {
-      stage(parse("print(42)"));
-      expect(consoleSpy).toHaveBeenCalledWith("42");
+    it("print is always runtime - does not print at compile time even for Now values", () => {
+      const result = stage(parse("print(42)"));
+      // print should generate residual code, not print at compile time
+      expect(isLater(result.svalue)).toBe(true);
+      expect(consoleSpy).not.toHaveBeenCalled();
     });
 
     it("print with Later value generates residual", () => {
@@ -89,6 +91,17 @@ describe("print() builtin", () => {
       }
       // Should NOT print at compile time
       expect(consoleSpy).not.toHaveBeenCalled();
+    });
+
+    it("comptimePrint prints at compile time", () => {
+      stage(parse("comptimePrint(42)"));
+      expect(consoleSpy).toHaveBeenCalledWith("42");
+    });
+
+    it("comptimePrint requires Now value", () => {
+      expect(() => stage(parse("comptimePrint(runtime(x: 42))"))).toThrow(
+        "comptimePrint() requires a compile-time known value"
+      );
     });
   });
 

@@ -154,13 +154,32 @@ registerBuiltin({
     kind: "staged",
     handler: (args, argExprs, ctx) => {
       const arg = args[0];
+      // print is always runtime-only - generates residual code
+      // Use comptimePrint for compile-time printing
       if (ctx.isNow(arg)) {
-        // Print at compile time
-        console.log(valueToString(arg.value));
-        return { svalue: ctx.now(nullVal, isNull) };
+        // Even for Now values, generate residual so print happens at runtime
+        return { svalue: ctx.later(isNull, call(varRef("print"), ctx.valueToExpr(arg.value))) };
       }
-      // Generate residual print call
       return { svalue: ctx.later(isNull, call(varRef("print"), ctx.svalueToResidual(arg))) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "comptimePrint",
+  params: [{ name: "value", constraint: { tag: "any" } }],
+  resultType: () => isNull,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const arg = args[0];
+      if (!ctx.isNow(arg)) {
+        throw new Error("comptimePrint() requires a compile-time known value");
+      }
+      // Print at compile time
+      console.log(valueToString(arg.value));
+      return { svalue: ctx.now(nullVal, isNull) };
     }
   }
 });
