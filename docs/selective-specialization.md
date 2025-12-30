@@ -7,20 +7,29 @@ This document describes an alternative approach to function specialization that 
 When a function has `comptime` parameters, the current system creates a specialized version for each unique set of compile-time argument values:
 
 ```
-let greet = fn(name) => "Hello, " + name
+let greet = fn(greeting) => fn(name) => greeting + ", " + name
 
-greet(comptime("Alice"))  // Creates specialization with name="Alice"
-greet(comptime("Bob"))    // Creates specialization with name="Bob"
+let hello = greet(comptime("Hello"))
+let hi = greet(comptime("Hi"))
+
+hello(runtime("name"))
+hi(runtime("name"))
 ```
 
-This generates:
+This generates specialized versions for each greeting:
 
 ```javascript
-const greet$0 = () => "Hello, " + "Alice";
-const greet$1 = () => "Hello, " + "Bob";
+const hello = (name) => "Hello, " + name;
+const hi = (name) => "Hi, " + name;
 ```
 
-But this specialization provides **no optimization benefit** — we've just inlined a constant. The JS engine would handle `greet("Alice")` just as efficiently.
+But this specialization provides **no optimization benefit** — we've just inlined a constant. The same result could be achieved with closure capture:
+
+```javascript
+const greet = (greeting) => (name) => greeting + ", " + name;
+const hello = greet("Hello");
+const hi = greet("Hi");
+```
 
 Contrast with:
 
