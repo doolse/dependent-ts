@@ -1098,27 +1098,38 @@ function generateDeferredClosureBinding(
   // Get params from the original closure body
   const { params: paramNames, body: innerBody } = extractParamsFromBody(closure.body);
 
-  // If no comptimeParams, generate a fully generic function
+  // If no comptimeParams, check if there are multiple unique specializations
+  // (e.g., discriminated union handling where branches are eliminated at staging time)
   if (!closure.comptimeParams || closure.comptimeParams.size === 0) {
-    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
-
-    // Still need to map any specializedCall nodes to the let binding name
-    // so that calls use `findMax` instead of the inner recursive name `maxRec`
     const specs = collectSpecializations(body);
     const closureSpecs = specs.get(closure);
-    if (closureSpecs && closureSpecs.length > 0) {
-      const nameMap = new Map<string, string>();
-      for (const spec of closureSpecs) {
-        nameMap.set(spec.bodyKey, name);
+
+    // Check if there are multiple unique bodyKeys (different specializations)
+    const realSpecs = closureSpecs?.filter(s => !s.isSelfCall) ?? [];
+    const uniqueBodyKeys = new Set(realSpecs.map(s => s.bodyKey));
+
+    if (uniqueBodyKeys.size <= 1) {
+      // Single specialization or no specializations - generate a generic function
+      stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+
+      // Still need to map any specializedCall nodes to the let binding name
+      if (closureSpecs && closureSpecs.length > 0) {
+        const nameMap = new Map<string, string>();
+        for (const spec of closureSpecs) {
+          nameMap.set(spec.bodyKey, name);
+        }
+        const newCtx = {
+          ...ctx,
+          specializationNames: new Map([...ctx.specializationNames, [closure, nameMap]])
+        };
+        return { functionStmts: stmts, ctx: newCtx };
       }
-      const newCtx = {
-        ...ctx,
-        specializationNames: new Map([...ctx.specializationNames, [closure, nameMap]])
-      };
-      return { functionStmts: stmts, ctx: newCtx };
+
+      return { functionStmts: stmts, ctx };
     }
 
-    return { functionStmts: stmts, ctx };
+    // Multiple unique specializations - fall through to generate specialized functions
+    // (even without comptimeParams, the staging eliminated different branches)
   }
 
   // Collect specializedCall nodes to find call sites with comptime arg values
@@ -1171,20 +1182,26 @@ function generateDeferredClosureBinding(
     const comptimeArgs = new Map<string, Now>();
     let hasAllLiteralArgs = true;
 
-    for (const paramName of closure.comptimeParams) {
-      const idx = paramIndex.get(paramName);
-      if (idx === undefined || idx >= spec.args.length) {
-        hasAllLiteralArgs = false;
-        break;
+    // Only try to extract comptime args if the closure has comptimeParams
+    if (closure.comptimeParams && closure.comptimeParams.size > 0) {
+      for (const paramName of closure.comptimeParams) {
+        const idx = paramIndex.get(paramName);
+        if (idx === undefined || idx >= spec.args.length) {
+          hasAllLiteralArgs = false;
+          break;
+        }
+        const argExpr = spec.args[idx];
+        const nowVal = exprToNowValue(argExpr);
+        if (!nowVal) {
+          // Arg is not a literal - can't use re-staging approach
+          hasAllLiteralArgs = false;
+          break;
+        }
+        comptimeArgs.set(paramName, nowVal);
       }
-      const argExpr = spec.args[idx];
-      const nowVal = exprToNowValue(argExpr);
-      if (!nowVal) {
-        // Arg is not a literal - can't use re-staging approach
-        hasAllLiteralArgs = false;
-        break;
-      }
-      comptimeArgs.set(paramName, nowVal);
+    } else {
+      // No comptimeParams - skip re-staging approach
+      hasAllLiteralArgs = false;
     }
 
     let residualBody: Expr;

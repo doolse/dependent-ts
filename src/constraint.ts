@@ -636,10 +636,18 @@ export function implies(a: Constraint, b: Constraint): boolean {
     return sa.name === sb.name && implies(sa.constraint, sb.constraint);
   }
 
+  // Structural constraints imply their base classification
+  // hasField implies isObject (values with fields must be objects)
+  if (sa.tag === "hasField" && sb.tag === "isObject") return true;
+  // index signature implies isObject
+  if (sa.tag === "index" && sb.tag === "isObject") return true;
+
   // elements implication
   if (sa.tag === "elements" && sb.tag === "elements") {
     return implies(sa.constraint, sb.constraint);
   }
+  // elements implies isArray (values with element constraints must be arrays)
+  if (sa.tag === "elements" && sb.tag === "isArray") return true;
 
   // length implication
   if (sa.tag === "length" && sb.tag === "length") {
@@ -650,6 +658,8 @@ export function implies(a: Constraint, b: Constraint): boolean {
   if (sa.tag === "elementAt" && sb.tag === "elementAt") {
     return sa.index === sb.index && implies(sa.constraint, sb.constraint);
   }
+  // elementAt implies isArray (values with element-at constraints must be arrays)
+  if (sa.tag === "elementAt" && sb.tag === "isArray") return true;
 
   // index implication: index(A) implies index(B) if A implies B
   if (sa.tag === "index" && sb.tag === "index") {
