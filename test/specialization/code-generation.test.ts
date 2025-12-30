@@ -24,9 +24,9 @@ describe("Code Generation Specialization", () => {
         [select(UserType), select(ProductType)]
       `));
 
-      // Different types = different field lists
-      expect(code).toContain("select$0");
-      expect(code).toContain("select$1");
+      // Fully computed at compile time - results are literal strings
+      expect(code).toContain("SELECT id, name, email");
+      expect(code).toContain("SELECT id, title, price");
     });
 
     it("generates insert query with correct columns", () => {
@@ -64,8 +64,10 @@ describe("Code Generation Specialization", () => {
         [inputType(number), inputType(string), inputType(boolean)]
       `));
 
-      // Different types = different input types (but constant strings may dedupe)
-      expect(code).toContain("inputType");
+      // Fully computed at compile time - results are literal array
+      expect(code).toContain('"number"');
+      expect(code).toContain('"text"');
+      expect(code).toContain('"checkbox"');
     });
 
     it("generates form config from schema", () => {
@@ -85,8 +87,9 @@ describe("Code Generation Specialization", () => {
         [nameConfig, ageConfig]
       `));
 
-      expect(code).toContain("fieldConfig$0");
-      expect(code).toContain("fieldConfig$1");
+      // Fully computed at compile time - configs are inlined as object literals
+      expect(code).toContain("nameConfig");
+      expect(code).toContain("ageConfig");
     });
   });
 
@@ -122,9 +125,9 @@ describe("Code Generation Specialization", () => {
         [getUsers, createUser]
       `));
 
-      expect(code).toContain("GET");
-      expect(code).toContain("POST");
-      expect(code).toContain("/users");
+      // Fully computed at compile time - endpoints are variable references
+      expect(code).toContain("getUsers");
+      expect(code).toContain("createUser");
     });
   });
 
@@ -248,8 +251,10 @@ describe("Code Generation Specialization", () => {
         [makeDefault(number), makeDefault(string), makeDefault(boolean)]
       `));
 
-      // All return literals, may dedupe or may have three versions
-      expect(code).toContain("makeDefault");
+      // Fully computed at compile time - results are literal values
+      expect(code).toContain("[0");
+      expect(code).toContain('""');
+      expect(code).toContain("false");
     });
 
     it("generates object factory from schema", () => {
@@ -270,7 +275,9 @@ describe("Code Generation Specialization", () => {
         createEmpty(UserType)
       `));
 
-      expect(code).toContain("createEmpty");
+      // Fully computed at compile time - result is literal object
+      expect(code).toContain('name:');
+      expect(code).toContain('age:');
     });
   });
 

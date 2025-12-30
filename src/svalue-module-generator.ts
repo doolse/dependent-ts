@@ -1042,18 +1042,11 @@ function generateFromExpr(expr: Expr, ctx: ModuleGenContext): JSExpr {
         return jsCall(jsVar(expr.closure.name), expr.args.map(a => generateFromExpr(a, ctx)));
       }
 
-      // Check for closure with a residual (bound via let or returned from curried function)
-      // e.g., let isEmpty = fn(s) => ... creates a closure with residual: varRef("isEmpty")
-      // e.g., minLength(8) returns a closure with residual: call(varRef("minLength"), lit(8))
-      if (expr.closure.residual) {
-        // Generate the function expression from the residual, then call it with args
-        const funcExpr = generateFromExpr(expr.closure.residual, ctx);
-        return jsCall(funcExpr, expr.args.map(a => generateFromExpr(a, ctx)));
-      }
-
-      // Truly anonymous closure with no residual
-      // The body already contains the specialized code with args bound.
-      // Just generate the body directly.
+      // No registered name found - inline the specialized body directly.
+      // We don't use closure.residual here because it may reference bindings
+      // that were eliminated during staging (e.g., curried functions like
+      // minLength(8) where minLength doesn't exist at runtime).
+      // The body already contains the fully specialized code.
       return generateFromExpr(expr.body, ctx);
     }
   }

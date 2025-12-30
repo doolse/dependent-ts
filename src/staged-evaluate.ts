@@ -475,7 +475,9 @@ function extractFromPattern(
   function extract(pat: Pattern, val: SValue, basePath: Expr): void {
     switch (pat.tag) {
       case "varPattern":
-        if (isNow(val)) {
+        if (isNow(val) || isStagedClosure(val)) {
+          // Preserve Now values and StagedClosures directly
+          // StagedClosures are compile-time known and should be kept as-is
           bindings.push({ name: pat.name, svalue: val });
         } else {
           // Override residual to use the variable name - the letPattern will bind it
@@ -631,15 +633,16 @@ function evalLetPattern(
 function findComptimeParams(body: Expr, params: Set<string>): Set<string> {
   const result = new Set<string>();
 
-  function walk(expr: Expr, inComptime: boolean): void {
+  function walk(expr: Expr, inComptime: boolean, localBindings: Set<string>): void {
     switch (expr.tag) {
       case "comptime":
         // Everything inside comptime that references params needs those params to be Now
-        walk(expr.expr, true);
+        walk(expr.expr, true, localBindings);
         break;
 
       case "var":
-        if (inComptime && params.has(expr.name)) {
+        // Check if this var references a param (not shadowed by local binding)
+        if (inComptime && params.has(expr.name) && !localBindings.has(expr.name)) {
           result.add(expr.name);
         }
         break;
@@ -649,102 +652,127 @@ function findComptimeParams(body: Expr, params: Set<string>): Set<string> {
         break;
 
       case "binop":
-        walk(expr.left, inComptime);
-        walk(expr.right, inComptime);
+        walk(expr.left, inComptime, localBindings);
+        walk(expr.right, inComptime, localBindings);
         break;
 
       case "unary":
-        walk(expr.operand, inComptime);
+        walk(expr.operand, inComptime, localBindings);
         break;
 
       case "if":
-        walk(expr.cond, inComptime);
-        walk(expr.then, inComptime);
-        walk(expr.else, inComptime);
+        walk(expr.cond, inComptime, localBindings);
+        walk(expr.then, inComptime, localBindings);
+        walk(expr.else, inComptime, localBindings);
         break;
 
-      case "let":
-        walk(expr.value, inComptime);
-        walk(expr.body, inComptime);
+      case "let": {
+        walk(expr.value, inComptime, localBindings);
+        const newBindings = new Set(localBindings);
+        newBindings.add(expr.name);
+        walk(expr.body, inComptime, newBindings);
         break;
+      }
 
-      case "letPattern":
-        walk(expr.value, inComptime);
-        walk(expr.body, inComptime);
+      case "letPattern": {
+        walk(expr.value, inComptime, localBindings);
+        const newBindings = new Set(localBindings);
+        for (const v of patternVars(expr.pattern)) {
+          newBindings.add(v);
+        }
+        walk(expr.body, inComptime, newBindings);
         break;
+      }
 
-      case "fn":
-        // Don't recurse into nested function bodies - they have their own scope
+      case "fn": {
+        // Recurse into nested function bodies to find comptime uses of outer params
+        // The nested function's own params are local bindings
+        const paramNames = extractParamsFromBody(expr.body);
+        const newBindings = new Set(localBindings);
+        for (const p of paramNames) {
+          newBindings.add(p);
+        }
+        // Walk the full body - extractParamsFromBody only gets param names
+        walk(expr.body, inComptime, newBindings);
         break;
+      }
 
-      case "recfn":
-        // Don't recurse into nested function bodies
+      case "recfn": {
+        // Same for recursive functions
+        const paramNames = extractParamsFromBody(expr.body);
+        const newBindings = new Set(localBindings);
+        newBindings.add(expr.name); // Self-reference
+        for (const p of paramNames) {
+          newBindings.add(p);
+        }
+        walk(expr.body, inComptime, newBindings);
         break;
+      }
 
       case "call":
-        walk(expr.func, inComptime);
+        walk(expr.func, inComptime, localBindings);
         for (const arg of expr.args) {
-          walk(arg, inComptime);
+          walk(arg, inComptime, localBindings);
         }
         break;
 
       case "obj":
         for (const field of expr.fields) {
-          walk(field.value, inComptime);
+          walk(field.value, inComptime, localBindings);
         }
         break;
 
       case "field":
-        walk(expr.object, inComptime);
+        walk(expr.object, inComptime, localBindings);
         break;
 
       case "array":
         for (const elem of expr.elements) {
-          walk(elem, inComptime);
+          walk(elem, inComptime, localBindings);
         }
         break;
 
       case "index":
-        walk(expr.array, inComptime);
-        walk(expr.index, inComptime);
+        walk(expr.array, inComptime, localBindings);
+        walk(expr.index, inComptime, localBindings);
         break;
 
       case "block":
         for (const e of expr.exprs) {
-          walk(e, inComptime);
+          walk(e, inComptime, localBindings);
         }
         break;
 
       case "assert":
-        walk(expr.expr, inComptime);
-        walk(expr.constraint, inComptime);
+        walk(expr.expr, inComptime, localBindings);
+        walk(expr.constraint, inComptime, localBindings);
         break;
 
       case "assertCond":
-        walk(expr.condition, inComptime);
+        walk(expr.condition, inComptime, localBindings);
         break;
 
       case "trust":
-        walk(expr.expr, inComptime);
-        if (expr.constraint) walk(expr.constraint, inComptime);
+        walk(expr.expr, inComptime, localBindings);
+        if (expr.constraint) walk(expr.constraint, inComptime, localBindings);
         break;
 
       case "methodCall":
-        walk(expr.receiver, inComptime);
+        walk(expr.receiver, inComptime, localBindings);
         for (const arg of expr.args) {
-          walk(arg, inComptime);
+          walk(arg, inComptime, localBindings);
         }
         break;
 
       case "import":
-        walk(expr.body, inComptime);
+        walk(expr.body, inComptime, localBindings);
         break;
 
       case "typeOf":
         // typeOf returns a Type value which is comptime-only.
         // So variables used inside typeOf need to be known at comptime
         // for the type result to be meaningful/usable.
-        walk(expr.expr, true);
+        walk(expr.expr, true, localBindings);
         break;
 
       case "deferredClosure":
@@ -754,7 +782,7 @@ function findComptimeParams(body: Expr, params: Set<string>): Set<string> {
     }
   }
 
-  walk(body, false);
+  walk(body, false, new Set<string>());
   return result;
 }
 
@@ -1026,7 +1054,9 @@ function evalCall(
         const bodyResidual = svalueToResidual(result.svalue);
         // Use specializedCall for bound closures (have a residual) that may need specialization
         // This includes both named recursive functions and anonymous closures bound via let
-        if (func.residual || func.name) {
+        // Also include closures with comptimeParams - these MUST be specialized to bake in comptime values
+        const hasComptimeParams = func.comptimeParams && func.comptimeParams.size > 0;
+        if (func.residual || func.name || hasComptimeParams) {
           const callResidual = specializedCall(func, bodyResidual, argResiduals);
           return { svalue: later(result.svalue.constraint, callResidual, captures) };
         } else {
@@ -1047,9 +1077,18 @@ function evalCall(
     const hasTypeArg = args.some(a => isNow(a) && a.value.tag === "type");
     if (hasNameBinding && isStagedClosure(result.svalue) && !result.svalue.residual && !hasTypeArg) {
       const argResiduals = args.map(svalueToResidual);
-      const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
-      const callResidual = call(funcResidual, ...argResiduals);
-      return { svalue: { ...result.svalue, residual: callResidual } };
+      // For functions with comptimeParams, use specializedCall so comptime values get baked in during codegen
+      const hasComptimeParams = func.comptimeParams && func.comptimeParams.size > 0;
+      if (hasComptimeParams) {
+        // The result closure has comptime values captured - use specializedCall
+        const bodyResidual = svalueToResidual(result.svalue);
+        const callResidual = specializedCall(func, bodyResidual, argResiduals);
+        return { svalue: { ...result.svalue, residual: callResidual } };
+      } else {
+        const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
+        const callResidual = call(funcResidual, ...argResiduals);
+        return { svalue: { ...result.svalue, residual: callResidual } };
+      }
     }
 
     return result;
