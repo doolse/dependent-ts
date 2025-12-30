@@ -127,11 +127,9 @@ function collectSpecializations(expr: Expr): Map<StagedClosure, SpecializationIn
         const existing = result.get(e.closure) ?? [];
         // Check if this is a self-recursive call marker (body === closure.body)
         const isSelfCall = e.body === e.closure.body;
-        // Only add if this body isn't already collected (dedupe by bodyKey)
-        if (!existing.some(s => s.bodyKey === bodyKey)) {
-          existing.push({ closure: e.closure, bodyKey, body: e.body, args: e.args, isSelfCall });
-          result.set(e.closure, existing);
-        }
+        // Collect all specs - JS clustering will handle deduplication
+        existing.push({ closure: e.closure, bodyKey, body: e.body, args: e.args, isSelfCall });
+        result.set(e.closure, existing);
         // Walk the args
         for (const arg of e.args) {
           walk(arg);
@@ -1152,13 +1150,30 @@ function generateDeferredClosureBinding(
   const paramIndex = new Map<string, number>();
   paramNames.forEach((p, i) => paramIndex.set(p, i));
 
-  // Group calls by unique specialized bodies
-  // For typeOf-based specialization, args may not be literals but bodies are unique
-  // For comptime-based specialization, we can also extract literal args for re-staging
-  // Key: bodyKey (unique body string), Value: { comptimeArgs?: Map<paramName, Now>, specs: SpecializationInfo[], body: Expr }
-  const groups = new Map<string, { comptimeArgs: Map<string, Now> | null; specs: SpecializationInfo[]; body: Expr }>();
+  // ============================================================================
+  // Generate JS for each spec (memoized by bodyKey)
+  // JS clustering will handle all deduplication
+  // ============================================================================
+
+  interface SpecWithJS {
+    spec: SpecializationInfo;
+    comptimeArgs: Map<string, Now> | null;
+    residualBody: Expr;
+    jsBody: JSExpr;
+  }
+
+  const specsWithJS: SpecWithJS[] = [];
+  // Memoize JS generation by bodyKey to avoid redundant work
+  const jsCache = new Map<string, { comptimeArgs: Map<string, Now> | null; residualBody: Expr; jsBody: JSExpr }>();
 
   for (const spec of realSpecs) {
+    // Check cache first
+    if (jsCache.has(spec.bodyKey)) {
+      const cached = jsCache.get(spec.bodyKey)!;
+      specsWithJS.push({ spec, ...cached });
+      continue;
+    }
+
     // Try to extract comptime arg values from this call (for re-staging approach)
     const comptimeArgs = new Map<string, Now>();
     let hasAllLiteralArgs = true;
@@ -1179,45 +1194,10 @@ function generateDeferredClosureBinding(
       comptimeArgs.set(paramName, nowVal);
     }
 
-    // Group by bodyKey - this handles both literal args and constraint-based specialization
-    const key = spec.bodyKey;
-
-    if (!groups.has(key)) {
-      groups.set(key, {
-        comptimeArgs: hasAllLiteralArgs ? comptimeArgs : null,
-        specs: [],
-        body: spec.body  // Use the already-specialized body
-      });
-    }
-    groups.get(key)!.specs.push(spec);
-  }
-
-  if (groups.size === 0) {
-    // No valid specializations - generate generic
-    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
-    return { functionStmts: stmts, ctx };
-  }
-
-  // ============================================================================
-  // JS Clustering: Generate JS for each group and cluster by structure
-  // ============================================================================
-
-  // First, generate residual bodies and JS for each group
-  interface GroupWithJS {
-    bodyKey: string;
-    comptimeArgs: Map<string, Now> | null;
-    specs: SpecializationInfo[];
-    body: Expr;
-    residualBody: Expr;
-    jsBody: JSExpr;
-  }
-
-  const groupsWithJS: GroupWithJS[] = [];
-
-  for (const [bodyKey, group] of groups) {
     let residualBody: Expr;
+    const finalComptimeArgs = hasAllLiteralArgs ? comptimeArgs : null;
 
-    if (group.comptimeArgs) {
+    if (finalComptimeArgs) {
       // We have literal comptime args - use re-staging approach for cleaner output
       let bodyEnv = closure.env;
       const paramSValues: SValue[] = [];
@@ -1225,7 +1205,7 @@ function generateDeferredClosureBinding(
       for (const paramName of paramNames) {
         if (closure.comptimeParams!.has(paramName)) {
           // Comptime param - bind to its Now value
-          const nowVal = group.comptimeArgs.get(paramName)!;
+          const nowVal = finalComptimeArgs.get(paramName)!;
           paramSValues.push(nowVal);
           bodyEnv = bodyEnv.set(paramName, { svalue: nowVal });
         } else {
@@ -1262,27 +1242,28 @@ function generateDeferredClosureBinding(
     } else {
       // No literal comptime args (e.g., typeOf-based specialization)
       // Use the already-specialized body from the specializedCall node
-      residualBody = extractBodyWithoutParamBinding(group.body, paramNames);
+      residualBody = extractBodyWithoutParamBinding(spec.body, paramNames);
     }
 
     // Generate JS for this residual body
     const jsBody = generateFromExpr(residualBody, ctx);
 
-    groupsWithJS.push({
-      bodyKey,
-      comptimeArgs: group.comptimeArgs,
-      specs: group.specs,
-      body: group.body,
-      residualBody,
-      jsBody,
-    });
+    // Cache the result
+    jsCache.set(spec.bodyKey, { comptimeArgs: finalComptimeArgs, residualBody, jsBody });
+    specsWithJS.push({ spec, comptimeArgs: finalComptimeArgs, residualBody, jsBody });
+  }
+
+  if (specsWithJS.length === 0) {
+    // No valid specializations - generate generic
+    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+    return { functionStmts: stmts, ctx };
   }
 
   // Cluster by JS structure
-  const clusterableSpecs: ClusterableSpec<string>[] = groupsWithJS.map(g => ({
-    id: g.bodyKey,
-    jsExpr: g.jsBody,
-    argValues: [], // We'll use the group data for values
+  const clusterableSpecs: ClusterableSpec<string>[] = specsWithJS.map(s => ({
+    id: s.spec.bodyKey,
+    jsExpr: s.jsBody,
+    argValues: [],
   }));
 
   const jsClusters = clusterByJS(clusterableSpecs);
@@ -1294,37 +1275,33 @@ function generateDeferredClosureBinding(
   // Assign function names to clusters
   let fnIndex = 0;
   const clusterNames: string[] = [];
-  if (jsClusters.length === 1 && jsClusters[0].members.length === groupsWithJS.length) {
-    // All groups merged into one cluster - use base name
+  if (jsClusters.length === 1) {
+    // All specs merged into one cluster - use base name
     clusterNames.push(name);
   } else {
-    for (const cluster of jsClusters) {
-      if (cluster.members.length === 1) {
-        // Single-member cluster - use indexed name if there are multiple clusters
-        clusterNames.push(jsClusters.length > 1 ? `${name}$${fnIndex++}` : name);
-      } else {
-        // Multi-member cluster - use indexed name
-        clusterNames.push(jsClusters.length > 1 || fnIndex > 0 ? `${name}$${fnIndex++}` : name);
-      }
+    for (let i = 0; i < jsClusters.length; i++) {
+      clusterNames.push(`${name}$${fnIndex++}`);
     }
   }
 
   // Process each JS cluster
   jsClusters.forEach((cluster, clusterIdx) => {
     const fnName = clusterNames[clusterIdx];
+    // Get the representative spec for this cluster (first member)
+    const representativeBodyKey = cluster.members[0].id;
+    const representativeData = specsWithJS.find(s => s.spec.bodyKey === representativeBodyKey)!;
 
     if (cluster.members.length === 1) {
-      // Single-member cluster: generate function as before
-      const bodyKey = cluster.members[0].id;
-      const groupData = groupsWithJS.find(g => g.bodyKey === bodyKey)!;
-
-      // Map all specs in this group to the function name
-      for (const spec of groupData.specs) {
-        nameMap.set(spec.bodyKey, fnName);
+      // Single-member cluster: generate function directly
+      // Map all specs with this bodyKey to the function name
+      for (const s of specsWithJS) {
+        if (s.spec.bodyKey === representativeBodyKey) {
+          nameMap.set(s.spec.bodyKey, fnName);
+        }
       }
 
       // Handle self-recursive calls
-      const specsInBody = collectSpecializations(groupData.residualBody);
+      const specsInBody = collectSpecializations(representativeData.residualBody);
       const selfSpecs = specsInBody.get(closure);
       if (selfSpecs) {
         for (const s of selfSpecs) {
@@ -1334,14 +1311,12 @@ function generateDeferredClosureBinding(
 
       // Generate the function
       if (closure.name) {
-        stmts.push(jsConst(fnName, generateRecFnExpr(fnName, paramNames, groupData.residualBody, ctx)));
+        stmts.push(jsConst(fnName, generateRecFnExpr(fnName, paramNames, representativeData.residualBody, ctx)));
       } else {
-        stmts.push(jsConst(fnName, generateFnExpr(paramNames, groupData.residualBody, ctx)));
+        stmts.push(jsConst(fnName, generateFnExpr(paramNames, representativeData.residualBody, ctx)));
       }
     } else {
       // Multi-member cluster: generate parameterized function
-      // The template has holes that need to become parameters
-
       // Generate parameter names for the holes
       const holeParamNames: string[] = [];
       for (let i = 0; i < cluster.parameterCount; i++) {
@@ -1349,29 +1324,26 @@ function generateDeferredClosureBinding(
       }
 
       // Apply template to get the parameterized body
-      const representativeBodyKey = cluster.members[0].id;
-      const representativeGroup = groupsWithJS.find(g => g.bodyKey === representativeBodyKey)!;
       const templateBody = applyTemplate(
-        representativeGroup.jsBody,
+        representativeData.jsBody,
         cluster.template.holes,
         cluster.parameterMapping,
         holeParamNames
       );
 
-      // For each member, compute the hole values and store cluster call info
+      // For each member in the cluster, compute the hole values and store cluster call info
       for (const member of cluster.members) {
-        const groupData = groupsWithJS.find(g => g.bodyKey === member.id)!;
-
-        // Get the parameter values for this member
         const paramValues = getParameterValues(member, cluster);
 
-        // Store cluster call info for each spec
-        for (const spec of groupData.specs) {
-          nameMap.set(spec.bodyKey, fnName);
-          clusterCallInfoMap.set(spec.bodyKey, {
-            functionName: fnName,
-            extraArgs: paramValues.map(v => jsLit(v)),
-          });
+        // Map all specs with this bodyKey to the function name with extra args
+        for (const s of specsWithJS) {
+          if (s.spec.bodyKey === member.id) {
+            nameMap.set(s.spec.bodyKey, fnName);
+            clusterCallInfoMap.set(s.spec.bodyKey, {
+              functionName: fnName,
+              extraArgs: paramValues.map(v => jsLit(v)),
+            });
+          }
         }
       }
 
