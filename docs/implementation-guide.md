@@ -11,10 +11,11 @@ This document provides a deep dive into implementing a dependent type system wit
 5. [Body-Based Type Derivation](#5-body-based-type-derivation)
 6. [Control Flow Refinement](#6-control-flow-refinement)
 7. [Code Generation](#7-code-generation)
-8. [Parser and Lexer](#8-parser-and-lexer)
-9. [Known Issues and Limitations](#9-known-issues-and-limitations)
-10. [Future Work](#10-future-work)
-11. [Design Decisions](#11-design-decisions)
+8. [Specialization](#8-specialization)
+9. [Parser and Lexer](#9-parser-and-lexer)
+10. [Known Issues and Limitations](#10-known-issues-and-limitations)
+11. [Future Work](#11-future-work)
+12. [Design Decisions](#12-design-decisions)
 
 ---
 
@@ -706,7 +707,131 @@ console.log(generateJS(call(varRef("map"), mapper, arr)));
 
 ---
 
-## 8. Parser and Lexer
+## 8. Specialization
+
+**File: `src/staged-evaluate.ts`, `src/svalue-module-generator.ts`**
+
+Specialization is the process of generating optimized, specialized versions of functions based on compile-time known values. This section documents the core principles.
+
+### Core Principles
+
+#### 1. Comptime is Explicit
+
+The `comptime(...)` wrapper is the only way to force compile-time evaluation. Nothing happens automatically — if you want a value computed at compile time, wrap it.
+
+```typescript
+// Without comptime: field access generates residual code
+fn(obj) => obj.kind  // Generates: (obj) => obj.kind
+
+// With comptime: if constraint tells us the value, it's inlined
+fn(obj) => comptime(obj.kind)  // If obj.kind is known to be "circle", generates: (obj) => "circle"
+```
+
+This explicit approach avoids surprising behavior and makes the staging boundary clear in the source code.
+
+#### 2. Comptime Parameters Drive Specialization
+
+When a function is defined, the system scans the body to find parameters used inside `comptime(...)` or `typeOf(...)`. These are tracked as "comptime parameters".
+
+```
+fn(x, y) => comptime(x) + y
+// comptimeParams = {"x"} — x must be Now at call sites
+```
+
+At call sites:
+- If a comptime parameter receives a `Later` value: throws `ComptimeRequiresNowError`
+- If all comptime parameters are `Now`: the body is staged with those values computed, creating a specialized version
+
+#### 3. Types Are Erased
+
+Type values (`TypeValue`) exist only at compile time. They can be used inside `comptime(...)` but cannot appear in generated JavaScript.
+
+```
+// Generic function with type parameter
+let id = fn(T) => fn(x) => {
+  comptime(assert(x, T));  // T used in comptime context - OK
+  x
+}
+
+// Call with type argument
+id(number)  // Returns specialized fn(x) => x
+            // The type 'number' is erased from output
+```
+
+If a type value would need to be residualized (used at runtime), an error is thrown.
+
+#### 4. Assert Has Two Modes
+
+The `assert(value, type)` expression behaves differently based on context:
+
+**Inside `comptime(...)`:**
+- Refines the type constraint on `value`
+- Returns `null` and generates no runtime code
+- Acts as a pure compile-time type refinement
+
+**Outside `comptime(...)`:**
+- Refines the type constraint AND generates runtime assertion code
+- Returns the value with refined constraint
+
+```
+// Compile-time only refinement (no runtime code)
+fn(x) => {
+  comptime(assert(x, number));
+  x + 1
+}
+
+// Runtime assertion (generates check)
+fn(x) => {
+  assert(x, number);  // Generates: if (typeof x !== 'number') throw ...
+  x + 1
+}
+```
+
+#### 5. Specializations Are Deduplicated
+
+The code generator uses a two-pass approach:
+
+**Pass 1 (Collection):** Walk the residual expression tree collecting all `specializedCall` nodes, grouped by closure identity.
+
+**Pass 2 (Deduplication & Naming):**
+- Single specialization → one function
+- Multiple unique specializations → separate specialized functions or JS clustering
+
+This ensures that calling the same function with the same comptime values doesn't generate duplicate code.
+
+### How Specialization Works
+
+When a function with comptime parameters is called, the system:
+
+1. Evaluates arguments
+2. Checks that all comptime parameters received `Now` values
+3. Stages the function body with those values computed
+4. Records the result in a `specializedCall` node containing:
+   - The closure identity
+   - The specialized body (result of staging)
+   - The argument residuals
+
+During code generation, `specializedCall` nodes are resolved to their specialized function names.
+
+### Discriminant Optimization
+
+A common use case for `comptime` is discriminant checking on tagged unions:
+
+```
+fn handleShape(shape) =>
+  if comptime(shape.kind) == "circle" then
+    computeCircleArea(shape)
+  else
+    computeSquareArea(shape)
+```
+
+When `shape`'s constraint tells us `kind` is exactly `"circle"`, `comptime(shape.kind)` evaluates to `Now("circle")`, and the entire `if` is eliminated at compile time — only the circle branch remains.
+
+**Important:** This optimization only happens inside `comptime()`. Without it, `shape.kind` would be `Later` even if the constraint is precise.
+
+---
+
+## 9. Parser and Lexer
 
 **Files: `src/lexer.ts`, `src/parser.ts`**
 
@@ -797,11 +922,11 @@ console.log(parseAndCompile("fn(x) => x * 2"));
 
 ---
 
-## 9. Known Issues and Limitations
+## 10. Known Issues and Limitations
 
 This section documents discovered issues and limitations in the current implementation.
 
-### 9.1 Global Mutable State
+### 10.1 Global Mutable State
 
 **Location:** `src/staged-evaluate.ts`, `src/constraint.ts`
 
@@ -822,7 +947,7 @@ export function resetVarCounter(): void {
 
 **Workaround:** Always call `resetVarCounter()` before staging. The `stage()` function does this automatically.
 
-### 9.2 Limited Arithmetic Constraint Simplification
+### 10.2 Limited Arithmetic Constraint Simplification
 
 **Current behavior:**
 ```typescript
@@ -839,7 +964,7 @@ console.log(constraintToString(c));
 
 **Impact:** Constraint strings are more verbose than necessary; subtyping checks still work correctly.
 
-### 9.3 Import Code Generation is Incomplete
+### 10.3 Import Code Generation is Incomplete
 
 **Current behavior:** Import expressions generate commented-out import statements:
 
@@ -852,7 +977,7 @@ return body;
 
 **Workaround:** Use `generateModuleWithImports()` which hoists imports to the top level.
 
-### 9.4 Assert Code Generation is Simplistic
+### 10.4 Assert Code Generation is Simplistic
 
 **Current behavior:** Assert expressions generate null/undefined checks:
 
@@ -866,7 +991,7 @@ if (__value === null || __value === undefined) {
 
 **Impact:** Runtime assertions don't provide full constraint checking.
 
-### 9.5 extractRefinement Returns Empty for OR Conditions
+### 10.5 extractRefinement Returns Empty for OR Conditions
 
 **Current behavior:**
 
@@ -885,13 +1010,13 @@ console.log(refinement.constraints.size);
 
 **Impact:** Less precise type narrowing for disjunctive conditions.
 
-### 9.6 Closure Environment Captures Everything
+### 10.6 Closure Environment Captures Everything
 
 **Current behavior:** Closures capture the entire environment, not just free variables.
 
 **Impact:** Memory overhead for closures in long-running programs.
 
-### 9.7 No Tail Call Optimization
+### 10.7 No Tail Call Optimization
 
 **Current behavior:** Recursive functions can stack overflow on deep recursion.
 
@@ -899,11 +1024,11 @@ console.log(refinement.constraints.size);
 
 ---
 
-## 10. Future Work
+## 11. Future Work
 
 This section lists features that could be added to extend the system.
 
-### 10.1 Language Features Not Yet Implemented
+### 11.1 Language Features Not Yet Implemented
 
 **Pattern Matching / Match Expressions**
 ```
@@ -933,7 +1058,7 @@ fn connect(port: number)
 ```
 API designers cannot provide custom error messages for constraint violations.
 
-### 10.2 Type System Features Not Yet Implemented
+### 11.2 Type System Features Not Yet Implemented
 
 **Polymorphic Type Inference (Let-Polymorphism)**
 ```
@@ -958,7 +1083,7 @@ fn describe(x: string | number) =
 ```
 No compile-time exhaustiveness checking for union types.
 
-### 10.3 Compile-Time Features Not Yet Implemented
+### 11.3 Compile-Time Features Not Yet Implemented
 
 **Partial Evaluation with Placeholders**
 ```
@@ -974,7 +1099,7 @@ comptime size = 10
 ```
 The `comptime` keyword only works as an expression wrapper, not as a variable declaration modifier.
 
-### 10.4 Optimization Features Not Yet Implemented
+### 11.4 Optimization Features Not Yet Implemented
 
 **Mutation Optimization**
 ```
@@ -1003,7 +1128,7 @@ let growing = push(arr, x)  // Could use growable array
 ```
 No automatic specialization based on usage patterns.
 
-### 10.5 TypeScript Integration Not Yet Implemented
+### 11.5 TypeScript Integration Not Yet Implemented
 
 **Produce .d.ts Files**
 ```
@@ -1018,7 +1143,7 @@ Can consume `.d.ts` files but cannot generate them.
 **Full .d.ts Consumption**
 Import loading exists (`ts-loader.ts`) but many TypeScript type features are not fully supported (generics with constraints, conditional types, mapped types, etc.).
 
-### 10.6 Exploratory Ideas (From Goals)
+### 11.6 Exploratory Ideas (From Goals)
 
 **Implicit Environment for DSLs**
 ```
@@ -1041,11 +1166,11 @@ No type class or trait system; no global registry mechanism.
 
 ---
 
-## 11. Design Decisions
+## 12. Design Decisions
 
 This section documents key design decisions and their rationale.
 
-### 11.1 Type Annotations as Syntax Sugar
+### 12.1 Type Annotations as Syntax Sugar
 
 **Decision:** Type annotations (when implemented) will be syntactic sugar, not stored declarations.
 
@@ -1065,7 +1190,7 @@ fn add(a, b) =
 
 This provides early error detection (via `implies` checks in `trust`) while keeping the core model simple. The syntax will likely be TypeScript-like when implemented.
 
-### 11.2 Currying Should Be Explicit
+### 12.2 Currying Should Be Explicit
 
 **Decision:** Automatic currying will NOT be supported. If you want a curried function, define it explicitly.
 
@@ -1078,7 +1203,7 @@ add(5)(3)  // 8
 // NOT: add(5, 3) automatically becoming add(5)(3)
 ```
 
-### 11.3 typeOf() Is Compile-Time Only
+### 12.3 typeOf() Is Compile-Time Only
 
 **Decision:** `typeOf(x)` returns the constraint of `x` as a type value. When `x` is Later, `typeOf(x)` returns `any`.
 
@@ -1101,7 +1226,7 @@ assert(y, typeOf(x))  // Checks y satisfies any (always passes)
 
 These would require runtime type tags. For now, use `assert` with static types or JS `typeof` for basic runtime checks.
 
-### 11.4 Performance Optimization Is Deferred
+### 12.4 Performance Optimization Is Deferred
 
 **Decision:** Body re-analysis on each call is accepted. Caching will be added if profiling shows it's needed.
 
@@ -1115,7 +1240,7 @@ Potential optimization (not yet implemented):
 
 This will be revisited when we have real-world usage to profile.
 
-### 11.5 Function Subtyping Is Behavioral
+### 12.5 Function Subtyping Is Behavioral
 
 **Decision:** Function "subtyping" is behavioral, not structural.
 

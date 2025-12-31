@@ -144,6 +144,20 @@ const code = compile(expr); // stage + codegen pipeline
 - Discriminated unions work via `narrowOr` eliminating contradictory branches
 - Recursive types use `rec`/`recVar` with coinductive reasoning for subtyping
 
+## Specialization & Code Generation Principles
+
+1. **Comptime is Explicit**: The `comptime(...)` wrapper is the only way to force compile-time evaluation. Nothing happens automatically — if you want a value computed at compile time, wrap it.
+
+2. **Comptime Parameters Drive Specialization**: Parameters used inside `comptime(...)` in a function body must be `Now` at call sites. This creates specialized versions of the function with those values baked in.
+
+3. **Types Are Erased**: Type values exist only at compile time. They can be used inside `comptime(...)` but cannot appear in generated JavaScript.
+
+4. **Assert Has Two Modes**:
+   - Inside `comptime(...)`: refines type, generates nothing
+   - Outside: refines type AND generates runtime check
+
+5. **Specializations Are Deduplicated**: Multiple calls with different comptime values generate separate specialized functions. Identical specializations are merged.
+
 ## Documentation
 
 See `docs/implementation-guide.md` for a comprehensive deep dive into the implementation, including executable code examples.
