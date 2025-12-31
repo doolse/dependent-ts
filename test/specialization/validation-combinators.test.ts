@@ -281,9 +281,9 @@ describe("Validation Combinators Specialization", () => {
   });
 
   describe("Conditional validation", () => {
-    it("generates validation with type check", () => {
-      // Without explicit comptime(), typeOf resolves at runtime
-      // so the same function body is used for all calls
+    it("specializes validation based on type - typeOf drives specialization", () => {
+      // typeOf(x) IS compile-time and DOES drive specialization
+      // Number gets the validation logic, string gets inlined `true`
       const code = compile(parse(`
         let validateIfNumber = fn(x) =>
           let T = typeOf(x) in
@@ -291,11 +291,32 @@ describe("Validation Combinators Specialization", () => {
           else true
         in
         let n = trust(runtime(n: 50), number) in
-        validateIfNumber(n)
+        let s = trust(runtime(s: "hi"), string) in
+        [validateIfNumber(n), validateIfNumber(s)]
       `));
 
+      // Number call uses specialized function
       expect(code).toContain("validateIfNumber");
       expect(code).toContain(">= 0");
+      expect(code).toContain("<= 100");
+      // String call is inlined as true (compile-time value)
+      expect(code).toMatch(/\[validateIfNumber\([^)]+\),\s*true]/);
+    });
+
+    it("works correctly at runtime", () => {
+      const result = parseAndRun(`
+        let validateIfNumber = fn(x) =>
+          let T = typeOf(x) in
+          if T == number then x >= 0 && x <= 100
+          else true
+        in
+        [validateIfNumber(50), validateIfNumber(-1), validateIfNumber("hi")]
+      `);
+
+      expect(result.value.tag).toBe("array");
+      const arr = result.value as any;
+      // 50 is in range, -1 is out of range, "hi" returns true (not a number)
+      expect(arr.elements.map((e: any) => e.value)).toEqual([true, false, true]);
     });
   });
 

@@ -527,6 +527,52 @@ describe("Code Generation for Complex Cases", () => {
       }
     });
   });
+
+  describe("Mixed Now/Later function calls", () => {
+    it("inlines Now results when function returns different types for different calls", () => {
+      // When a function is called with different types and returns Now for some
+      // and Later for others, the Now values should be inlined, not call the function
+      const code = compile(parse(`
+        let check = fn(x) =>
+          let T = typeOf(x) in
+          if T == number then x + 1
+          else true
+        in
+        let n = trust(runtime(n: 50), number) in
+        let s = trust(runtime(s: "hi"), string) in
+        [check(n), check(s)]
+      `));
+
+      // Number call should use specialized function
+      expect(code).toContain("check");
+      // String call should be inlined as `true`, not `check(s)`
+      expect(code).toContain("true");
+      // The array should contain the function call and the inlined true
+      expect(code).toMatch(/\[check\([^)]+\),\s*true]/);
+    });
+
+    it("correctly generates mixed Now/Later results", () => {
+      // Verify code structure - number call produces Later (x * 2), string produces Now
+      const code = compile(parse(`
+        let process = fn(x) =>
+          let T = typeOf(x) in
+          if T == number then x * 2
+          else "not a number"
+        in
+        let numVal = trust(runtime(numVal: 21), number) in
+        let strVal = trust(runtime(strVal: "hi"), string) in
+        [process(numVal), process(strVal)]
+      `));
+
+      // Number call uses specialized function with x * 2
+      expect(code).toContain("process");
+      expect(code).toContain("* 2");
+      // String call is inlined as literal string
+      expect(code).toContain('"not a number"');
+      // The array should have function call and inlined string
+      expect(code).toMatch(/\[process\([^)]+\),\s*"not a number"]/);
+    });
+  });
 });
 
 // ============================================================================

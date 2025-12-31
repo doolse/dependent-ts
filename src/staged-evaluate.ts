@@ -1006,12 +1006,9 @@ function evalCall(
         const captures = mergeCaptures(args);
 
         if (isNow(result.svalue)) {
-          // Result is fully computed - use original call name (no specialization needed)
-          const callName = funcExpr.tag === "var" ? funcExpr.name : func.name;
-          const callResidual = call(varRef(callName), ...argResiduals);
-          return {
-            svalue: now(result.svalue.value, result.svalue.constraint, callResidual)
-          };
+          // Result is fully computed at compile time - inline the value directly
+          // Don't attach a call residual; the value will be converted to a literal
+          return { svalue: result.svalue };
         } else {
           // Result is Later - emit specializedCall with the staged body
           const bodyResidual = svalueToResidual(result.svalue);
@@ -1052,10 +1049,9 @@ function evalCall(
       const captures = mergeCaptures(args);
 
       if (isNow(result.svalue)) {
-        // Result is fully computed - use original call residual (no specialization needed)
-        const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
-        const callResidual = call(funcResidual, ...argResiduals);
-        return { svalue: now(result.svalue.value, result.svalue.constraint, callResidual) };
+        // Result is fully computed at compile time - inline the value directly
+        // Don't attach a call residual; the value will be converted to a literal
+        return { svalue: result.svalue };
       } else if (isStagedClosure(result.svalue)) {
         // Result is a closure - return as-is (closures are compile-time known)
         return result;

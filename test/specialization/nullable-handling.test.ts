@@ -10,9 +10,9 @@ import { parse, compile, parseAndRun, stage, isNow, isLater } from "../../src/in
 
 describe("Nullable Handling Specialization", () => {
   describe("Basic withDefault behavior", () => {
-    it("handles nullable number and string with parameter lifting", () => {
-      // Without comptime(), typeOf resolves at runtime
-      // Parameter lifting is used instead of function specialization
+    it("uses parameter lifting when only constant values differ", () => {
+      // typeOf(x) IS compile-time, but when branch results are just different constants
+      // with the same structure (x === null ? CONST : x), parameter lifting is used
       const code = compile(parse(`
         let withDefault = fn(x) =>
           let T = typeOf(x) in
@@ -27,10 +27,34 @@ describe("Nullable Handling Specialization", () => {
         [withDefault(maybeNum), withDefault(maybeStr)]
       `));
 
-      // Parameter lifting extracts the default values
+      // Parameter lifting: one function with lifted constant parameter
       expect(code).toContain("withDefault");
       expect(code).toContain("0");
       expect(code).toContain('""');
+      // Verify parameter lifting pattern
+      expect(code).toMatch(/_p0/);
+    });
+
+    it("specializes when typeOf causes structurally different code", () => {
+      // When typeOf(x) leads to different operations (not just constants),
+      // proper function specialization occurs
+      const code = compile(parse(`
+        let process = fn(x) =>
+          let T = typeOf(x) in
+          if T == number then x * 2
+          else if T == string then x + "!"
+          else x
+        in
+        let n = trust(runtime(n: 42), number) in
+        let s = trust(runtime(s: "hi"), string) in
+        [process(n), process(s)]
+      `));
+
+      // Different operations = different specializations
+      expect(code).toContain("process$0");
+      expect(code).toContain("process$1");
+      expect(code).toContain("* 2");
+      expect(code).toContain('+ "!"');
     });
 
     it("uses base name with single call site", () => {
@@ -71,8 +95,9 @@ describe("Nullable Handling Specialization", () => {
   });
 
   describe("Multi-type default values", () => {
-    it("handles multiple types with parameter lifting", () => {
-      // Different types get different lifted parameters
+    it("uses parameter lifting for primitives, separate function for arrays", () => {
+      // Primitives (0, "", false) have same structure -> parameter lifting
+      // Array ([]) has different structure -> separate function
       const code = compile(parse(`
         let withDefault = fn(x) =>
           let T = typeOf(x) in
@@ -86,14 +111,19 @@ describe("Nullable Handling Specialization", () => {
         let n = trust(runtime(n: 42), nullable(number)) in
         let s = trust(runtime(s: "hi"), nullable(string)) in
         let b = trust(runtime(b: true), nullable(boolean)) in
-        [withDefault(n), withDefault(s), withDefault(b)]
+        let a = trust(runtime(a: [1,2]), nullable(array)) in
+        [withDefault(n), withDefault(s), withDefault(b), withDefault(a)]
       `));
 
-      // Parameter lifting handles the different default values
-      expect(code).toContain("withDefault");
+      // Primitives share one function with parameter lifting
+      // Array gets its own function (different structure)
+      expect(code).toContain("withDefault$0"); // primitive version with lifted param
+      expect(code).toContain("withDefault$1"); // array version
+      expect(code).not.toContain("withDefault$2"); // only 2 structural variants
       expect(code).toContain("0");
       expect(code).toContain('""');
       expect(code).toContain("false");
+      expect(code).toContain("[]");
     });
   });
 
