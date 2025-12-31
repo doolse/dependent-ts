@@ -94,6 +94,7 @@ type Constraint =
   | { tag: "isString" }
   | { tag: "isBool" }
   | { tag: "isNull" }
+  | { tag: "isUndefined" }
   | { tag: "isObject" }
   | { tag: "isArray" }
   | { tag: "isFunction" }
@@ -107,9 +108,10 @@ type Constraint =
 
   // Structural constraints
   | { tag: "hasField"; name: string; constraint: Constraint }
-  | { tag: "elements"; constraint: Constraint }
-  | { tag: "length"; constraint: Constraint }
-  | { tag: "elementAt"; index: number; constraint: Constraint }
+  | { tag: "elements"; constraint: Constraint }    // Homogeneous array elements
+  | { tag: "length"; constraint: Constraint }      // Array/string length
+  | { tag: "elementAt"; index: number; constraint: Constraint }  // Tuple element
+  | { tag: "index"; constraint: Constraint }       // Index signature (unlisted fields)
 
   // Logical operators
   | { tag: "and"; constraints: Constraint[] }
@@ -122,7 +124,7 @@ type Constraint =
   | { tag: "isType"; constraint: Constraint }  // Meta: value IS a type
   | { tag: "rec"; var: string; body: Constraint }  // Recursive types
   | { tag: "recVar"; var: string }
-  | { tag: "var"; name: string }  // Constraint variable (for inference)
+  | { tag: "var"; id: number }  // Constraint variable (for inference)
 ```
 
 ### Building Constraints
@@ -250,10 +252,12 @@ type Value =
   | NullValue      // { tag: "null" }
   | ObjectValue    // { tag: "object", fields: Map<string, Value> }
   | ArrayValue     // { tag: "array", elements: Value[] }
-  | ClosureValue   // { tag: "closure", params, body, env, name? }
+  | ClosureValue   // { tag: "closure", body, env, name? }
   | TypeValue      // { tag: "type", constraint: Constraint }
   | BuiltinValue   // { tag: "builtin", name: string }
 ```
+
+**Note:** `ClosureValue` does not store `params` directly. All functions use an implicit `args` array binding, and named parameters are desugared to pattern matching on `args` (see Section 5).
 
 ### Deriving Constraints from Values
 
@@ -314,11 +318,17 @@ type Expr =
   | FieldExpr         // obj.field
   | ArrayExpr         // [1, 2, 3]
   | IndexExpr         // arr[0]
+  | BlockExpr         // { stmt1; stmt2; result }
   | ComptimeExpr      // comptime(expr) - force compile-time
   | RuntimeExpr       // runtime(expr) - force runtime
   | AssertExpr        // assert(value, type) - runtime check
+  | AssertCondExpr    // assert(condition) - boolean condition check
   | TrustExpr         // trust(value, type) - no check
-  // ... and more
+  | MethodCallExpr    // receiver.method(args)
+  | ImportExpr        // import { x } from "module" in body
+  | TypeOfExpr        // typeOf(expr) - get type as value
+  | DeferredClosureExpr   // Internal: delayed staging for codegen
+  | SpecializedCallExpr   // Internal: specialized function call for two-pass codegen
 ```
 
 ### Building Expressions
@@ -352,16 +362,37 @@ interface Now {
   stage: "now";
   value: Value;           // The actual value
   constraint: Constraint; // Its type
+  residual?: Expr;        // Optional: expression to use in codegen (e.g., variable reference)
 }
 
 interface Later {
   stage: "later";
-  constraint: Constraint; // What we know about the type
-  residual: Expr;         // Expression to compute it at runtime
+  constraint: Constraint;        // What we know about the type
+  residual: Expr;                // Expression to compute it at runtime
+  captures: Map<string, SValue>; // Explicit dependencies (free variables in residual)
+  origin: LaterOrigin;           // Where this Later came from (runtime, import, or derived)
 }
 
-type SValue = Now | Later;
+interface StagedClosure {
+  stage: "closure";
+  body: Expr;              // The function body
+  params: string[];        // Parameter names (extracted from body)
+  env: SEnv;               // Captured staged environment
+  name?: string;           // For recursive self-reference
+  constraint: Constraint;  // Always isFunction, but may have more info
+  comptimeParams?: Set<string>;  // Params used inside comptime() - must be Now at call sites
+}
+
+interface LaterArray {
+  stage: "later-array";
+  elements: SValue[];      // Each element's SValue preserved
+  constraint: Constraint;  // Overall array constraint
+}
+
+type SValue = Now | Later | StagedClosure | LaterArray;
 ```
+
+The `StagedClosure` type represents functions with their captured environment, enabling inspection of the body and captures. The `LaterArray` type preserves individual element information for optimizations like predicate pushing.
 
 ### Evaluation Rules
 
@@ -631,15 +662,19 @@ The code generator converts expressions (typically residuals from staging) to Ja
 
 ```typescript
 // @run
-import { generateJS, add, num, varRef, ifExpr, gtExpr } from "../src/index";
+import { compile, parse } from "../src/index";
 
-// Simple expression
-console.log(generateJS(add(num(1), num(2))));
-// Output: 1 + 2
+// Fully known at compile time → evaluates to result
+console.log(compile(parse("1 + 2")));
+// Output: 3
 
-// Conditional becomes ternary
-const cond = ifExpr(gtExpr(varRef("x"), num(0)), varRef("x"), num(0));
-console.log(generateJS(cond));
+// With runtime variable → generates code
+console.log(compile(parse("runtime(x: 0) + 5")));
+// Output: x + 5
+
+// Conditional with runtime variable becomes ternary
+// (runtime() binds the variable name directly)
+console.log(compile(parse("if runtime(x: 0) > 0 then runtime(x: 0) else 0")));
 // Output: x > 0 ? x : 0
 ```
 
@@ -692,17 +727,19 @@ Some builtins are desugared to idiomatic JS:
 
 ```typescript
 // @run
-import { generateJS, call, varRef, fn, array, num } from "../src/index";
+import { compile, parse } from "../src/index";
 
 // print() becomes console.log()
-console.log(generateJS(call(varRef("print"), num(42))));
+console.log(compile(parse("print(42)")));
 // Output: console.log(42)
 
-// map(fn, arr) becomes arr.map(fn)
-const mapper = fn(["x"], varRef("x"));
-const arr = array(num(1), num(2));
-console.log(generateJS(call(varRef("map"), mapper, arr)));
-// Output: [1, 2].map((x) => x)
+// map() with all-known array evaluates at compile time
+console.log(compile(parse("map([1, 2], fn(x) => x * 2)")));
+// Output: [2, 4]
+
+// map() with runtime array generates arr.map(fn)
+console.log(compile(parse("map(runtime(arr: []), fn(x) => x * 2)")));
+// Output: arr.map((x) => x * 2)
 ```
 
 ---
