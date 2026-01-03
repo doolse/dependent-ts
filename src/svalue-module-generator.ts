@@ -1110,7 +1110,7 @@ function generateDeferredClosureBinding(
 
     if (uniqueBodyKeys.size <= 1) {
       // Single specialization or no specializations - generate a generic function
-      stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+      stmts.push(jsConst(name, generateDeferredClosure(closure, ctx, name)));
 
       // Still need to map any specializedCall nodes to the let binding name
       if (closureSpecs && closureSpecs.length > 0) {
@@ -1138,7 +1138,7 @@ function generateDeferredClosureBinding(
 
   if (!closureSpecs || closureSpecs.length === 0) {
     // No calls found - generate generic version
-    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx, name)));
     return { functionStmts: stmts, ctx };
   }
 
@@ -1146,7 +1146,7 @@ function generateDeferredClosureBinding(
   const realSpecs = closureSpecs.filter(s => !s.isSelfCall);
 
   if (realSpecs.length === 0) {
-    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx, name)));
     return { functionStmts: stmts, ctx };
   }
 
@@ -1265,7 +1265,7 @@ function generateDeferredClosureBinding(
 
   if (specsWithJS.length === 0) {
     // No valid specializations - generate generic
-    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx)));
+    stmts.push(jsConst(name, generateDeferredClosure(closure, ctx, name)));
     return { functionStmts: stmts, ctx };
   }
 
@@ -1537,8 +1537,12 @@ function generateRecFnExpr(name: string, params: string[], body: Expr, ctx: Modu
  * - Specialization at call sites with Now args
  * - Dead code elimination for uncalled functions
  * - Deferred errors (only surface when function needs to be emitted)
+ *
+ * @param bindingName - Optional name for the generated function (e.g., from a let binding).
+ *                      If provided, overrides sc.name for the internal function name.
+ *                      This ensures recursive calls match the binding name.
  */
-function generateDeferredClosure(sc: StagedClosure, ctx: ModuleGenContext): JSExpr {
+function generateDeferredClosure(sc: StagedClosure, ctx: ModuleGenContext, bindingName?: string): JSExpr {
   // Generate generic version with Later(any) params
   // Extract params from desugared body: let [a, b] = args in body
   const { params: paramNames, body: innerBody } = extractParamsFromBody(sc.body);
@@ -1580,8 +1584,11 @@ function generateDeferredClosure(sc: StagedClosure, ctx: ModuleGenContext): JSEx
   const residualBody = svalueToResidual(bodyResult.svalue);
 
   // Generate the function expression
+  // Only use named function expression for recursive functions (sc.name exists)
+  // Use bindingName to ensure the internal name matches what recursive calls expect
   if (sc.name) {
-    return generateRecFnExpr(sc.name, paramNames, residualBody, ctx);
+    const fnName = bindingName ?? sc.name;
+    return generateRecFnExpr(fnName, paramNames, residualBody, ctx);
   }
   return generateFnExpr(paramNames, residualBody, ctx);
 }

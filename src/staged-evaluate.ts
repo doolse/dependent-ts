@@ -1000,22 +1000,30 @@ function evalCall(
       try {
         const result = stagingEvaluate(func.body, callEnv, RefinementContext.empty());
 
-        // Always use call expression as residual for recursive functions with Later args
-        // This ensures proper code generation instead of inlining the body
         const argResiduals = args.map(svalueToResidual);
         const captures = mergeCaptures(args);
 
         if (isNow(result.svalue)) {
           // Result is fully computed at compile time - inline the value directly
-          // Don't attach a call residual; the value will be converted to a literal
           return { svalue: result.svalue };
         } else {
-          // Result is Later - emit specializedCall with the staged body
-          const bodyResidual = svalueToResidual(result.svalue);
-          const callResidual = specializedCall(func, bodyResidual, argResiduals);
-          return {
-            svalue: later(result.svalue.constraint, callResidual, captures)
-          };
+          // Result is Later - decide between specializedCall and regular call
+          const hasComptimeParams = func.comptimeParams && func.comptimeParams.size > 0;
+          if (hasComptimeParams) {
+            // Has comptime params - emit specializedCall to bake in comptime values
+            const bodyResidual = svalueToResidual(result.svalue);
+            const callResidual = specializedCall(func, bodyResidual, argResiduals);
+            return {
+              svalue: later(result.svalue.constraint, callResidual, captures)
+            };
+          } else {
+            // No comptime params - emit a regular call, don't inline body
+            const funcResidual = func.residual ?? varRef(func.name!);
+            const callResidual = call(funcResidual, ...argResiduals);
+            return {
+              svalue: later(result.svalue.constraint, callResidual, captures)
+            };
+          }
         }
       } finally {
         inProgressRecursiveCalls.delete(func.name);
@@ -1056,18 +1064,16 @@ function evalCall(
         // Result is a closure - return as-is (closures are compile-time known)
         return result;
       } else {
-        // Result is Later - emit specializedCall with the staged body
-        const bodyResidual = svalueToResidual(result.svalue);
-        // Use specializedCall for bound closures (have a residual) that may need specialization
-        // This includes both named recursive functions and anonymous closures bound via let
-        // Also include closures with comptimeParams - these MUST be specialized to bake in comptime values
+        // Result is Later - decide between specializedCall and regular call
         const hasComptimeParams = func.comptimeParams && func.comptimeParams.size > 0;
-        if (func.residual || func.name || hasComptimeParams) {
+        if (hasComptimeParams) {
+          // Has comptime params - emit specializedCall to bake in comptime values
+          const bodyResidual = svalueToResidual(result.svalue);
           const callResidual = specializedCall(func, bodyResidual, argResiduals);
           return { svalue: later(result.svalue.constraint, callResidual, captures) };
         } else {
-          // Truly anonymous closure (e.g., synthetic import wrapper) - use original call expression
-          const funcResidual = varRef((funcExpr as { name: string }).name);
+          // No comptime params - emit a regular call, don't inline body
+          const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
           const callResidual = call(funcResidual, ...argResiduals);
           return { svalue: later(result.svalue.constraint, callResidual, captures) };
         }
