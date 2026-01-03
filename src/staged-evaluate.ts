@@ -481,6 +481,10 @@ function extractFromPattern(
           // Preserve Now values and StagedClosures directly
           // StagedClosures are compile-time known and should be kept as-is
           bindings.push({ name: pat.name, svalue: val });
+        } else if (isLaterArray(val)) {
+          // Preserve LaterArray structure - elements retain their residuals
+          // This allows operations like append() to see the known structure
+          bindings.push({ name: pat.name, svalue: val });
         } else {
           // Override residual to use the variable name - the letPattern will bind it
           // NOTE: Discriminant optimization requires explicit comptime() - no special handling here
@@ -612,18 +616,28 @@ function evalLetPattern(
     return { svalue: bodyResult };
   }
 
-  // Check if any of the pattern variables are used in the body
+  // Check if any of the pattern variables are used in the RESIDUAL
+  // This is more accurate than checking the body expression because
+  // for LaterArray with preserved structure, elements may have been inlined
   const patVars = patternVars(pattern);
-  const anyVarUsed = patVars.some(name => usesVar(bodyExpr, name));
+  const bodyResidual = svalueToResidual(bodyResult);
+  const anyVarUsedInResidual = patVars.some(name => usesVar(bodyResidual, name));
 
-  // If value was Later/LaterArray and body uses pattern variables, we need residual let pattern
-  if ((isLater(valueResult) || isLaterArray(valueResult)) && anyVarUsed) {
+  // If value was Later/LaterArray and body residual uses pattern variables, we need let pattern
+  // For LaterArray with elements that have their own residuals (not referencing pattern vars),
+  // we can skip the let binding as the residuals are already correct
+  if ((isLater(valueResult) || isLaterArray(valueResult)) && anyVarUsedInResidual) {
     return {
       svalue: later(
         bodyResult.constraint,
-        letPatternExpr(pattern, svalueToResidual(valueResult), svalueToResidual(bodyResult))
+        letPatternExpr(pattern, svalueToResidual(valueResult), bodyResidual)
       )
     };
+  }
+
+  // For LaterArray where elements don't reference pattern vars, preserve the structure
+  if (isLaterArray(bodyResult)) {
+    return { svalue: bodyResult };
   }
 
   return { svalue: bodyResult };
@@ -1061,7 +1075,20 @@ function evalCall(
         // Don't attach a call residual; the value will be converted to a literal
         return { svalue: result.svalue };
       } else if (isStagedClosure(result.svalue)) {
-        // Result is a closure - return as-is (closures are compile-time known)
+        // Result is a closure - set a residual so we generate a call instead of inlining
+        const hasTypeArg = args.some(a => isNow(a) && a.value.tag === "type");
+        if (!hasTypeArg) {
+          const hasComptimeParams = func.comptimeParams && func.comptimeParams.size > 0;
+          if (hasComptimeParams) {
+            const bodyResidual = svalueToResidual(result.svalue);
+            const callResidual = specializedCall(func, bodyResidual, argResiduals);
+            return { svalue: { ...result.svalue, residual: callResidual } };
+          } else {
+            const funcResidual = func.residual ?? varRef((funcExpr as { name: string }).name);
+            const callResidual = call(funcResidual, ...argResiduals);
+            return { svalue: { ...result.svalue, residual: callResidual } };
+          }
+        }
         return result;
       } else {
         // Result is Later - decide between specializedCall and regular call

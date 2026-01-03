@@ -7,7 +7,7 @@
 
 import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar } from "./constraint";
 import { Value, numberVal, stringVal, boolVal, nullVal, arrayVal, typeVal, BuiltinValue, StringValue, NumberValue, ArrayValue, ClosureValue, constraintOf, valueToString } from "./value";
-import { Expr, methodCall, call, varRef } from "./expr";
+import { Expr, methodCall, call, varRef, obj } from "./expr";
 import type { SValue, Now, Later, LaterArray, StagedClosure } from "./svalue";
 import type { RefinementContext } from "./env";
 
@@ -597,18 +597,39 @@ registerBuiltin({
     handler: (args, argExprs, ctx) => {
       const arrArg = args[0];
       const elemArg = args[1];
-      if (!ctx.isNow(arrArg)) {
-        throw new Error("append() requires a compile-time known array");
+
+      // Case 1: Array is Now (fully known)
+      if (ctx.isNow(arrArg)) {
+        if (arrArg.value.tag !== "array") {
+          throw new Error("append() first argument must be an array");
+        }
+
+        // Case 1a: Both array and element are Now - compute fully
+        if (ctx.isNow(elemArg)) {
+          const newElements = [...arrArg.value.elements, elemArg.value];
+          const resultConstraint = and(isArray, elements(elemArg.constraint));
+          return { svalue: ctx.now(arrayVal(newElements), resultConstraint) };
+        }
+
+        // Case 1b: Array is Now but element is Later/LaterArray/Closure - create LaterArray
+        // Convert existing Now elements to SValues and append the Later element
+        const existingSValues: SValue[] = arrArg.value.elements.map(v =>
+          ctx.now(v, constraintOf(v))
+        );
+        const newSValues = [...existingSValues, elemArg];
+        const resultConstraint = and(isArray, elements(elemArg.constraint));
+        return { svalue: ctx.laterArray(newSValues, resultConstraint) };
       }
-      if (!ctx.isNow(elemArg)) {
-        throw new Error("append() requires a compile-time known element");
+
+      // Case 2: Array is LaterArray (known structure, some Later elements)
+      if (ctx.isLaterArray(arrArg)) {
+        const newSValues = [...arrArg.elements, elemArg];
+        const resultConstraint = and(isArray, elements(elemArg.constraint));
+        return { svalue: ctx.laterArray(newSValues, resultConstraint) };
       }
-      if (arrArg.value.tag !== "array") {
-        throw new Error("append() first argument must be an array");
-      }
-      const newElements = [...arrArg.value.elements, elemArg.value];
-      const resultConstraint = and(isArray, elements(elemArg.constraint));
-      return { svalue: ctx.now(arrayVal(newElements), resultConstraint) };
+
+      // Case 3: Array is fully Later (unknown structure) - cannot append at compile time
+      throw new Error("append() requires an array with known structure (Now or LaterArray)");
     }
   }
 });
@@ -654,6 +675,62 @@ registerBuiltin({
       }
 
       return { svalue: acc };
+    }
+  }
+});
+
+// fold - works with both Now and Later arrays
+// Now array: iterates at compile time
+// Later array: generates runtime reduce
+registerBuiltin({
+  name: "fold",
+  params: [
+    { name: "array", constraint: isArray },
+    { name: "init", constraint: { tag: "any" } },
+    { name: "fn", constraint: isFunction }
+  ],
+  resultType: () => ({ tag: "any" }),
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const arrArg = args[0];
+      const initArg = args[1];
+      const fnArg = args[2];
+
+      if (!ctx.isStagedClosure(fnArg)) {
+        throw new Error("fold() requires a compile-time known function (StagedClosure)");
+      }
+
+      // Case 1: Now array - iterate at compile time
+      if (ctx.isNow(arrArg)) {
+        if (arrArg.value.tag !== "array") {
+          throw new Error("fold() first argument must be an array");
+        }
+
+        const arr = arrArg.value;
+        let acc: SValue = initArg;
+
+        for (const elem of arr.elements) {
+          const elemSV = ctx.now(elem, constraintOf(elem));
+          const result = ctx.invokeClosure(fnArg, [acc, elemSV]);
+          acc = result.svalue;
+        }
+
+        return { svalue: acc };
+      }
+
+      // Case 2: LaterArray - could unroll if all elements produce similar residuals
+      // For now, fall through to runtime reduce
+
+      // Case 3: Later array - generate runtime reduce
+      const arrResidual = ctx.svalueToResidual(arrArg);
+      const initResidual = ctx.svalueToResidual(initArg);
+      const fnResidual = ctx.svalueToResidual(fnArg);
+
+      // Generate: arr.reduce((acc, x) => fn(acc, x), init)
+      const reduceCall = methodCall(arrResidual, "reduce", [fnResidual, initResidual]);
+      return { svalue: ctx.later(initArg.constraint, reduceCall) };
     }
   }
 });
@@ -726,37 +803,91 @@ registerBuiltin({
     handler: (args, argExprs, ctx) => {
       const entriesArg = args[0];
 
-      if (!ctx.isNow(entriesArg)) {
-        throw new Error("objectFromEntries() requires a compile-time known entries array");
-      }
-      if (entriesArg.value.tag !== "array") {
-        throw new Error("objectFromEntries() argument must be an array");
+      // Helper to extract key-value pairs from entries (Now or LaterArray)
+      type EntryInfo = { key: string; valueSV: SValue; valueConstraint: Constraint };
+
+      function extractEntries(entriesSV: SValue): EntryInfo[] {
+        const result: EntryInfo[] = [];
+
+        // Get the list of entry SValues
+        let entrySValues: SValue[];
+        if (ctx.isNow(entriesSV)) {
+          if (entriesSV.value.tag !== "array") {
+            throw new Error("objectFromEntries() argument must be an array");
+          }
+          // Convert Now array elements to SValues
+          entrySValues = entriesSV.value.elements.map(v => ctx.now(v, constraintOf(v)));
+        } else if (ctx.isLaterArray(entriesSV)) {
+          entrySValues = entriesSV.elements;
+        } else {
+          throw new Error("objectFromEntries() requires an array with known structure");
+        }
+
+        for (const entrySV of entrySValues) {
+          // Each entry should be a [key, value] pair
+          let keySV: SValue;
+          let valueSV: SValue;
+
+          if (ctx.isNow(entrySV)) {
+            if (entrySV.value.tag !== "array" || entrySV.value.elements.length !== 2) {
+              throw new Error("objectFromEntries() entries must be [key, value] pairs");
+            }
+            keySV = ctx.now(entrySV.value.elements[0], constraintOf(entrySV.value.elements[0]));
+            valueSV = ctx.now(entrySV.value.elements[1], constraintOf(entrySV.value.elements[1]));
+          } else if (ctx.isLaterArray(entrySV)) {
+            if (entrySV.elements.length !== 2) {
+              throw new Error("objectFromEntries() entries must be [key, value] pairs");
+            }
+            keySV = entrySV.elements[0];
+            valueSV = entrySV.elements[1];
+          } else {
+            throw new Error("objectFromEntries() entries must have known structure");
+          }
+
+          // Key must be a compile-time known string
+          if (!ctx.isNow(keySV) || keySV.value.tag !== "string") {
+            throw new Error("objectFromEntries() keys must be compile-time known strings");
+          }
+
+          result.push({
+            key: keySV.value.value,
+            valueSV,
+            valueConstraint: valueSV.constraint
+          });
+        }
+
+        return result;
       }
 
-      const entries = entriesArg.value.elements;
+      const entries = extractEntries(entriesArg);
+
+      // Check if all values are Now
+      const allValuesNow = entries.every(e => ctx.isNow(e.valueSV));
+
+      // Build constraint
       const fieldConstraints: Constraint[] = [isObject];
-      const fields: Map<string, Value> = new Map();
-
       for (const entry of entries) {
-        if (entry.tag !== "array" || entry.elements.length !== 2) {
-          throw new Error("objectFromEntries() entries must be [key, value] pairs");
+        fieldConstraints.push(hasField(entry.key, entry.valueConstraint));
+      }
+      const constraint = and(...fieldConstraints);
+
+      if (allValuesNow) {
+        // All values are Now - return a Now object
+        const fields: Map<string, Value> = new Map();
+        for (const entry of entries) {
+          fields.set(entry.key, (entry.valueSV as Now).value);
         }
-
-        const keyVal = entry.elements[0];
-        const valueVal = entry.elements[1];
-
-        if (keyVal.tag !== "string") {
-          throw new Error("objectFromEntries() keys must be strings");
-        }
-
-        const key = keyVal.value;
-        fields.set(key, valueVal);
-        fieldConstraints.push(hasField(key, constraintOf(valueVal)));
+        const objValue: Value = { tag: "object", fields };
+        return { svalue: ctx.now(objValue, constraint) };
       }
 
-      const constraint = and(...fieldConstraints);
-      const objValue: Value = { tag: "object", fields };
-      return { svalue: ctx.now(objValue, constraint) };
+      // Some values are Later - generate residual object literal
+      const residualFields: Record<string, Expr> = {};
+      for (const entry of entries) {
+        residualFields[entry.key] = ctx.svalueToResidual(entry.valueSV);
+      }
+      const residual = obj(residualFields);
+      return { svalue: ctx.later(constraint, residual) };
     }
   }
 });

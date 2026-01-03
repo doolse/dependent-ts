@@ -41,6 +41,7 @@ import {
   stage,
   isNow,
   isLater,
+  parseAndCompile,
 } from "../src/index";
 
 // ============================================================================
@@ -441,6 +442,49 @@ describe("JSON Serializer Pattern", () => {
     const names = arr.elements.map((e: any) => e.value);
     expect(names).toContain("name");
     expect(names).toContain("age");
+  });
+
+  it("generates specialized serializer code with runtime value", () => {
+    // This is the key test: when type is known at compile time but value is runtime,
+    // we should generate specialized code that extracts fields at runtime
+    const code = parseAndCompile(`
+      let Person = objectType({ name: string, age: number })
+      in let makeSerializer = fn(T) =>
+        fn(value) => objectFromEntries(
+          fold(fields(comptime(T)), [], fn(acc, field) =>
+            append(acc, [field, dynamicField(value, field)])
+          )
+        )
+      in let serializePerson = makeSerializer(Person)
+      in serializePerson(runtime(p: {}))
+    `);
+
+    // Should generate the specialized serializer function
+    expect(code).toContain("const serializePerson");
+    expect(code).toContain("value.name");
+    expect(code).toContain("value.age");
+    // Should generate a call to serializePerson with the runtime variable
+    expect(code).toContain("serializePerson(p)");
+  });
+
+  it("generates specialized code for different types", () => {
+    // Test that different types produce different specialized code
+    const code = parseAndCompile(`
+      let Point = objectType({ x: number, y: number, z: number })
+      in let makeSerializer = fn(T) =>
+        fn(value) => objectFromEntries(
+          fold(fields(comptime(T)), [], fn(acc, field) =>
+            append(acc, [field, dynamicField(value, field)])
+          )
+        )
+      in let serializePoint = makeSerializer(Point)
+      in serializePoint(runtime(pt: {}))
+    `);
+
+    expect(code).toContain("value.x");
+    expect(code).toContain("value.y");
+    expect(code).toContain("value.z");
+    expect(code).toContain("serializePoint(pt)");
   });
 });
 

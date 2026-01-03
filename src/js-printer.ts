@@ -285,9 +285,10 @@ function printArrow(
     return `(${paramsCode}) => {\n${bodyCode}\n${indent}}`;
   }
 
-  // Expression body
+  // Expression body - wrap object literals in parentheses to avoid parsing as block
   const bodyCode = printJSExpr(body, opts, depth);
-  return `(${paramsCode}) => ${bodyCode}`;
+  const needsWrap = body.tag === "jsObject";
+  return `(${paramsCode}) => ${needsWrap ? `(${bodyCode})` : bodyCode}`;
 }
 
 function printNamedFunction(
