@@ -349,3 +349,79 @@ describe("parseTS - Function Parameter Type Annotations", () => {
     expect(implies(result.svalue.constraint, isNumber)).toBe(true);
   });
 });
+
+describe("parseTS - Interface Declarations", () => {
+  it("parses simple interface", () => {
+    const expr = parseTS("interface Point { x: number; y: number }; null");
+    // Should parse without error and bind Point to a type
+    const exprStr = exprToString(expr);
+    expect(exprStr).toContain("let Point");
+    expect(exprStr).toContain("hasFieldType");
+  });
+
+  it("parses interface with optional properties", () => {
+    const expr = parseTS("interface Config { name: string; debug?: boolean }; null");
+    const exprStr = exprToString(expr);
+    expect(exprStr).toContain("let Config");
+    expect(exprStr).toContain("hasFieldType");
+    // Optional property should have unionType with undefined
+    expect(exprStr).toContain("unionType");
+  });
+
+  it("can use interface as type annotation", () => {
+    const expr = parseTS(`
+      interface Point { x: number; y: number }
+      const p: Point = { x: 1, y: 2 }
+      p
+    `);
+    const result = stage(expr);
+    // The result should be an object
+    expect(implies(result.svalue.constraint, isObject)).toBe(true);
+  });
+
+  it("rejects generic interfaces", () => {
+    expect(() => parseTS("interface Box<T> { value: T }")).toThrow(TSParseError);
+    expect(() => parseTS("interface Box<T> { value: T }")).toThrow("Generic interfaces not supported");
+  });
+});
+
+describe("parseTS - Type Alias Declarations", () => {
+  it("parses simple type alias", () => {
+    const expr = parseTS("type Point = { x: number; y: number }; null");
+    const exprStr = exprToString(expr);
+    expect(exprStr).toContain("let Point");
+    expect(exprStr).toContain("hasFieldType");
+  });
+
+  it("parses union type alias", () => {
+    const expr = parseTS("type StringOrNumber = string | number; null");
+    const exprStr = exprToString(expr);
+    expect(exprStr).toContain("let StringOrNumber");
+    expect(exprStr).toContain("unionType");
+  });
+
+  it("can use type alias as type annotation", () => {
+    const expr = parseTS(`
+      type NumPair = [number, number]
+      const pair: NumPair = [1, 2]
+      pair
+    `);
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isArray)).toBe(true);
+  });
+
+  it("rejects generic type aliases", () => {
+    expect(() => parseTS("type Box<T> = { value: T }")).toThrow(TSParseError);
+    expect(() => parseTS("type Box<T> = { value: T }")).toThrow("Generic type aliases not supported");
+  });
+});
+
+describe("parseTSType - Optional Properties", () => {
+  it("parses object type with optional property", () => {
+    const constraint = parseTSType("{ name: string; age?: number }");
+    expect(implies(constraint, isObject)).toBe(true);
+    expect(implies(constraint, hasField("name", isString))).toBe(true);
+    // age should be number | undefined
+    expect(implies(constraint, hasField("age", or(isNumber, isNull)))).toBe(false);
+  });
+});

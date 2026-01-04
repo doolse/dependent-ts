@@ -787,6 +787,22 @@ export function convertStatements(statements: SyntaxNode[], source: string): Exp
         break;
       }
 
+      case "InterfaceDeclaration": {
+        const decl = extractInterfaceDeclaration(stmt, source);
+        if (decl) {
+          declarations.push(decl);
+        }
+        break;
+      }
+
+      case "TypeAliasDeclaration": {
+        const decl = extractTypeAliasDeclaration(stmt, source);
+        if (decl) {
+          declarations.push(decl);
+        }
+        break;
+      }
+
       case ";":
         // Skip semicolons
         break;
@@ -939,6 +955,78 @@ function wrapInLets(declarations: Declaration[], body: Expr, source: string): Ex
   }
 
   return result;
+}
+
+// ============================================================================
+// Interface and Type Alias Declarations
+// ============================================================================
+
+/**
+ * Extract an interface declaration as a type binding.
+ */
+function extractInterfaceDeclaration(node: SyntaxNode, source: string): Declaration | null {
+  // InterfaceDeclaration structure (from lezer grammar):
+  // "interface", TypeDefinition (name), [TypeParamList], [extends ...], ObjectType
+
+  const nameNode = getChild(node, "TypeDefinition");
+  const bodyNode = getChild(node, "ObjectType");
+
+  if (!nameNode || !bodyNode) return null;
+
+  // Skip generic interfaces for now
+  if (getChild(node, "TypeParamList")) {
+    throw new TSParseError("Generic interfaces not supported", node.from, node.to, "InterfaceDeclaration");
+  }
+
+  const name = getText(nameNode, source);
+  // Reuse existing ObjectType conversion from type-convert.ts
+  const typeExpr = convertTypeNodeToExpr(bodyNode, source);
+
+  return { pattern: varPattern(name), value: typeExpr };
+}
+
+/**
+ * Extract a type alias declaration as a type binding.
+ */
+function extractTypeAliasDeclaration(node: SyntaxNode, source: string): Declaration | null {
+  // TypeAliasDeclaration structure:
+  // "type", TypeDefinition (name), [TypeParamList], Equals, type, semi
+
+  const nameNode = getChild(node, "TypeDefinition");
+
+  if (!nameNode) return null;
+
+  // Skip generic type aliases for now
+  if (getChild(node, "TypeParamList")) {
+    throw new TSParseError("Generic type aliases not supported", node.from, node.to, "TypeAliasDeclaration");
+  }
+
+  const name = getText(nameNode, source);
+
+  // Find the type after "="
+  const typeNode = findTypeNode(node, source);
+  if (!typeNode) return null;
+
+  const typeExpr = convertTypeNodeToExpr(typeNode, source);
+
+  return { pattern: varPattern(name), value: typeExpr };
+}
+
+/**
+ * Find the type node after "=" in a type alias declaration.
+ */
+function findTypeNode(node: SyntaxNode, source: string): SyntaxNode | null {
+  let foundEquals = false;
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (child.type.name === "Equals" || getText(child, source) === "=") {
+      foundEquals = true;
+      continue;
+    }
+    if (foundEquals && child.type.name !== ";") {
+      return child; // Return first non-semicolon node after =
+    }
+  }
+  return null;
 }
 
 // ============================================================================

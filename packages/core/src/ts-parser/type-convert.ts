@@ -50,6 +50,19 @@ function getAllChildren(node: SyntaxNode): SyntaxNode[] {
 }
 
 /**
+ * Check if a property has the optional modifier (?).
+ */
+function hasOptionalModifier(node: SyntaxNode, source: string): boolean {
+  // Look for "?" token after property name
+  for (let child = node.firstChild; child; child = child.nextSibling) {
+    if (getText(child, source) === "?") return true;
+    // Stop at TypeAnnotation (: comes after ?)
+    if (child.type.name === "TypeAnnotation") break;
+  }
+  return false;
+}
+
+/**
  * Convert a TypeScript type name to an Expr referencing the builtin type.
  */
 function convertTypeName(name: string): Expr {
@@ -161,7 +174,7 @@ export function convertTypeNodeToExpr(
       return call(varRef("intersectionType"), ...args);
     }
 
-    // Object type: { x: number, y: string }
+    // Object type: { x: number, y: string, z?: boolean }
     case "ObjectType": {
       const args: Expr[] = [varRef("object")];
       const properties = getChildren(node, "PropertyType");
@@ -169,14 +182,24 @@ export function convertTypeNodeToExpr(
         const nameNode = getChild(prop, "PropertyName") || prop.firstChild;
         if (nameNode) {
           const name = getText(nameNode, source);
+
+          // Check for optional modifier (? after property name)
+          const isOptional = hasOptionalModifier(prop, source);
+
           // Find the type annotation (after the :)
           const typeNode = getChild(prop, "TypeAnnotation");
-          const propTypeExpr = typeNode
+          let propTypeExpr = typeNode
             ? convertTypeNodeToExpr(
                 typeNode.firstChild?.nextSibling || typeNode,
                 source
               )
             : varRef("any");
+
+          // Optional properties: union with undefined
+          if (isOptional) {
+            propTypeExpr = call(varRef("unionType"), propTypeExpr, varRef("undefined"));
+          }
+
           args.push(call(varRef("hasFieldType"), str(name), propTypeExpr));
         }
       }
