@@ -26,7 +26,7 @@ import {
   hasField,
   elements,
   resetConstraintVarCounter,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 describe("TypeScript Declaration Loader", () => {
   beforeEach(() => {

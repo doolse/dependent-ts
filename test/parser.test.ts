@@ -11,7 +11,7 @@ import {
   LexerError,
   ParseError,
   exprToString,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 function evalTo(source: string): unknown {
   const result = parseAndRun(source);

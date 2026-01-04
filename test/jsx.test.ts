@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { parse } from "../src/parser";
-import { exprToString } from "../src/expr";
-import { compile } from "../src/codegen";
+import { parse } from "@dependent-ts/core";
+import { exprToString } from "@dependent-ts/core";
+import { compile } from "@dependent-ts/core";
 
 describe("JSX Parsing", () => {
   describe("Basic elements", () => {

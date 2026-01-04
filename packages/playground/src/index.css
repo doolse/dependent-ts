@@ -1,0 +1,46 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+}
+
+/* FlexLayout theme overrides */
+.flexlayout__layout {
+  --color-text: #e5e7eb;
+  --color-background: #1f2937;
+  --color-1: #374151;
+  --color-2: #4b5563;
+  --color-3: #6b7280;
+  --color-tabset-background: #111827;
+  --color-tabset-divider-line: #374151;
+  --color-border: #374151;
+  --color-tab: #9ca3af;
+  --color-tab-selected: #e5e7eb;
+  --color-tab-selected-background: #374151;
+  --color-tab-button: #9ca3af;
+  --color-tab-button-focus: #e5e7eb;
+  --color-overflow: #9ca3af;
+  --color-drag-rect: #60a5fa;
+  --color-drag-rect-border: #3b82f6;
+  --color-splitter: #374151;
+  --color-splitter-hover: #4b5563;
+  --color-splitter-drag: #60a5fa;
+}
+
+.flexlayout__tab {
+  background-color: #1f2937;
+}
+
+/* CodeMirror styling */
+.cm-editor {
+  height: 100%;
+}
+
+.cm-scroller {
+  overflow: auto;
+}

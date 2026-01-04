@@ -21,8 +21,8 @@ import {
   stage,
   compile,
   exprToString,
-} from "../src/index";
-import { isNow, isLater } from "../src/svalue";
+} from "@dependent-ts/core";
+import { isNow, isLater } from "@dependent-ts/core";
 
 describe("Recursive Functions", () => {
   describe("Basic Recursion", () => {

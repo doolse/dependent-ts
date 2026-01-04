@@ -3,9 +3,9 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parseTS, parseTSExpr, parseTSType, TSParseError } from "../src/ts-parser";
-import { exprToString } from "../src/expr";
-import { constraintToString, implies, isNumber, isString, isBool, isNull, or, and, hasField, isObject, isArray, elements, equals } from "../src/constraint";
+import { parseTS, parseTSExpr, parseTSType, TSParseError } from "@dependent-ts/core";
+import { exprToString } from "@dependent-ts/core";
+import { constraintToString, implies, isNumber, isString, isBool, isNull, or, and, hasField, isObject, isArray, elements, equals } from "@dependent-ts/core";
 
 describe("parseTSExpr - Literals", () => {
   it("parses number literals", () => {

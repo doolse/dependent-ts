@@ -7,7 +7,7 @@ import {
   getParameterValues,
   applyTemplate,
   ClusterableSpec,
-} from "../src/js-clustering";
+} from "@dependent-ts/core/js-clustering";
 import {
   JSExpr,
   jsLit,
@@ -19,7 +19,7 @@ import {
   jsArray,
   jsMethod,
   jsArrow,
-} from "../src/js-ast";
+} from "@dependent-ts/core";
 
 describe("JS Clustering", () => {
   describe("compareJSExprs", () => {

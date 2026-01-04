@@ -27,7 +27,7 @@ import {
   equals,
   elements,
   isFunction,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 describe("Constraint Operations", () => {
   beforeEach(() => {

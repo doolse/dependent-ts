@@ -61,7 +61,7 @@ This enables partial evaluation: what can be computed at compile-time is compute
 
 ```typescript
 // @run
-import { stage, isNow, isLater, add, num, runtime, constraintToString } from "../src/index";
+import { stage, isNow, isLater, add, num, runtime, constraintToString } from "@dependent-ts/core";
 
 // All inputs known → result is Now
 const allKnown = stage(add(num(2), num(3)));
@@ -131,7 +131,7 @@ type Constraint =
 
 ```typescript
 // @run
-import { isNumber, isString, and, or, gt, equals, hasField, constraintToString } from "../src/index";
+import { isNumber, isString, and, or, gt, equals, hasField, constraintToString } from "@dependent-ts/core";
 
 // Positive number: number & x > 0
 const positiveNumber = and(isNumber, gt(0));
@@ -160,7 +160,7 @@ console.log(constraintToString(stringOrNumber));
 
 ```typescript
 // @run
-import { implies, isNumber, gt, gte, equals, and } from "../src/index";
+import { implies, isNumber, gt, gte, equals, and } from "@dependent-ts/core";
 
 // x > 5 implies x > 0 (narrower constraint implies broader)
 console.log(implies(gt(5), gt(0)));
@@ -181,7 +181,7 @@ console.log(implies(gt(0), gt(5)));
 
 ```typescript
 // @run
-import { simplify, and, or, isNumber, isString, gt, lt, constraintToString, isNever } from "../src/index";
+import { simplify, and, or, isNumber, isString, gt, lt, constraintToString, isNever } from "@dependent-ts/core";
 
 // Flattens nested AND
 const nested = and(and(isNumber, gt(0)), gt(5));
@@ -205,7 +205,7 @@ console.log(isNever(impossibleBounds));
 
 ```typescript
 // @run
-import { unify, isNumber, gt, constraintToString } from "../src/index";
+import { unify, isNumber, gt, constraintToString } from "@dependent-ts/core";
 
 // Unifying constraints intersects them
 const unified = unify(isNumber, gt(0));
@@ -219,7 +219,7 @@ For recursive data structures (like JSON or linked lists), use `rec` and `recVar
 
 ```typescript
 // @run
-import { rec, recVar, or, isNull, isNumber, isString, isBool, isArray, isObject, hasField, elements, and, constraintToString } from "../src/index";
+import { rec, recVar, or, isNull, isNumber, isString, isBool, isArray, isObject, hasField, elements, and, constraintToString } from "@dependent-ts/core";
 
 // JSON type: null | number | string | boolean | JSON[] | { [k]: JSON }
 const jsonType = rec("JSON", or(
@@ -265,7 +265,7 @@ type Value =
 
 ```typescript
 // @run
-import { constraintOf, numberVal, stringVal, objectVal, constraintToString } from "../src/index";
+import { constraintOf, numberVal, stringVal, objectVal, constraintToString } from "@dependent-ts/core";
 
 // Numbers get their literal type
 const five = numberVal(5);
@@ -284,7 +284,7 @@ console.log(constraintToString(constraintOf(person)));
 
 ```typescript
 // @run
-import { valueSatisfies, numberVal, isNumber, gt, and } from "../src/index";
+import { valueSatisfies, numberVal, isNumber, gt, and } from "@dependent-ts/core";
 
 const five = numberVal(5);
 
@@ -335,7 +335,7 @@ type Expr =
 
 ```typescript
 // @run
-import { letExpr, fn, add, varRef, call, num, exprToString } from "../src/index";
+import { letExpr, fn, add, varRef, call, num, exprToString } from "@dependent-ts/core";
 
 // Build: let double = fn(x) => x + x in double(5)
 const expr = letExpr("double",
@@ -400,7 +400,7 @@ The `StagedClosure` type represents functions with their captured environment, e
 
 ```typescript
 // @run
-import { stage, num, str, isNow } from "../src/index";
+import { stage, num, str, isNow } from "@dependent-ts/core";
 
 console.log(isNow(stage(num(42)).svalue));
 // Output: true
@@ -413,7 +413,7 @@ console.log(isNow(stage(str("hello")).svalue));
 
 ```typescript
 // @run
-import { stage, add, num, isNow, valueToString } from "../src/index";
+import { stage, add, num, isNow, valueToString } from "@dependent-ts/core";
 
 const result = stage(add(num(2), num(3)));
 if (isNow(result.svalue)) {
@@ -426,7 +426,7 @@ if (isNow(result.svalue)) {
 
 ```typescript
 // @run
-import { stage, add, num, runtime, isLater, exprToString } from "../src/index";
+import { stage, add, num, runtime, isLater, exprToString } from "@dependent-ts/core";
 
 // runtime() marks a value as Later
 const result = stage(add(runtime(num(0), "x"), num(5)));
@@ -442,7 +442,7 @@ if (isLater(result.svalue)) {
 
 ```typescript
 // @run
-import { stage, comptime, add, num, isNow } from "../src/index";
+import { stage, comptime, add, num, isNow } from "@dependent-ts/core";
 
 // This works - all inputs are known
 const result = stage(comptime(add(num(2), num(3))));
@@ -454,7 +454,7 @@ console.log(isNow(result.svalue));
 
 ```typescript
 // @run
-import { stage, runtime, num, isLater, exprToString } from "../src/index";
+import { stage, runtime, num, isLater, exprToString } from "@dependent-ts/core";
 
 const result = stage(runtime(num(0), "userInput"));
 if (isLater(result.svalue)) {
@@ -469,7 +469,7 @@ When the condition of an `if` is Later, both branches are evaluated and the resu
 
 ```typescript
 // @run
-import { stage, ifExpr, gtExpr, varRef, num, runtime, letExpr, isLater, constraintToString, exprToString } from "../src/index";
+import { stage, ifExpr, gtExpr, varRef, num, runtime, letExpr, isLater, constraintToString, exprToString } from "@dependent-ts/core";
 
 // if x > 0 then x else 0, where x is runtime
 const expr = letExpr("x", runtime(num(0), "x"),
@@ -492,7 +492,7 @@ Recursive functions with Later arguments use coinductive cycle detection:
 
 ```typescript
 // @run
-import { parse, stage, isLater, exprToString, constraintToString } from "../src/index";
+import { parse, stage, isLater, exprToString, constraintToString } from "@dependent-ts/core";
 
 const factorialExpr = parse(`
   let factorial = fn fac(n) =>
@@ -525,7 +525,7 @@ When a function is called:
 
 ```typescript
 // @run
-import { parse, stage, constraintToString, isNow } from "../src/index";
+import { parse, stage, constraintToString, isNow } from "@dependent-ts/core";
 
 // Calling with a specific value gives precise result constraint
 const precise = stage(parse("let f = fn(x) => x + 1 in f(5)"));
@@ -544,7 +544,7 @@ Errors are caught when analyzing the body with actual argument types:
 
 ```typescript
 // @run
-import { parse, stage } from "../src/index";
+import { parse, stage } from "@dependent-ts/core";
 
 // This fails because toString returns string, but + 1 needs number
 try {
@@ -597,7 +597,7 @@ Control flow narrows types in branches. When you write `if x > 0 then ... else .
 
 ```typescript
 // @run
-import { extractAllRefinements, gtExpr, varRef, num, constraintToString } from "../src/index";
+import { extractAllRefinements, gtExpr, varRef, num, constraintToString } from "@dependent-ts/core";
 
 // From condition: x > 5
 const condition = gtExpr(varRef("x"), num(5));
@@ -617,7 +617,7 @@ For else-branches, refinements are negated:
 
 ```typescript
 // @run
-import { extractAllRefinements, negateRefinement, gtExpr, varRef, num, constraintToString } from "../src/index";
+import { extractAllRefinements, negateRefinement, gtExpr, varRef, num, constraintToString } from "@dependent-ts/core";
 
 const condition = gtExpr(varRef("x"), num(5));
 const refinement = extractAllRefinements(condition);
@@ -637,7 +637,7 @@ if (xRefinement) {
 
 ```typescript
 // @run
-import { narrowOr, or, and, isObject, hasField, isString, equals, constraintToString, isNever } from "../src/index";
+import { narrowOr, or, and, isObject, hasField, isString, equals, constraintToString, isNever } from "@dependent-ts/core";
 
 // Type: { kind: "circle", radius: number } | { kind: "square", side: number }
 const circleType = and(isObject, hasField("kind", equals("circle")));
@@ -662,7 +662,7 @@ The code generator converts expressions (typically residuals from staging) to Ja
 
 ```typescript
 // @run
-import { compile, parse } from "../src/index";
+import { compile, parse } from "@dependent-ts/core";
 
 // Fully known at compile time → evaluates to result
 console.log(compile(parse("1 + 2")));
@@ -684,7 +684,7 @@ console.log(compile(parse("if runtime(x: 0) > 0 then runtime(x: 0) else 0")));
 
 ```typescript
 // @run
-import { compile, parse } from "../src/index";
+import { compile, parse } from "@dependent-ts/core";
 
 // Fully known at compile time → just the result
 console.log(compile(parse("2 + 3")));
@@ -701,7 +701,7 @@ Nested lets become sequential statements in functions:
 
 ```typescript
 // @run
-import { generateJS, fn, letExpr, add, varRef, num } from "../src/index";
+import { generateJS, fn, letExpr, add, varRef, num } from "@dependent-ts/core";
 
 const func = fn(["x"],
   letExpr("a", add(varRef("x"), num(1)),
@@ -727,7 +727,7 @@ Some builtins are desugared to idiomatic JS:
 
 ```typescript
 // @run
-import { compile, parse } from "../src/index";
+import { compile, parse } from "@dependent-ts/core";
 
 // print() becomes console.log()
 console.log(compile(parse("print(42)")));
@@ -916,7 +916,7 @@ trust(value, type)    // Type refinement without check
 
 ```typescript
 // @run
-import { parse, exprToString } from "../src/index";
+import { parse, exprToString } from "@dependent-ts/core";
 
 const expr = parse("let x = 5 in x * 2");
 console.log(exprToString(expr));
@@ -933,7 +933,7 @@ console.log(exprToString(fn));
 
 ```typescript
 // @run
-import { parseAndRun, valueToString, constraintToString } from "../src/index";
+import { parseAndRun, valueToString, constraintToString } from "@dependent-ts/core";
 
 const result = parseAndRun("let double = fn(x) => x * 2 in double(21)");
 console.log(valueToString(result.value));
@@ -948,7 +948,7 @@ console.log(constraintToString(result.constraint));
 
 ```typescript
 // @run
-import { parseAndCompile } from "../src/index";
+import { parseAndCompile } from "@dependent-ts/core";
 
 console.log(parseAndCompile("1 + 2 * 3"));
 // Output: 7
@@ -989,7 +989,7 @@ export function resetVarCounter(): void {
 **Current behavior:**
 ```typescript
 // @run
-import { simplify, and, gt, constraintToString } from "../src/index";
+import { simplify, and, gt, constraintToString } from "@dependent-ts/core";
 
 // These don't simplify to just gt(10)
 const c = simplify(and(gt(5), gt(10)));
@@ -1034,7 +1034,7 @@ if (__value === null || __value === undefined) {
 
 ```typescript
 // @run
-import { extractAllRefinements, orExpr, gtExpr, ltExpr, varRef, num } from "../src/index";
+import { extractAllRefinements, orExpr, gtExpr, ltExpr, varRef, num } from "@dependent-ts/core";
 
 // x > 5 || x < 0
 const condition = orExpr(gtExpr(varRef("x"), num(5)), ltExpr(varRef("x"), num(0)));

@@ -50,7 +50,7 @@ import {
 
   // Parser
   parseAndRun,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 // ============================================================================
 // Pure Evaluation: assert
@@ -376,7 +376,7 @@ describe("Inline trust(expr) Syntax", () => {
 // From docs/constraints-as-types.md: "fn safeDiv(x, y) where y != 0 = x / y"
 // ============================================================================
 
-import { parse, neq, div } from "../src/index";
+import { parse, neq, div } from "@dependent-ts/core";
 
 describe("Function Where Clauses", () => {
   describe("Where clause syntax (not implemented)", () => {
@@ -415,7 +415,7 @@ describe("Custom Error Messages", () => {
 // From docs/comptime-expression.md
 // ============================================================================
 
-import { comptime, block, isStagedClosure, parseAndCompile } from "../src/index";
+import { comptime, block, isStagedClosure, parseAndCompile } from "@dependent-ts/core";
 
 describe("comptime(assert(x, T)) - Type Refinement", () => {
   describe("Basic comptime assert behavior", () => {

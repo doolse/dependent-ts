@@ -15,7 +15,7 @@ import {
   constraintToString,
   isNull,
   implies,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 describe("print() builtin", () => {
   let consoleSpy: ReturnType<typeof vi.spyOn>;

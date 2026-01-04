@@ -52,7 +52,7 @@ import {
 
   // Parser
   parse,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 beforeEach(() => {
   resetVarCounter();

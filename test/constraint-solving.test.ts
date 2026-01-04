@@ -32,7 +32,7 @@ import {
   ConstraintScheme,
   generalize,
   instantiate,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 // ============================================================================
 // Substitution Application

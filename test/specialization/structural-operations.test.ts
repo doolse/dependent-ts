@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parse, compile, parseAndRun, stage, isNow, isLater } from "../../src/index";
+import { parse, compile, parseAndRun, stage, isNow, isLater } from "@dependent-ts/core";
 
 describe("Structural Operations Specialization", () => {
   describe("Deep equality", () => {

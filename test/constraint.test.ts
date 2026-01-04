@@ -57,7 +57,7 @@ import {
   constraintOf,
   widenConstraint,
   valueSatisfies,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 // =============================================================================
 // Classification Hierarchy and Implications

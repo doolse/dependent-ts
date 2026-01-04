@@ -63,7 +63,7 @@ import {
   run,
   runValue,
   TypeError,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 describe("Constraint Tests", () => {
   it("simplify flattens nested ANDs", () => {
@@ -708,8 +708,8 @@ describe("Discriminated Union Tests", () => {
 // From docs/constraints-as-types.md: Tuples use elementAt for position-specific types
 // ============================================================================
 
-import { elementAt, length as lengthC, runtime } from "../src/index";
-import { stage, isLater } from "../src/index";
+import { elementAt, length as lengthC, runtime } from "@dependent-ts/core";
+import { stage, isLater } from "@dependent-ts/core";
 
 describe("Tuples and Element Access", () => {
   describe("Tuple constraints", () => {

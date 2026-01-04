@@ -13,7 +13,7 @@ import {
   generateJS,
   exprToString,
   patternToString,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 describe("Destructuring Patterns", () => {
   describe("pattern constructors", () => {

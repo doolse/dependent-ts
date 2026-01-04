@@ -14,6 +14,11 @@
 
 import * as fs from "fs";
 import * as path from "path";
+import { fileURLToPath } from "url";
+import { execSync } from "child_process";
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 interface CodeBlock {
   file: string;
@@ -106,7 +111,7 @@ function collectAllImports(blocks: CodeBlock[]): string[] {
     const { imports } = extractImports(block.code);
     for (const imp of imports) {
       // Normalize import path
-      const normalized = imp.replace(/from\s+["']\.\.\/src\/index["']/, 'from "../src/index"');
+      const normalized = imp.replace(/from\s+["']@dependent-ts\/core["']/, 'from "@dependent-ts/core"');
       importSet.add(normalized);
     }
   }
@@ -134,7 +139,7 @@ function mergeImports(imports: string[]): string {
   if (allNames.size === 0) return "";
 
   const sortedNames = Array.from(allNames).sort();
-  return `import { ${sortedNames.join(", ")} } from "../src/index";`;
+  return `import { ${sortedNames.join(", ")} } from "../packages/core/src/index.ts";`;
 }
 
 /**
@@ -221,7 +226,7 @@ async function main() {
   if (args.length > 0) {
     mdFiles = args;
   } else {
-    const docsDir = path.dirname(__filename);
+    const docsDir = __dirname;
     mdFiles = fs
       .readdirSync(docsDir)
       .filter((f) => f.endsWith(".md"))
@@ -257,10 +262,9 @@ async function main() {
     );
     fs.writeFileSync(testFile, testCode);
 
-    // Run with ts-node
-    const { execSync } = require("child_process");
+    // Run with tsx
     try {
-      const output = execSync(`npx ts-node ${testFile}`, {
+      const output = execSync(`npx tsx ${testFile}`, {
         encoding: "utf-8",
         cwd: path.dirname(path.dirname(mdFile)),
       });

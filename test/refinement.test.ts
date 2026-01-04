@@ -47,7 +47,7 @@ import {
   // Refinement
   extractRefinement,
   extractTypeGuard,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 // =============================================================================
 // Refinement Context
@@ -186,7 +186,7 @@ describe("Evaluation with Control Flow Refinement", () => {
 // Advanced Control Flow Refinement
 // ============================================================================
 
-import { or, simplify } from "../src/index";
+import { or, simplify } from "@dependent-ts/core";
 
 describe("Advanced Control Flow Refinement", () => {
   describe("OR elimination", () => {

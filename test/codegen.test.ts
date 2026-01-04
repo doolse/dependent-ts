@@ -41,7 +41,7 @@ import {
   generateJS,
   compile,
   resetVarCounter,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 beforeEach(() => {
   resetVarCounter();
@@ -408,7 +408,7 @@ describe("Integration Tests", () => {
 // Args Destructuring Optimization
 // ============================================================================
 
-import { letPatternExpr, arrayPattern, varPattern, recfn } from "../src/index";
+import { letPatternExpr, arrayPattern, varPattern, recfn } from "@dependent-ts/core";
 
 describe("Args Destructuring Optimization", () => {
   it("transforms fn() with args destructuring to named params", () => {
@@ -513,7 +513,7 @@ describe("Args Destructuring Optimization", () => {
 // Code Generation for Complex Cases
 // ============================================================================
 
-import { stage, isLater, assertExpr, parse } from "../src/index";
+import { stage, isLater, assertExpr, parse } from "@dependent-ts/core";
 
 describe("Code Generation for Complex Cases", () => {
   describe("Residual code for runtime assertions", () => {

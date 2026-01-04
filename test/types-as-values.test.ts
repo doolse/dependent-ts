@@ -44,7 +44,7 @@ import {
   // Staged evaluator
   stage,
   StagingError,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 // ============================================================================
 // Type Values
@@ -410,7 +410,7 @@ describe("Integration: Types as Values", () => {
 // should be expressible as normal function syntax
 // ============================================================================
 
-import { fn, letExpr, ifExpr, bool, num, eq } from "../src/index";
+import { fn, letExpr, ifExpr, bool, num, eq } from "@dependent-ts/core";
 
 describe("Type-Level Programming", () => {
   describe("Type constructors as functions", () => {

@@ -23,7 +23,7 @@ import {
 
   // Evaluator
   run,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 describe("Function Type Inference", () => {
   describe("Function Constraints", () => {
@@ -93,7 +93,7 @@ describe("Function Type Inference", () => {
 // Goal: "let id = fn(x) => x" should infer "forall T. T -> T"
 // ============================================================================
 
-import { equals, array, index } from "../src/index";
+import { equals, array, index } from "@dependent-ts/core";
 
 describe("Polymorphic Type Inference", () => {
   describe("Identity function polymorphism", () => {

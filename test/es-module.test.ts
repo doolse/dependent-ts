@@ -8,7 +8,7 @@ import {
   runValue,
   resetVarCounter,
   StringValue,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 beforeEach(() => {
   resetVarCounter();

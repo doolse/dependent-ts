@@ -2,9 +2,15 @@
  * Pure interpreter with constraints-as-types.
  */
 
-// Core constraint system
-export {
+// Core constraint system - types
+export type {
   Constraint,
+  Substitution,
+  ConstraintScheme,
+} from "./constraint";
+
+// Core constraint system - values
+export {
   isNumber,
   isString,
   isBool,
@@ -47,20 +53,18 @@ export {
   rec,
   recVar,
   // Constraint solving
-  Substitution,
   emptySubstitution,
   applySubstitution,
   freeConstraintVars,
   solve,
   freshCVar,
   resetConstraintVarCounter,
-  ConstraintScheme,
   generalize,
   instantiate,
 } from "./constraint";
 
-// Values
-export {
+// Values - types
+export type {
   Value,
   NumberValue,
   StringValue,
@@ -70,6 +74,10 @@ export {
   ArrayValue,
   ClosureValue,
   TypeValue,
+} from "./value";
+
+// Values - functions
+export {
   numberVal,
   stringVal,
   boolVal,
@@ -86,8 +94,8 @@ export {
   valueToRaw,
 } from "./value";
 
-// Expressions
-export {
+// Expressions - types
+export type {
   Expr,
   LitExpr,
   VarExpr,
@@ -110,11 +118,18 @@ export {
   TrustExpr,
   BinOp,
   UnaryOp,
-  // Patterns for destructuring
   Pattern,
   VarPattern,
   ArrayPattern,
   ObjectPattern,
+  AssertCondExpr,
+  MethodCallExpr,
+  ImportExpr,
+  TypeOfExpr,
+} from "./expr";
+
+// Expressions - functions
+export {
   varPattern,
   arrayPattern,
   objectPattern,
@@ -163,15 +178,13 @@ export {
   importExpr,
   typeOfExpr,
   exprToString,
-  AssertCondExpr,
-  MethodCallExpr,
-  ImportExpr,
-  TypeOfExpr,
 } from "./expr";
 
-// Method Registry
+// Method Registry - types
+export type { MethodDef } from "./methods";
+
+// Method Registry - values
 export {
-  MethodDef,
   stringMethods,
   arrayMethods,
   numberMethods,
@@ -179,17 +192,23 @@ export {
   getMethodNames,
 } from "./methods";
 
-// Environment
-export {
+// Environment - types
+export type {
   Binding,
   Env,
-  RefinementContext,
 } from "./env";
 
-// Builtins
-export {
+// Environment - classes
+export { RefinementContext } from "./env";
+
+// Builtins - types
+export type {
   EvalResult,
   BuiltinOp,
+} from "./builtins";
+
+// Builtins - values/classes
+export {
   TypeError,
   AssertionError,
   requireConstraint,
@@ -197,9 +216,11 @@ export {
   getUnaryOp,
 } from "./builtins";
 
-// Refinement
+// Refinement - types
+export type { Refinement } from "./refinement";
+
+// Refinement - functions
 export {
-  Refinement,
   extractRefinement,
   extractAllRefinements,
   extractTypeGuard,
@@ -209,8 +230,8 @@ export {
   mergeRefinements,
 } from "./refinement";
 
-// Staged Values
-export {
+// Staged Values - types
+export type {
   SValue,
   Now,
   Later,
@@ -219,6 +240,10 @@ export {
   LaterOrigin,
   SEnv,
   SBinding,
+} from "./svalue";
+
+// Staged Values - functions
+export {
   now,
   later,
   laterArray,
@@ -239,10 +264,12 @@ export {
   svalueToString,
 } from "./svalue";
 
-// Staged Evaluator
+// Staged Evaluator - types
+export type { SEvalResult } from "./staged-evaluate";
+
+// Staged Evaluator - values/classes
 export {
   StagingError,
-  SEvalResult,
   stagingEvaluate,
   stage,
   stageToExpr,
@@ -254,24 +281,27 @@ export {
   runValue,
 } from "./staged-evaluate";
 
-// Code Generation
+// Code Generation - types
+export type { CodeGenOptions } from "./codegen";
+
+// Code Generation - functions
 export {
-  CodeGenOptions,
   generateJS,
   generateModuleWithImports,
   compile,
 } from "./codegen";
 
-// Lexer
+// Lexer - types
+export type { Token, TokenType } from "./lexer";
+
+// Lexer - classes/functions
 export {
-  Token,
-  TokenType,
   Lexer,
   LexerError,
   tokenize,
 } from "./lexer";
 
-// Parser
+// Parser - classes
 export {
   Parser,
   ParseError,
@@ -280,22 +310,28 @@ export {
   parseAndCompile,
 } from "./parser";
 
-// TypeScript Declaration Loader
+// TypeScript Declaration Loader - types
+export type { ModuleDeclarations } from "./ts-loader";
+
+// TypeScript Declaration Loader - classes/functions
 export {
-  ModuleDeclarations,
   TSDeclarationLoader,
   loadModule,
   loadFromSource,
   loadExports,
 } from "./ts-loader";
 
-// JS AST Types
-export {
+// JS AST Types - types
+export type {
   JSExpr,
   JSStmt,
   JSModule,
   JSImportDecl,
   JSExportDefault,
+} from "./js-ast";
+
+// JS AST Types - functions
+export {
   jsLit,
   jsVar,
   jsBinop,
@@ -323,9 +359,11 @@ export {
   jsModule,
 } from "./js-ast";
 
-// JS Printer
+// JS Printer - types
+export type { PrintOptions } from "./js-printer";
+
+// JS Printer - functions
 export {
-  PrintOptions,
   printExpr,
   printStmts,
   printModule,

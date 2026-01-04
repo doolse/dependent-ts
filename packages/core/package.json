@@ -1,0 +1,21 @@
+{
+  "name": "@dependent-ts/core",
+  "version": "1.0.0",
+  "type": "module",
+  "main": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./js-clustering": "./src/js-clustering.ts"
+  },
+  "dependencies": {
+    "@lezer/common": "^1.2.0",
+    "@lezer/javascript": "^1.4.0",
+    "cli-color": "^2.0.0",
+    "shallow-equal-object": "^1.1.1",
+    "typescript": "^5.0.0"
+  },
+  "devDependencies": {
+    "@types/cli-color": "^2.0.0",
+    "@types/node": "^20.0.0"
+  }
+}

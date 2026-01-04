@@ -1,37 +1,24 @@
 {
-  "name": "codeincode",
+  "name": "dependent-ts",
   "version": "1.0.0",
-  "description": "",
-  "main": "index.js",
+  "private": true,
+  "type": "module",
   "scripts": {
-    "tsc": "tsc",
-    "prod": "tsc && node ./build/app.js",
-    "repl": "npx ts-node src/repl.ts",
-    "compile": "npx ts-node src/cli.ts",
+    "tsc": "tsc -b",
+    "repl": "npx tsx packages/core/src/repl.ts",
+    "compile": "npx tsx packages/core/src/cli.ts",
     "test": "vitest run",
-    "example:build": "npx ts-node src/cli.ts examples/counter.dep -o examples/counter.js && npx ts-node src/cli.ts examples/todo.dep -o examples/todo.js && npx ts-node src/cli.ts examples/reflection.dep -o examples/reflection.js && npx ts-node src/cli.ts examples/validator.dep -o examples/validator.js && npx ts-node src/cli.ts examples/calculator.dep -o examples/calculator.js && npx ts-node src/cli.ts examples/dashboard.dep -o examples/dashboard.js",
+    "example:build": "npx tsx packages/core/src/cli.ts examples/counter.dep -o examples/counter.js && npx tsx packages/core/src/cli.ts examples/todo.dep -o examples/todo.js && npx tsx packages/core/src/cli.ts examples/reflection.dep -o examples/reflection.js && npx tsx packages/core/src/cli.ts examples/validator.dep -o examples/validator.js && npx tsx packages/core/src/cli.ts examples/calculator.dep -o examples/calculator.js && npx tsx packages/core/src/cli.ts examples/dashboard.dep -o examples/dashboard.js",
     "example:serve": "npx serve examples -p 3333",
     "example": "npm run example:build && npm run example:serve",
-    "docs:verify": "npx ts-node docs/run-examples.ts"
-  },
-  "bin": {
-    "depsc": "./build/cli.js"
-  },
-  "author": "",
-  "license": "ISC",
-  "dependencies": {
-    "@lezer/common": "^1.2.0",
-    "@lezer/javascript": "^1.4.0",
-    "cli-color": "^2.0.0",
-    "shallow-equal-object": "^1.1.1",
-    "typescript": "^5.0.0"
+    "docs:verify": "npx tsx docs/run-examples.ts",
+    "dev": "pnpm -C packages/playground dev",
+    "build:playground": "pnpm -C packages/playground build"
   },
   "devDependencies": {
-    "@types/cli-color": "^2.0.0",
     "@types/node": "^20.0.0",
-    "@types/react": "^19.2.7",
-    "@types/react-dom": "^19.2.3",
-    "ts-node": "^10.9.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.0.0",
     "vitest": "^4.0.16"
   }
 }

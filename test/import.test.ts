@@ -12,7 +12,7 @@ import {
   isLater,
   loadExports,
   constraintToString,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 describe("Import Expression", () => {
   describe("parsing", () => {

@@ -12,7 +12,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parseAndCompile } from "../src/index";
+import { parseAndCompile } from "@dependent-ts/core";
 
 describe("no unwanted specialization", () => {
   describe("helper functions should not be inlined", () => {

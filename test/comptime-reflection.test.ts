@@ -42,7 +42,7 @@ import {
   isNow,
   isLater,
   parseAndCompile,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 // ============================================================================
 // append() Tests
@@ -680,8 +680,8 @@ describe("typeOf() builtin", () => {
 // typeOf() Expression Syntax Tests
 // ============================================================================
 
-import { parse, parseAndRun } from "../src/parser";
-import { typeOfExpr } from "../src/expr";
+import { parse, parseAndRun } from "@dependent-ts/core";
+import { typeOfExpr } from "@dependent-ts/core";
 
 describe("typeOf() expression syntax", () => {
   it("parses typeOf(expr) syntax", () => {
@@ -816,7 +816,7 @@ describe("extractAllFieldNames() handles complex constraints", () => {
 // withDefault() Specialization Tests
 // ============================================================================
 
-import { compile } from "../src/index";
+import { compile } from "@dependent-ts/core";
 
 describe("withDefault() specialization based on typeOf", () => {
   it("specializes withDefault based on typeOf(x) with nullable types", () => {

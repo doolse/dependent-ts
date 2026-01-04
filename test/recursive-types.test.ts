@@ -21,7 +21,7 @@ import {
   simplify,
   rec,
   recVar,
-} from "../src/index";
+} from "@dependent-ts/core";
 
 // ============================================================================
 // Basic rec/recVar Construction
@@ -211,7 +211,7 @@ describe("Recursive Type Edge Cases", () => {
 // From docs/constraints-as-types.md: List, Tree types
 // ============================================================================
 
-import { run, obj, nil, num, ifExpr, eq, varRef, letExpr, fn, call } from "../src/index";
+import { run, obj, nil, num, ifExpr, eq, varRef, letExpr, fn, call } from "@dependent-ts/core";
 
 describe("Recursive Type Construction", () => {
   describe("List type construction", () => {
