@@ -335,3 +335,13 @@ export {
 export {
   generateESModule,
 } from "./svalue-module-generator";
+
+// Lezer-based TypeScript/JSX Parser
+export {
+  parseTS,
+  parseTSExpr,
+  parseTSType,
+  TSParseError,
+  convertTypeNode,
+  constraintToExpr,
+} from "./ts-parser";
