@@ -1543,6 +1543,18 @@ function generateRecFnExpr(name: string, params: string[], body: Expr, ctx: Modu
  *                      This ensures recursive calls match the binding name.
  */
 function generateDeferredClosure(sc: StagedClosure, ctx: ModuleGenContext, bindingName?: string): JSExpr {
+  // Error if closure has comptimeParams but no call sites to derive values from
+  // typeOf(x) and comptime(x) require concrete constraints, which only exist at call sites
+  if (sc.comptimeParams && sc.comptimeParams.size > 0) {
+    const params = Array.from(sc.comptimeParams).join(", ");
+    const fnName = bindingName ?? sc.name ?? "anonymous function";
+    throw new Error(
+      `Cannot generate code for '${fnName}': parameters [${params}] are used in typeOf() or comptime() ` +
+      `but there are no call sites to derive their types from. ` +
+      `Either call the function with concrete arguments, or remove the typeOf()/comptime() usage.`
+    );
+  }
+
   // Generate generic version with Later(any) params
   // Extract params from desugared body: let [a, b] = args in body
   const { params: paramNames, body: innerBody } = extractParamsFromBody(sc.body);

@@ -950,3 +950,45 @@ describe("extractFieldConstraint() handles complex constraints", () => {
     expect(extractFieldConstraint(c, "nonexistent")).toBeNull();
   });
 });
+
+// ============================================================================
+// Now Value Let Binding Emission
+// ============================================================================
+
+describe("Now value let binding emission", () => {
+  it("emits let binding when Now body residual references bound variable", () => {
+    // This tests a bug where compound Now values (arrays/objects) would get
+    // varRef residuals to avoid inlining, but the let binding would be skipped
+    // when the body was also Now, leaving the variable undefined in generated code.
+    const code = parseAndCompile(`
+      let getThree = fn(x) => x.three in
+      let hello = fn(x) =>
+        let one = x.one in
+        let two = x.two in
+        let fl = fields(typeOf(x)) in
+        let three = getThree(x) in
+        fl
+      in hello({one: 1, two: 2, three: 3})
+    `);
+
+    // The result should contain the field names from typeOf(x)
+    expect(code).toContain('"one"');
+    expect(code).toContain('"two"');
+    expect(code).toContain('"three"');
+  });
+
+  it("errors when returning closure with typeOf(param) but no call sites", () => {
+    // When a closure uses typeOf(x) but is returned without being called,
+    // we can't derive the constraint for x, so it should error
+    expect(() => parseAndCompile(`
+      let getThree = fn(x) => x.three in
+      let hello = fn(x) =>
+        let one = x.one in
+        let two = x.two in
+        let fl = fields(typeOf(x)) in
+        let three = getThree(x) in
+        fl
+      in hello
+    `)).toThrow(/parameters \[x\] are used in typeOf\(\)/);
+  });
+});

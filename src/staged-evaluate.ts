@@ -415,6 +415,21 @@ function evalLet(
   // If the body is Now, return it directly even if the bound value was Later.
   // This handles cases like typeOf() which extract compile-time type info from Later values.
   if (isNow(bodyResult)) {
+    // If the Now body's residual references the bound variable, we need to
+    // emit a let binding. This happens when evalVariable adds varRef to compound
+    // Now values to avoid inlining large literals multiple times.
+    if (bodyResult.residual && usesVar(bodyResult.residual, name)) {
+      const valueResidual = isStagedClosure(valueResult)
+        ? deferredClosure(valueResult)
+        : svalueToResidual(valueResult);
+      return {
+        svalue: now(
+          bodyResult.value,
+          bodyResult.constraint,
+          letExpr(name, valueResidual, bodyResult.residual)
+        )
+      };
+    }
     return { svalue: bodyResult };
   }
 
