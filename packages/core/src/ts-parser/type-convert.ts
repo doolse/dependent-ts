@@ -87,8 +87,8 @@ function convertTypeName(name: string): Expr {
     case "object":
       return varRef("object");
     default:
-      // Unknown type names become any
-      return varRef("any");
+      // Unknown type names become variable references (types are first-class values)
+      return varRef(name);
   }
 }
 
