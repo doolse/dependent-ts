@@ -26,6 +26,7 @@ import {
   field,
   array,
   index,
+  block,
   comptime,
   assertExpr,
   methodCall,
@@ -36,7 +37,7 @@ import {
   arrayPattern,
   objectPattern,
 } from "../expr";
-import { convertTypeNode, constraintToExpr } from "./type-convert";
+import { convertTypeNodeToExpr } from "./type-convert";
 
 // ============================================================================
 // Error Handling
@@ -449,25 +450,33 @@ function convertConditionalExpr(node: SyntaxNode, source: string): Expr {
 /**
  * Convert an arrow function.
  */
+interface TypedParam {
+  name: string;
+  typeAnnotation?: SyntaxNode;
+}
+
 function convertArrowFunction(node: SyntaxNode, source: string): Expr {
   // Find parameter list or single parameter
   const paramList = getChild(node, "ParamList");
-  const params: string[] = [];
+  const params: TypedParam[] = [];
 
   if (paramList) {
     // Multiple parameters
     for (let child = paramList.firstChild; child; child = child.nextSibling) {
       if (child.type.name === "VariableDefinition" || child.type.name === "VariableName") {
-        // Check for type annotation
         const nameNode = getChild(child, "VariableName") || child;
-        params.push(getText(nameNode, source));
+        const name = getText(nameNode, source);
+        // Check if next sibling is a TypeAnnotation
+        const nextSibling = child.nextSibling;
+        const typeAnnotation = nextSibling?.type.name === "TypeAnnotation" ? nextSibling : undefined;
+        params.push({ name, typeAnnotation });
       }
     }
   } else {
     // Single parameter without parens
     const singleParam = node.firstChild;
     if (singleParam && singleParam.type.name === "VariableName") {
-      params.push(getText(singleParam, source));
+      params.push({ name: getText(singleParam, source) });
     }
   }
 
@@ -502,7 +511,17 @@ function convertArrowFunction(node: SyntaxNode, source: string): Expr {
     throw new TSParseError("Arrow function missing body", node.from, node.to, "ArrowFunction");
   }
 
-  return fn(params, body);
+  // Build comptime assertions for typed parameters
+  const assertions: Expr[] = [];
+  for (const param of params) {
+    if (param.typeAnnotation) {
+      const typeExpr = convertTypeNodeToExpr(param.typeAnnotation, source);
+      assertions.push(comptime(assertExpr(varRef(param.name), typeExpr)));
+    }
+  }
+
+  const wrappedBody = assertions.length > 0 ? block(...assertions, body) : body;
+  return fn(params.map(p => p.name), wrappedBody);
 }
 
 /**
@@ -513,15 +532,19 @@ function convertFunctionExpr(node: SyntaxNode, source: string): Expr {
   const nameNode = getChild(node, "VariableDefinition");
   const name = nameNode ? getText(nameNode, source) : null;
 
-  // Get parameters
+  // Get parameters with type annotations
   const paramList = getChild(node, "ParamList");
-  const params: string[] = [];
+  const params: TypedParam[] = [];
 
   if (paramList) {
     for (let child = paramList.firstChild; child; child = child.nextSibling) {
       if (child.type.name === "VariableDefinition" || child.type.name === "VariableName") {
-        const nameNode = getChild(child, "VariableName") || child;
-        params.push(getText(nameNode, source));
+        const paramNameNode = getChild(child, "VariableName") || child;
+        const paramName = getText(paramNameNode, source);
+        // Check if next sibling is a TypeAnnotation
+        const nextSibling = child.nextSibling;
+        const typeAnnotation = nextSibling?.type.name === "TypeAnnotation" ? nextSibling : undefined;
+        params.push({ name: paramName, typeAnnotation });
       }
     }
   }
@@ -534,10 +557,22 @@ function convertFunctionExpr(node: SyntaxNode, source: string): Expr {
 
   const body = convertBlockBody(bodyNode, source);
 
-  if (name) {
-    return recfn(name, params, body);
+  // Build comptime assertions for typed parameters
+  const assertions: Expr[] = [];
+  for (const param of params) {
+    if (param.typeAnnotation) {
+      const typeExpr = convertTypeNodeToExpr(param.typeAnnotation, source);
+      assertions.push(comptime(assertExpr(varRef(param.name), typeExpr)));
+    }
   }
-  return fn(params, body);
+
+  const wrappedBody = assertions.length > 0 ? block(...assertions, body) : body;
+  const paramNames = params.map(p => p.name);
+
+  if (name) {
+    return recfn(name, paramNames, wrappedBody);
+  }
+  return fn(paramNames, wrappedBody);
 }
 
 /**
@@ -892,8 +927,7 @@ function wrapInLets(declarations: Declaration[], body: Expr, source: string): Ex
 
     // If there's a type annotation, wrap in comptime(assert())
     if (decl.typeAnnotation) {
-      const constraint = convertTypeNode(decl.typeAnnotation, source);
-      const typeExpr = constraintToExpr(constraint);
+      const typeExpr = convertTypeNodeToExpr(decl.typeAnnotation, source);
       value = comptime(assertExpr(value, typeExpr));
     }
 

@@ -5,7 +5,7 @@
  * Each builtin has a name, type signature, and evaluation handler.
  */
 
-import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isArray, isFunction, isObject, and, or, elements, isType, isTypeC, hasField, extractAllFieldNames, extractFieldConstraint, rec, recVar, equals, elementAt, length } from "./constraint";
 import { Value, numberVal, stringVal, boolVal, nullVal, arrayVal, typeVal, BuiltinValue, StringValue, NumberValue, ArrayValue, ClosureValue, constraintOf, valueToString } from "./value";
 import { Expr, methodCall, call, varRef, obj } from "./expr";
 import type { SValue, Now, Later, LaterArray, StagedClosure } from "./svalue";
@@ -961,6 +961,152 @@ registerBuiltin({
 
       // Return as compile-time string
       return { svalue: ctx.now(stringVal(source), isString) };
+    }
+  }
+});
+
+// ============================================================================
+// Type Constructor Builtins (for constraintToExpr)
+// These use lowercase names to be consistent with primitive types
+// ============================================================================
+
+registerBuiltin({
+  name: "equalsType",
+  params: [{ name: "value", constraint: { tag: "any" } }],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const valueArg = args[0];
+      if (!ctx.isNow(valueArg)) {
+        throw new Error("equalsType() requires a compile-time known value");
+      }
+      // Extract the primitive value for equals constraint
+      const val = valueArg.value;
+      let primitiveValue: unknown;
+      switch (val.tag) {
+        case "number":
+          primitiveValue = val.value;
+          break;
+        case "string":
+          primitiveValue = val.value;
+          break;
+        case "bool":
+          primitiveValue = val.value;
+          break;
+        case "null":
+          primitiveValue = null;
+          break;
+        default:
+          throw new Error(`equalsType() only supports primitive values, got ${val.tag}`);
+      }
+      const resultConstraint = equals(primitiveValue);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "hasFieldType",
+  params: [
+    { name: "name", constraint: isString },
+    { name: "type", constraint: isTypeC }
+  ],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const nameArg = args[0];
+      const typeArg = args[1];
+      if (!ctx.isNow(nameArg)) {
+        throw new Error("hasFieldType() requires a compile-time known field name");
+      }
+      if (!ctx.isNow(typeArg)) {
+        throw new Error("hasFieldType() requires a compile-time known type");
+      }
+      if (nameArg.value.tag !== "string") {
+        throw new Error("hasFieldType() first argument must be a string");
+      }
+      if (typeArg.value.tag !== "type") {
+        throw new Error("hasFieldType() second argument must be a type");
+      }
+      const resultConstraint = hasField(nameArg.value.value, typeArg.value.constraint);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "elementsType",
+  params: [{ name: "type", constraint: isTypeC }],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const typeArg = args[0];
+      if (!ctx.isNow(typeArg)) {
+        throw new Error("elementsType() requires a compile-time known type");
+      }
+      if (typeArg.value.tag !== "type") {
+        throw new Error("elementsType() argument must be a type");
+      }
+      const resultConstraint = elements(typeArg.value.constraint);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "elementAtType",
+  params: [
+    { name: "index", constraint: isNumber },
+    { name: "type", constraint: isTypeC }
+  ],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const indexArg = args[0];
+      const typeArg = args[1];
+      if (!ctx.isNow(indexArg)) {
+        throw new Error("elementAtType() requires a compile-time known index");
+      }
+      if (!ctx.isNow(typeArg)) {
+        throw new Error("elementAtType() requires a compile-time known type");
+      }
+      if (indexArg.value.tag !== "number") {
+        throw new Error("elementAtType() first argument must be a number");
+      }
+      if (typeArg.value.tag !== "type") {
+        throw new Error("elementAtType() second argument must be a type");
+      }
+      const resultConstraint = elementAt(indexArg.value.value, typeArg.value.constraint);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
+    }
+  }
+});
+
+registerBuiltin({
+  name: "lengthType",
+  params: [{ name: "constraint", constraint: isTypeC }],
+  resultType: () => isTypeC,
+  isMethod: false,
+  evaluate: {
+    kind: "staged",
+    handler: (args, argExprs, ctx) => {
+      const constraintArg = args[0];
+      if (!ctx.isNow(constraintArg)) {
+        throw new Error("lengthType() requires a compile-time known constraint");
+      }
+      if (constraintArg.value.tag !== "type") {
+        throw new Error("lengthType() argument must be a type");
+      }
+      const resultConstraint = length(constraintArg.value.constraint);
+      return { svalue: ctx.now(typeVal(resultConstraint), isType(resultConstraint)) };
     }
   }
 });

@@ -379,7 +379,7 @@ export {
   parseTS,
   parseTSExpr,
   parseTSType,
+  parseTSTypeExpr,
   TSParseError,
-  convertTypeNode,
-  constraintToExpr,
+  convertTypeNodeToExpr,
 } from "./ts-parser";

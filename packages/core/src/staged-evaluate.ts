@@ -17,7 +17,7 @@ import { TSDeclarationLoader, FunctionSignatureInfo, buildSyntheticBody, getRegi
 import { lookupMethod } from "./methods";
 import { Value, numberVal, stringVal, boolVal, nullVal, objectVal, arrayVal, closureVal, constraintOf, valueToString, typeVal, valueSatisfies, builtinVal } from "./value";
 import { getBuiltin, getAllBuiltins, BuiltinDef, StagedBuiltinContext } from "./builtin-registry";
-import { Constraint, isNumber, isString, isBool, isNull, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, unify, constraintToString, tupleConstraint, arrayOfConstraint, anyC, neverC, indexSig } from "./constraint";
+import { Constraint, isNumber, isString, isBool, isNull, isUndefined, isObject, isArray, isFunction, and, hasField, elements, length, elementAt, implies, simplify, or, narrowOr, isType, isTypeC, unify, constraintToString, tupleConstraint, arrayOfConstraint, anyC, neverC, indexSig, equals } from "./constraint";
 import { Env, Binding, RefinementContext } from "./env";
 import { getBinaryOp, getUnaryOp, requireConstraint, TypeError, stringConcat, AssertionError, EvalResult } from "./builtins";
 import { extractAllRefinements, negateRefinement } from "./refinement";
@@ -2603,9 +2603,12 @@ const typeBindings: Record<string, SBinding> = {
   "string": { svalue: now(typeVal(isString), isType(isString)) },
   "boolean": { svalue: now(typeVal(isBool), isType(isBool)) },
   "null": { svalue: now(typeVal(isNull), isType(isNull)) },
+  "undefined": { svalue: now(typeVal(isUndefined), isType(isUndefined)) },
   "object": { svalue: now(typeVal(isObject), isType(isObject)) },
   "array": { svalue: now(typeVal(isArray), isType(isArray)) },
   "function": { svalue: now(typeVal(isFunction), isType(isFunction)) },
+  "any": { svalue: now(typeVal(anyC), isType(anyC)) },
+  "never": { svalue: now(typeVal(neverC), isType(neverC)) },
 };
 
 /**

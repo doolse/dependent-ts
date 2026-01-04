@@ -269,3 +269,83 @@ describe("Error handling", () => {
     expect(() => parseTSExpr("x = 5")).toThrow(TSParseError);
   });
 });
+
+import { stage, isNow } from "@dependent-ts/core";
+
+describe("parseTS - Type Annotations", () => {
+  it("applies number type annotation to const", () => {
+    const expr = parseTS("const x: number = 5; x");
+    const result = stage(expr);
+    // The constraint should include isNumber
+    expect(implies(result.svalue.constraint, isNumber)).toBe(true);
+  });
+
+  it("applies string type annotation to const", () => {
+    const expr = parseTS('const x: string = "hello"; x');
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isString)).toBe(true);
+  });
+
+  it("applies boolean type annotation to const", () => {
+    const expr = parseTS("const x: boolean = true; x");
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isBool)).toBe(true);
+  });
+
+  it("applies null type annotation to const", () => {
+    const expr = parseTS("const x: null = null; x");
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isNull)).toBe(true);
+  });
+
+  it("applies union type annotation", () => {
+    const expr = parseTS("const x: number | string = 5; x");
+    const result = stage(expr);
+    // Result should satisfy number (since value is 5)
+    expect(implies(result.svalue.constraint, isNumber)).toBe(true);
+  });
+
+  it("applies object type annotation", () => {
+    const expr = parseTS('const x: { name: string } = { name: "test" }; x');
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isObject)).toBe(true);
+  });
+
+  it("applies array type annotation", () => {
+    const expr = parseTS("const x: number[] = [1, 2, 3]; x");
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isArray)).toBe(true);
+  });
+});
+
+describe("parseTS - Function Parameter Type Annotations", () => {
+  it("applies type annotation to arrow function parameter", () => {
+    const expr = parseTS("((a: number) => a)(5)");
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isNumber)).toBe(true);
+  });
+
+  it("applies type annotations to multiple arrow function parameters", () => {
+    const expr = parseTS("((a: number, b: string) => a)(5, 'hello')");
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isNumber)).toBe(true);
+  });
+
+  it("handles mixed typed and untyped arrow function parameters", () => {
+    const expr = parseTS("((a: number, b) => a)(5, 'hello')");
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isNumber)).toBe(true);
+  });
+
+  it("applies type annotation to function expression parameter", () => {
+    const expr = parseTS("(function(a: number) { return a })(5)");
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isNumber)).toBe(true);
+  });
+
+  it("applies type annotations to named function expression", () => {
+    const expr = parseTS("(function add(a: number, b: number) { return a + b })(3, 4)");
+    const result = stage(expr);
+    expect(implies(result.svalue.constraint, isNumber)).toBe(true);
+  });
+});

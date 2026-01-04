@@ -5,7 +5,7 @@
  * and converts to our Expr AST. Type annotations are converted to constraints.
  *
  * Usage:
- *   import { parseTS, parseTSExpr, parseTSType } from "./ts-parser";
+ *   import { parseTS, parseTSExpr, parseTSType, parseTSTypeExpr } from "./ts-parser";
  *
  *   // Parse a single expression
  *   const expr = parseTSExpr("x + 1");
@@ -13,7 +13,10 @@
  *   // Parse statements with const/let declarations
  *   const expr = parseTS("const x = 5; const y = x + 1; x + y");
  *
- *   // Parse a TypeScript type to a Constraint
+ *   // Parse a TypeScript type to an Expr (for inspection/debugging)
+ *   const typeExpr = parseTSTypeExpr("number | string");
+ *
+ *   // Parse a TypeScript type to a Constraint (evaluates the expr)
  *   const constraint = parseTSType("number | string");
  */
 
@@ -21,7 +24,8 @@ import { parser } from "@lezer/javascript";
 import { Expr } from "../expr";
 import { Constraint } from "../constraint";
 import { convertNode, convertStatements, TSParseError } from "./convert";
-import { convertTypeNode } from "./type-convert";
+import { convertTypeNodeToExpr } from "./type-convert";
+import { run } from "../staged-evaluate";
 
 // Configure parser for TypeScript + JSX
 const tsxParser = parser.configure({
@@ -85,18 +89,17 @@ export function parseTS(source: string): Expr {
 }
 
 /**
- * Parse a TypeScript type annotation string to a Constraint.
+ * Parse a TypeScript type annotation string to an Expr.
+ * This is useful for inspecting the generated expression in test harnesses.
  *
  * @param source - TypeScript type syntax (e.g., "number | string")
- * @returns Constraint representing the type
+ * @returns Expr that evaluates to a TypeValue
  *
  * @example
- * parseTSType("number")           // isNumber
- * parseTSType("string | null")    // or(isString, isNull)
- * parseTSType("{ x: number }")    // and(isObject, hasField("x", isNumber))
- * parseTSType("[number, string]") // tupleConstraint([isNumber, isString])
+ * parseTSTypeExpr("number")           // varRef("number")
+ * parseTSTypeExpr("string | null")    // call(varRef("unionType"), varRef("string"), varRef("null"))
  */
-export function parseTSType(source: string): Constraint {
+export function parseTSTypeExpr(source: string): Expr {
   // Wrap the type in a variable declaration to make it valid syntax
   const wrappedSource = `let _: ${source}`;
   const tree = tsxParser.parse(wrappedSource);
@@ -123,9 +126,38 @@ export function parseTSType(source: string): Constraint {
     throw new TSParseError("Failed to find type in: " + source, 0, source.length, "parseType");
   }
 
-  return convertTypeNode(typeAnnotation, wrappedSource);
+  return convertTypeNodeToExpr(typeAnnotation, wrappedSource);
+}
+
+/**
+ * Parse a TypeScript type annotation string to a Constraint.
+ * This evaluates the type expression and extracts the constraint.
+ *
+ * @param source - TypeScript type syntax (e.g., "number | string")
+ * @returns Constraint representing the type
+ *
+ * @example
+ * parseTSType("number")           // isNumber
+ * parseTSType("string | null")    // or(isString, isNull)
+ * parseTSType("{ x: number }")    // and(isObject, hasField("x", isNumber))
+ * parseTSType("[number, string]") // tupleConstraint([isNumber, isString])
+ */
+export function parseTSType(source: string): Constraint {
+  const typeExpr = parseTSTypeExpr(source);
+  const result = run(typeExpr);
+
+  if (result.value.tag !== "type") {
+    throw new TSParseError(
+      `Expected type expression to evaluate to TypeValue, got ${result.value.tag}`,
+      0,
+      source.length,
+      "parseType"
+    );
+  }
+
+  return result.value.constraint;
 }
 
 // Re-export error class and types
 export { TSParseError } from "./convert";
-export { convertTypeNode, constraintToExpr } from "./type-convert";
+export { convertTypeNodeToExpr } from "./type-convert";
