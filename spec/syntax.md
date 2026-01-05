@@ -81,13 +81,25 @@ const evens = nums.filter((x) => x % 2 === 0);
 
 ## First-Class Types
 
-TODO: Exact syntax undecided. Leaning towards `type` keyword since `typeof` conflicts with JavaScript.
+Types are first-class values that can be assigned and passed around:
 
 ```
-// Tentative:
-type T = Int;  // T is a type alias
-// How to pass types as values? TBD
+type Person = { name: String, age: Int };
+
+// Types can be stored in variables
+const T = Person;
+
+// Types can be passed to functions
+const describeType = (T) => T.name;
+describeType(Person);  // "Person"
+
+// Type introspection via properties
+Person.name          // "Person"
+Person.fieldNames    // ["name", "age"]
+Person.fields        // { name: { type: String }, age: { type: Int } }
 ```
+
+See `spec/types.md` for full type system specification.
 
 ## Compile-Time Assertions
 
@@ -111,7 +123,5 @@ export function helper(s: String): String { return s.toUpperCase(); }
 
 ## Open Questions
 
-- Exact syntax for first-class type manipulation
 - How pattern matching works with discriminated unions
 - What assertions can be made with `assert`
-- Syntax for type-level computations

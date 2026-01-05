@@ -34,6 +34,7 @@ DepJS is a new programming language with these known design goals (from initial-
 ## Spec Files
 
 - `spec/syntax.md` - Core syntax decisions (established)
+- `spec/types.md` - Type system design (first-class types, properties, comptime)
 
 Create additional spec files as topics are discussed and decided. Don't create placeholder files with invented content.
 
@@ -51,15 +52,34 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Modules**: ES modules
 - **Compile-time assertions**: `assert` keyword
 
+### Compile-Time Execution Model
+
+- **Fuel-based interpreter**: Compile-time evaluation has a max evaluation count to prevent infinite loops
+- **Limited effects**: Some effects allowed at compile time (e.g., file reading for codegen), but kept simple
+- **Reification via builtins**: Built-in functions extract type information (e.g., get all properties of a record type)
+- **Demand-driven comptime**: Certain positions/builtins implicitly require compile-time evaluation (e.g., type annotations, `assert`). The compiler propagates these requirements backwards.
+- **Explicit `comptime` keyword**: Programmers can optionally mark bindings as `comptime` to explicitly require compile-time evaluation
+
+### Reserved Keywords / Naming
+
+- **`typeof`**: Reserved for JavaScript's runtime `typeof` operator only
+- Use `typeOf(x)` (function call) for compile-time type introspection
+
+### First-Class Types
+
+- **Types are opaque values**: Can be passed around but only inspected via properties
+- **Properties over functions**: Use `T.name`, `T.fieldNames`, `T.fields` instead of `typeName(T)`, etc.
+- **Runtime vs comptime properties**: Properties returning strings/primitives are runtime-usable; properties returning types are comptime-only
+- **Structural subtyping**: Record types are subtypes based on structure
+
 ## Open Questions
 
 These need to be resolved through discussion:
 
-- TODO: Exact syntax for first-class type manipulation (leaning towards `type` keyword)
 - TODO: How pattern matching works with discriminated unions
 - TODO: What can be asserted with `assert`
 - TODO: How to handle side effects (pure functional vs controlled effects)
 - TODO: Error handling model
 - TODO: JavaScript interop story
 - TODO: Async handling
-- TODO: Operations available on reified types
+- TODO: Refinement types syntax and semantics (see spec/types.md for current thinking)
