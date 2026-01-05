@@ -1,4 +1,4 @@
-I# CLAUDE.md
+I # CLAUDE.md
 
 This file provides guidance to Claude Code when working on this language specification project.
 
@@ -59,6 +59,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Reification via builtins**: Built-in functions extract type information (e.g., get all properties of a record type)
 - **Demand-driven comptime**: Certain positions/builtins implicitly require compile-time evaluation (e.g., type annotations, `assert`). The compiler propagates these requirements backwards.
 - **Explicit `comptime` keyword**: Programmers can optionally mark bindings as `comptime` to explicitly require compile-time evaluation
+- **Comptime-only code cannot exist at runtime**: Code that uses comptime-only operations (e.g., `.fields`, `.variants`) can only be evaluated at compile time. If such code would need to run at runtime (e.g., escaping into a runtime context), it's a compile error.
 
 ### Reserved Keywords / Naming
 
@@ -70,7 +71,10 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Types are opaque values**: Can be passed around but only inspected via properties
 - **Properties over functions**: Use `T.name`, `T.fieldNames`, `T.fields` instead of `typeName(T)`, etc.
 - **Runtime vs comptime properties**: Properties returning strings/primitives are runtime-usable; properties returning types are comptime-only
+- **`Type` values are comptime-only**: `Type` has no runtime representation. To get type information at runtime, extract runtime-usable properties (e.g., `.name`, `.fieldNames`) at compile time.
 - **Structural subtyping**: Record types are subtypes based on structure
+- **`typeOf` uses declared type**: When a value has an explicit type annotation, `typeOf` returns the declared type, not the structural type of the initializer
+- **No automatic type narrowing from type inspection**: Checking `typeOf(x).name === "Int"` does not narrow `x`'s type. Use pattern matching for type-based dispatch.
 
 ## Open Questions
 
@@ -83,68 +87,3 @@ These need to be resolved through discussion:
 - TODO: JavaScript interop story
 - TODO: Async handling
 - TODO: Refinement types syntax and semantics (see spec/types.md for current thinking)
-
-### Call-Site Instantiation Edge Cases
-
-These cases need discussion to determine correct behavior:
-
-#### Higher-Rank Polymorphism
-When passing a polymorphic function as an argument, does it keep its polymorphism?
-```
-const apply = (f, x) => f(x);
-const func = (x) => typeOf(x).fields;
-apply(func, { a: 1 });  // Does func retain polymorphism or get monomorphized?
-```
-
-#### Subtyping Ambiguity (Declared vs Actual Type)
-Does `typeOf` return the declared type or the actual/structural type?
-```
-const func = (x) => typeOf(x).fields;
-const obj: { a: Int } = { a: 1, b: 2 };  // b allowed via structural subtyping
-func(obj);  // Is T = { a: Int } or { a: Int, b: Int }?
-```
-
-#### Closures Capturing Type Parameters
-When does instantiation happen for captured types?
-```
-const makeGetter = (x) => {
-  const T = typeOf(x);
-  return () => T.fields;  // closure captures T
-};
-const getter = makeGetter({ a: 1, b: 2 });
-getter();  // T was instantiated at makeGetter call - is this correct?
-```
-
-#### Type Narrowing from Type Inspection
-Can runtime checks on Type values flow back to narrow the original value's type?
-```
-const func = (x) => {
-  const T = typeOf(x);
-  if (T.name === "Int") {
-    return x + 1;  // Does the type checker know x: Int here?
-  }
-  return x;
-};
-```
-
-#### Recursive Type Introspection
-What is the return type of recursive type introspection?
-```
-const processFields = (t: Type) => {
-  return t.fields.map(f => ({
-    name: f.name,
-    nested: processFields(f.type)
-  }));
-};
-// Return type is recursive - how to express this?
-```
-
-#### Storing Types with Different Instantiations
-Is heterogeneous type storage in arrays allowed?
-```
-const types: Array<Type> = [];
-const capture = (x) => { types.push(typeOf(x)); };
-capture({ a: 1 });
-capture({ b: "hi" });
-// types = [{ a: Int }, { b: String }] - is this valid?
-```

@@ -2,7 +2,9 @@
 
 ## Types as First-Class Values
 
-Types in DepJS are first-class values that can be passed around, stored in variables, and manipulated. However, types are **opaque** - you cannot inspect their internal structure directly, only through built-in properties.
+Types in DepJS are first-class values that can be passed around, stored in variables, and manipulated at compile time. However, types are **opaque** - you cannot inspect their internal structure directly, only through built-in properties.
+
+**Important:** `Type` values have no runtime representation. They exist only at compile time. To use type information at runtime, you must extract runtime-usable properties (like `.name` or `.fieldNames`) at compile time.
 
 ```
 type Person = { name: String, age: Int };
@@ -94,6 +96,25 @@ const loop = (x) => loop(x);
 type Bad = loop(1);  // Error: compile-time evaluation exceeded fuel limit
 ```
 
+### Comptime-Only Code Cannot Escape to Runtime
+
+Code that uses comptime-only operations (like `.fields` or `.variants`) can only be evaluated at compile time. If such code would need to run at runtime, it's a compile error:
+
+```
+// This is fine - fully evaluated at compile time
+const personFields = Person.fields;  // comptime const
+
+// This is an error - closure would escape to runtime
+const makeGetter = (x) => {
+  const T = typeOf(x);
+  return () => T.fields;  // ERROR: comptime-only code cannot exist at runtime
+};
+const getter = makeGetter({ a: 1 });
+someRuntimeArray.push(getter);  // getter escapes to runtime context
+```
+
+If the compiler can fully evaluate the closure at compile time (i.e., it never escapes), it's allowed. The error only occurs when comptime-only code would need to exist at runtime.
+
 ## Type Introspection
 
 ### `typeOf(x)`
@@ -107,6 +128,43 @@ typeOf(x).name      // "Int"
 
 // typeof is reserved for JavaScript's runtime behavior
 typeof x            // "number" (JavaScript semantics)
+```
+
+### `typeOf` Uses Declared Type
+
+When a value has an explicit type annotation, `typeOf` returns the **declared type**, not the structural type of the initializer:
+
+```
+const wide = { a: 1, b: 2 };           // Type: { a: Int, b: Int }
+const narrow: { a: Int } = wide;       // Type: { a: Int }
+
+typeOf(wide).fieldNames;    // ["a", "b"]
+typeOf(narrow).fieldNames;  // ["a"] - uses declared type, not actual value's type
+```
+
+This matches standard type system behavior - the annotation is a deliberate choice to view the value through a narrower lens.
+
+### No Automatic Type Narrowing
+
+Checking type properties does **not** narrow the original value's type:
+
+```
+const func = (x) => {
+  const T = typeOf(x);
+  if (T.name === "Int") {
+    return x + 1;  // ERROR: x is still unknown type, not narrowed to Int
+  }
+  return x;
+};
+```
+
+For type-based dispatch, use pattern matching instead:
+
+```
+const func = (x) => match (x) {
+  case Int: x + 1;
+  case _: x;
+};
 ```
 
 ## Type Inference and Call-Site Instantiation
