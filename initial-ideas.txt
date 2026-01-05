@@ -1,0 +1,9 @@
+* Based on a functional subset of Javascript - no explicit loops
+* The target language will be Javascript
+* The language it will be written in will be Typescript - show implementation examples in typescript
+* It will have a type system which is as powerful as typescript, however:
+  * I want types to be first class and manipulatable in the language
+  * I don't want the types to show up at runtime unless they get explicitly re-ified
+* I'd like simple type syntax for checking types at compile time - eg: const x : Int = 1
+* I want to be able to make assertions that must be checked at compile time
+ 
