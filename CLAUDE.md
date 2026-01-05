@@ -83,3 +83,68 @@ These need to be resolved through discussion:
 - TODO: JavaScript interop story
 - TODO: Async handling
 - TODO: Refinement types syntax and semantics (see spec/types.md for current thinking)
+
+### Call-Site Instantiation Edge Cases
+
+These cases need discussion to determine correct behavior:
+
+#### Higher-Rank Polymorphism
+When passing a polymorphic function as an argument, does it keep its polymorphism?
+```
+const apply = (f, x) => f(x);
+const func = (x) => typeOf(x).fields;
+apply(func, { a: 1 });  // Does func retain polymorphism or get monomorphized?
+```
+
+#### Subtyping Ambiguity (Declared vs Actual Type)
+Does `typeOf` return the declared type or the actual/structural type?
+```
+const func = (x) => typeOf(x).fields;
+const obj: { a: Int } = { a: 1, b: 2 };  // b allowed via structural subtyping
+func(obj);  // Is T = { a: Int } or { a: Int, b: Int }?
+```
+
+#### Closures Capturing Type Parameters
+When does instantiation happen for captured types?
+```
+const makeGetter = (x) => {
+  const T = typeOf(x);
+  return () => T.fields;  // closure captures T
+};
+const getter = makeGetter({ a: 1, b: 2 });
+getter();  // T was instantiated at makeGetter call - is this correct?
+```
+
+#### Type Narrowing from Type Inspection
+Can runtime checks on Type values flow back to narrow the original value's type?
+```
+const func = (x) => {
+  const T = typeOf(x);
+  if (T.name === "Int") {
+    return x + 1;  // Does the type checker know x: Int here?
+  }
+  return x;
+};
+```
+
+#### Recursive Type Introspection
+What is the return type of recursive type introspection?
+```
+const processFields = (t: Type) => {
+  return t.fields.map(f => ({
+    name: f.name,
+    nested: processFields(f.type)
+  }));
+};
+// Return type is recursive - how to express this?
+```
+
+#### Storing Types with Different Instantiations
+Is heterogeneous type storage in arrays allowed?
+```
+const types: Array<Type> = [];
+const capture = (x) => { types.push(typeOf(x)); };
+capture({ a: 1 });
+capture({ b: "hi" });
+// types = [{ a: Int }, { b: String }] - is this valid?
+```

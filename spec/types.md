@@ -109,6 +109,78 @@ typeOf(x).name      // "Int"
 typeof x            // "number" (JavaScript semantics)
 ```
 
+## Type Inference and Call-Site Instantiation
+
+### How Type Inference Works with First-Class Types
+
+Type-checking and compile-time evaluation are **interleaved on demand**, not separate passes. The key insight is that type-checking an expression doesn't require knowing its computed value — only its type.
+
+```
+const T = computeType(schema);  // Type-check: computeType returns Type
+const x: T = { ... };           // NOW evaluate T to get the concrete type
+```
+
+The order is:
+1. Type-check `computeType(schema)` → infer it returns `Type`
+2. When `T` is used in a type position, **evaluate** it to get the concrete type
+3. Check `{ ... }` against that concrete type
+
+### Call-Site Instantiation
+
+Polymorphic functions have their type parameters instantiated at each call site:
+
+```
+const getFields = (x) => {
+  const T = typeOf(x);
+  const prop = x.prop;    // constrains T <: { prop: unknown }
+  return T.fields;
+};
+
+// Call site 1: T instantiated to { prop: Int, other: Int }
+getFields({ prop: 1, other: 2 });  // returns fields for { prop: Int, other: Int }
+
+// Call site 2: T instantiated to { prop: String, name: String }
+getFields({ prop: "hi", name: "bob" });  // returns fields for { prop: String, name: String }
+```
+
+The function is implicitly polymorphic:
+```
+getFields : <T extends { prop: unknown }>(x: T) => Array<FieldInfo>
+```
+
+### Type Properties Have Fixed Types
+
+A critical simplification: type introspection properties return **fixed types**, not dependent types.
+
+```
+T.fields      // Always Array<FieldInfo>, regardless of T
+T.fieldNames  // Always Array<String>, regardless of T
+T.name        // Always String | undefined, regardless of T
+```
+
+The **values** depend on T, but the **types** are known statically. This means functions using type introspection don't need dependent return types:
+
+```
+const getFields = (x) => typeOf(x).fields;
+// Type: <T>(x: T) => Array<FieldInfo>
+// NOT: <T>(x: T) => DependentOn<T>  (not needed!)
+```
+
+Compile-time evaluation of `T.fields` happens after T is instantiated at the call site, but the type checker knows the return type is `Array<FieldInfo>` without needing to evaluate anything.
+
+### FieldInfo Type
+
+Type field information is represented as:
+
+```
+interface FieldInfo {
+  name: String;
+  type: Type;
+}
+```
+
+Accessing `field.name` returns `String` (runtime-usable), accessing `field.type` returns `Type` (comptime-only).
+
 ## Structural Subtyping
 
 DepJS uses structural subtyping for record types:
