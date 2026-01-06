@@ -37,23 +37,25 @@ const nums: Array<Int> = [1, 2, 3];
 
 ## Data Types
 
-Use `interface` for record types:
+Use `type` for record types (no `interface` keyword):
 
 ```
-interface Person {
+type Person = {
   name: String;
   age: Int;
-}
+};
 ```
 
 ## Sum Types
 
-TypeScript-style discriminated unions with a tag property:
+TypeScript-style discriminated unions:
 
 ```
-type Result<T, E> = { tag: 'ok'; value: T } | { tag: 'err'; error: E };
-type Option<T> = { tag: 'some'; value: T } | { tag: 'none' };
+type Result<T, E> = { kind: 'ok'; value: T } | { kind: 'err'; error: E };
+type Option<T> = { kind: 'some'; value: T } | { kind: 'none' };
 ```
+
+TODO: How the compiler identifies the discriminant property is not yet decided.
 
 ## Pattern Matching
 

@@ -12,6 +12,7 @@ DepJS is a new programming language with these known design goals (from initial-
 - **Type system**: As powerful as TypeScript, with:
   - First-class types that can be manipulated in the language
   - Types erased at runtime unless explicitly reified
+- **TypeScript compatibility**: Compatible with as much of TypeScript's type system as possible, with the ability to import types from `.d.ts` files
 - **Simple type annotation syntax**: e.g., `const x : Int = 1`
 - **Compile-time assertions**: Must be checkable at compile time
 
@@ -35,6 +36,7 @@ DepJS is a new programming language with these known design goals (from initial-
 
 - `spec/syntax.md` - Core syntax decisions (established)
 - `spec/types.md` - Type system design (first-class types, properties, comptime)
+- `spec/typescript-compat.md` - TypeScript type system compatibility mapping
 
 Create additional spec files as topics are discussed and decided. Don't create placeholder files with invented content.
 
@@ -45,8 +47,8 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Type annotations**: TypeScript-style (colon after name)
 - **Bindings**: `const` only (immutable)
 - **Generics**: Angle brackets `<T>`
-- **Data types**: `interface` keyword
-- **Sum types**: TypeScript-style discriminated unions with tag property
+- **Data types**: `type` keyword only (no `interface` - record types use `type`)
+- **Sum types**: TypeScript-style discriminated unions (discriminant property mechanism TBD)
 - **Pattern matching**: `match` expression with `case` clauses, semicolon separated
 - **Iteration**: Method chaining (map, filter, reduce, etc.)
 - **Modules**: ES modules
@@ -76,10 +78,30 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **`typeOf` uses declared type**: When a value has an explicit type annotation, `typeOf` returns the declared type, not the structural type of the initializer
 - **No automatic type narrowing from type inspection**: Checking `typeOf(x).name === "Int"` does not narrow `x`'s type. Use pattern matching for type-based dispatch.
 
+### Type Syntax as Sugar
+
+- **Type syntax desugars to function calls**: There is no separate type-level language; type syntax is sugar for operations on `Type` values
+- **Type contexts**: Type syntax is triggered in: `type X = <expr>`, `const x: <expr>`, `<T, U>` generic params/args
+- **Desugaring rules**:
+  - `A | B` → `Union(A, B)`
+  - `A & B` → `Intersection(A, B)`
+  - `{ name: String }` → `RecordType({ name: String })`
+  - `(x: A) => B` → `FunctionType([A], B)`
+  - `Array<T>` → `Array(T)` (type application becomes function application)
+  - `type Foo = expr` → `const Foo: Type = expr`
+- **Built-in type constructors**: `RecordType`, `Union`, `Intersection`, `FunctionType`
+- **Parameterized types are functions**: `Array`, `Map`, etc. are functions from Type to Type
+
+### Generics as Type Parameters with Defaults
+
+- **Type params come last**: `<T>(x: T)` desugars to `(x: T, T: Type = typeOf(x))`
+- **Inference via defaults**: Type parameters have defaults that reference value parameters
+- **Partial inference supported**: Unlike TypeScript, you can provide some type args and infer the rest
+- **Unambiguous calls**: `identity("hello")` clearly passes to x; `identity("hello", String)` provides T explicitly
+
 ## Open Questions
 
 These need to be resolved through discussion:
-
 - TODO: How pattern matching works with discriminated unions
 - TODO: What can be asserted with `assert`
 - TODO: How to handle side effects (pure functional vs controlled effects)

@@ -17,6 +17,207 @@ const logTypeName = (T) => console.log(T.name);
 logTypeName(Person);  // "Person"
 ```
 
+## Type Syntax as Sugar
+
+Type syntax is sugar for function calls on Type values. There is no separate "type-level language" - just expressions that evaluate to `Type` values with convenient syntax.
+
+### Type Contexts
+
+Certain syntactic positions trigger "type syntax" interpretation:
+
+1. **Type definitions:** `type Foo = <type-expr>`
+2. **Type annotations:** `const x: <type-expr>` or `(x: <type-expr>) =>`
+3. **Generic parameters:** `<T, U>` in definitions
+4. **Generic arguments:** `Array<String>` in type application
+
+### Desugaring Rules
+
+Within type contexts, the following sugar applies:
+
+| Type Syntax | Desugars To |
+|-------------|-------------|
+| `A \| B` | `Union(A, B)` |
+| `A & B` | `Intersection(A, B)` |
+| `{ name: String }` | `RecordType({ name: String })` |
+| `(x: A) => B` | `FunctionType([A], B)` |
+| `Array<T>` | `Array(T)` |
+| `type Foo = expr` | `const Foo: Type = expr` |
+
+### Built-in Type Constructors
+
+These are built-in functions that construct Type values:
+
+```
+// Primitive types are Type values
+const String: Type;
+const Int: Type;
+const Boolean: Type;
+const Null: Type;
+const Undefined: Type;
+
+// Type constructors
+const RecordType: (fields: { [key: String]: Type }) => Type;
+const Union: (...types: Array<Type>) => Type;
+const Intersection: (...types: Array<Type>) => Type;
+const FunctionType: (params: Array<Type>, returnType: Type) => Type;
+
+// Parameterized types are functions
+const Array: (elementType: Type) => Type;
+```
+
+### Equivalence Examples
+
+These pairs are equivalent:
+
+```
+// Sugar:
+type Person = { name: String, age: Int };
+
+// Explicit:
+const Person: Type = RecordType({ name: String, age: Int });
+```
+
+```
+// Sugar:
+type StringOrInt = String | Int;
+
+// Explicit:
+const StringOrInt: Type = Union(String, Int);
+```
+
+```
+// Sugar:
+type Result<T, E> = { kind: "ok", value: T } | { kind: "err", error: E };
+
+// Explicit:
+const Result = (T: Type, E: Type): Type =>
+  Union(
+    RecordType({ kind: "ok", value: T }),
+    RecordType({ kind: "err", error: E })
+  );
+```
+
+### Mixing Sugar and Explicit Forms
+
+You can use explicit type constructors anywhere, including in type contexts:
+
+```
+// Use sugar for definition, explicit for manipulation
+type Person = { name: String, age: Int };
+
+const Nullable = (T: Type): Type => Union(T, Null);
+
+// These are equivalent:
+type MaybePerson = Nullable(Person);
+type MaybePerson2 = Person | Null;
+```
+
+### Generics as Type Parameters with Defaults
+
+Generic type parameters desugar to **Type parameters at the end of the argument list** with default values that express inference:
+
+```
+// Sugar:
+const identity = <T>(x: T): T => x;
+
+// Desugars to:
+const identity = (x: T, T: Type = typeOf(x)): T => x;
+```
+
+**Key insight:** Type parameters come LAST, after value parameters. This makes inference unambiguous:
+
+```
+identity("hello");          // x = "hello", T inferred as String
+identity("hello", String);  // x = "hello", T explicitly String
+```
+
+If type params came first, `identity("hello")` would be ambiguous - is "hello" the type or the value?
+
+### How It Works
+
+Arguments are treated as a group, so:
+- `x: T` - T is in scope as a type parameter for the annotation
+- `T: Type = typeOf(x)` - T's default references the call-site value of x
+
+```
+// Multiple type parameters
+const pair = (
+  a: T,
+  b: U,
+  T: Type = typeOf(a),
+  U: Type = typeOf(b)
+) => { fst: a, snd: b };
+
+pair(1, "hello");  // T=Int, U=String (both inferred)
+
+// With array/function types - need type properties
+const map = (
+  arr: Array<A>,
+  f: (a: A) => B,
+  A: Type = typeOf(arr).elementType,
+  B: Type = typeOf(f).returnType
+): Array<B> => arr.map(f);
+
+map([1,2,3], x => x.toString());  // A=Int, B=String
+```
+
+### Partial Inference
+
+Unlike TypeScript where you must provide all type arguments or none, this model supports **partial inference**:
+
+```
+const foo = (
+  x: T,
+  y: U,
+  T: Type = typeOf(x),
+  U: Type = typeOf(y)
+) => ...;
+
+// All inferred
+foo(1, "hello");  // T=Int, U=String
+
+// Partially explicit - provide T, infer U
+foo(1, "hello", Number);  // T=Number, U=String (inferred)
+
+// All explicit
+foo(1, "hello", Number, String);
+```
+
+Since type parameters are just optional arguments with defaults, you can provide any prefix and let the rest be inferred.
+
+### Sugar Desugaring
+
+| Sugar | Desugars To |
+|-------|-------------|
+| `<T>(x: T) => x` | `(x: T, T: Type = typeOf(x)) => x` |
+| `<T, U>(x: T, y: U)` | `(x: T, y: U, T: Type = typeOf(x), U: Type = typeOf(y))` |
+| `<T extends Foo>(x: T)` | TODO: Constraints need design |
+
+### Call-Site Type Argument Sugar
+
+When calling a generic function, angle bracket syntax is sugar for passing type arguments at the end:
+
+```
+// These are equivalent:
+identity<String>("hello");
+identity("hello", String);
+
+// With multiple type args:
+pair<Int, String>(1, "hello");
+pair(1, "hello", Int, String);
+
+// Partial application - provide first type, infer second:
+pair<Int>(1, "hello");
+pair(1, "hello", Int);  // U inferred as String
+```
+
+This maintains familiar TypeScript-style call syntax while desugaring to the type-params-at-end model.
+
+### Open Questions
+
+- **Constraints**: How does `<T extends Foo>` desugar? Perhaps `T: Type = typeOf(x) & Foo` or a separate constraint mechanism?
+- **Type properties needed**: `typeOf(x).elementType`, `typeOf(f).returnType`, etc.
+
 ## Type Properties
 
 Types expose information through properties rather than functions. Some properties return runtime-usable values (strings, booleans), others return types (comptime only).
@@ -42,11 +243,12 @@ Person.fields.name.type.name  // "String" - runtime usable
 ### Properties on Union Types
 
 ```
-type Result = { tag: "ok", value: Int } | { tag: "err", message: String };
+type Result = { kind: "ok", value: Int } | { kind: "err", message: String };
 
-Result.tags          // ["ok", "err"] - runtime usable (string[])
 Result.variants      // array of variant types - comptime only
 ```
+
+TODO: How does the compiler identify the discriminant property? TypeScript allows any property with literal types. Need to decide how to expose discriminant values (previously `.tags` was suggested but this assumed a specific property name).
 
 ### Anonymous Types
 
@@ -231,10 +433,10 @@ Compile-time evaluation of `T.fields` happens after T is instantiated at the cal
 Type field information is represented as:
 
 ```
-interface FieldInfo {
+type FieldInfo = {
   name: String;
   type: Type;
-}
+};
 ```
 
 Accessing `field.name` returns `String` (runtime-usable), accessing `field.type` returns `Type` (comptime-only).
