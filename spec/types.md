@@ -227,7 +227,38 @@ Types expose information through properties rather than functions. Some properti
 ```
 String.name          // "String" - runtime usable
 Person.name          // "Person" - runtime usable (undefined for anonymous types)
+String.baseName      // "String" - runtime usable (same as .name for non-generic types)
+String.typeArgs      // [] - runtime usable (empty for non-generic types)
 ```
+
+### Properties on Instantiated Generic Types
+
+When a parameterized type is instantiated (e.g., `Array(String)`), the result is a `Type` with:
+
+- `.name` - The full instantiated name (e.g., `"Array<String>"`)
+- `.baseName` - The base type constructor name (e.g., `"Array"`)
+- `.typeArgs` - Array of type arguments (comptime only, since it contains `Type` values)
+
+```
+Array(String).name             // "Array<String>"
+Array(String).baseName         // "Array"
+Array(String).typeArgs         // [String] - comptime only
+
+Map(String, Int).name          // "Map<String, Int>"
+Map(String, Int).baseName      // "Map"
+Map(String, Int).typeArgs      // [String, Int] - comptime only
+```
+
+Additionally, instantiated types have **type-specific convenience properties**:
+
+```
+Array(String).elementType      // String (equivalent to .typeArgs[0])
+
+Map(String, Int).keyType       // String (equivalent to .typeArgs[0])
+Map(String, Int).valueType     // Int (equivalent to .typeArgs[1])
+```
+
+These convenience properties are defined by each parameterized type and provide semantic meaning to the type arguments.
 
 ### Properties on Record Types
 

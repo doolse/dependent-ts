@@ -74,6 +74,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Properties over functions**: Use `T.name`, `T.fieldNames`, `T.fields` instead of `typeName(T)`, etc.
 - **Runtime vs comptime properties**: Properties returning strings/primitives are runtime-usable; properties returning types are comptime-only
 - **`Type` values are comptime-only**: `Type` has no runtime representation. To get type information at runtime, extract runtime-usable properties (e.g., `.name`, `.fieldNames`) at compile time.
+- **Instantiated generic types**: Have `.name` (full name like `"Array<String>"`), `.baseName` (base name like `"Array"`), and `.typeArgs` (array of type arguments, comptime-only). Non-generic types have empty `.typeArgs`. Type-specific convenience properties like `.elementType` provide semantic access to type args.
 - **Structural subtyping**: Record types are subtypes based on structure
 - **`typeOf` uses declared type**: When a value has an explicit type annotation, `typeOf` returns the declared type, not the structural type of the initializer
 - **No automatic type narrowing from type inspection**: Checking `typeOf(x).name === "Int"` does not narrow `x`'s type. Use pattern matching for type-based dispatch.
