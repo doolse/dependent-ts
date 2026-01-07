@@ -48,8 +48,8 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Bindings**: `const` only (immutable)
 - **Generics**: Angle brackets `<T>`
 - **Data types**: `type` keyword only (no `interface` - record types use `type`)
-- **Sum types**: TypeScript-style discriminated unions (discriminant property mechanism TBD)
-- **Pattern matching**: `match` expression with `case` clauses, semicolon separated
+- **Sum types**: TypeScript-style discriminated unions
+- **Pattern matching**: `match` expression with `case` clauses, semicolon separated (see Pattern Matching section)
 - **Iteration**: Method chaining (map, filter, reduce, etc.)
 - **Modules**: ES modules
 - **Compile-time assertions**: `assert` keyword
@@ -168,10 +168,20 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Partial inference supported**: Unlike TypeScript, you can provide some type args and infer the rest
 - **Unambiguous calls**: `identity("hello")` clearly passes to x; `identity("hello", String)` provides T explicitly
 
+### Pattern Matching
+
+- **Syntax**: `match (expr) { case pattern: result; ... };`
+- **Pattern types**: Literal, type, property (destructuring), nested, wildcard (`_`)
+- **Binding**: Implicit (property name becomes variable), explicit rename (`value: v`)
+- **Guards**: `when` clause for additional conditions: `case Int when x > 0: "positive"`
+- **Type narrowing**: Inside case body, matched expression's type is narrowed
+- **Exhaustiveness**: Compiler verifies all cases handled; wildcard satisfies exhaustiveness
+- **Discriminant identification**: TypeScript approach - any property with distinct literal types across variants
+- **Expression**: Returns a value; return type is union of branch types
+
 ## Open Questions
 
 These need to be resolved through discussion:
-- TODO: How pattern matching works with discriminated unions
 - TODO: What can be asserted with `assert`
 - TODO: How to handle side effects (pure functional vs controlled effects)
 - TODO: Error handling model

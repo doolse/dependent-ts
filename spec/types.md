@@ -729,7 +729,7 @@ type Result = { kind: "ok", value: Int } | { kind: "err", message: String };
 Result.variants      // array of variant types - comptime only
 ```
 
-TODO: How does the compiler identify the discriminant property? TypeScript allows any property with literal types. Need to decide how to expose discriminant values (previously `.tags` was suggested but this assumed a specific property name).
+Discriminant identification is covered in the Pattern Matching section.
 
 ### Anonymous Types
 
@@ -1064,6 +1064,247 @@ const PartialPick = (T: Type, keys: Array<T.keysType>): Type =>
 // Omit fields and close the record
 const StrictOmit = (T: Type, keys: Array<T.keysType>): Type =>
   RecordType(Omit(T, keys).fields, Never);
+```
+
+## Pattern Matching
+
+DepJS uses `match` expressions for type-safe pattern matching with exhaustiveness checking.
+
+### Basic Syntax
+
+```
+match (expr) {
+  case pattern: result;
+  case pattern: result;
+};
+```
+
+The `match` expression evaluates `expr`, tests each pattern in order, and returns the result of the first matching case. Cases are separated by semicolons.
+
+### Pattern Types
+
+#### Literal Patterns
+
+Match exact values:
+
+```
+match (x) {
+  case 1: "one";
+  case 2: "two";
+  case _: "other";
+};
+```
+
+#### Type Patterns
+
+Match by type, narrowing the variable:
+
+```
+match (x) {
+  case Int: x + 1;       // x narrowed to Int in this branch
+  case String: x.length; // x narrowed to String
+  case _: 0;
+};
+```
+
+#### Property Patterns (Discriminated Unions)
+
+Match record structure and bind properties:
+
+```
+type Result =
+  | { kind: "ok", value: Int }
+  | { kind: "err", message: String };
+
+match (result) {
+  case { kind: "ok", value }: value * 2;      // binds 'value', type narrowed
+  case { kind: "err", message }: log(message); // binds 'message'
+};
+```
+
+#### Nested Patterns
+
+Patterns can nest arbitrarily:
+
+```
+type Response = {
+  status: "ok" | "error";
+  data: { items: Array<Item> } | Undefined;
+};
+
+match (response) {
+  case { status: "ok", data: { items } }: items.length;
+  case { status: "ok", data: Undefined }: 0;
+  case { status: "error" }: -1;
+};
+```
+
+#### Wildcard Pattern
+
+`_` matches anything and binds nothing:
+
+```
+match (x) {
+  case 0: "zero";
+  case _: "non-zero";
+};
+```
+
+### Binding Syntax
+
+**Implicit binding:** Property name becomes the variable name:
+
+```
+case { kind: "ok", value }: value + 1;  // 'value' bound
+```
+
+**Explicit binding (rename):** Use `property: bindingName` to rename:
+
+```
+case { kind: "ok", value: v }: v + 1;   // 'v' bound to the value property
+```
+
+**No binding:** Just match without binding using a literal or nested pattern:
+
+```
+case { kind: "ok" }: doSomething();     // matches but doesn't bind value
+```
+
+### Guards (`when` clause)
+
+Add conditions to patterns with `when`:
+
+```
+match (x) {
+  case Int when x > 0: "positive";
+  case Int when x < 0: "negative";
+  case Int: "zero";
+};
+```
+
+Guards are evaluated after the pattern matches. If the guard is false, matching continues to the next case.
+
+```
+type User = { name: String, age: Int };
+
+match (user) {
+  case { age } when age >= 18: "adult";
+  case { age } when age >= 13: "teenager";
+  case _: "child";
+};
+```
+
+### Type Narrowing
+
+Inside a case body, the matched expression's type is narrowed based on the pattern:
+
+```
+const describe = (x: Int | String | Boolean) => match (x) {
+  case Int: x.toString();     // x: Int here
+  case String: x.toUpperCase(); // x: String here
+  case Boolean: x ? "yes" : "no"; // x: Boolean here
+};
+```
+
+For discriminated unions, the type narrows to the matching variant:
+
+```
+type Result<T, E> =
+  | { kind: "ok", value: T }
+  | { kind: "err", error: E };
+
+const unwrap = <T, E>(r: Result<T, E>) => match (r) {
+  case { kind: "ok", value }: value;  // r: { kind: "ok", value: T }
+  case { kind: "err", error }: throw error;
+};
+```
+
+### Exhaustiveness Checking
+
+The compiler verifies all possible cases are handled:
+
+```
+type Status = "pending" | "active" | "done";
+
+match (status) {
+  case "pending": 0;
+  case "active": 1;
+};  // ERROR: Pattern matching not exhaustive - missing: "done"
+```
+
+**Wildcard satisfies exhaustiveness:**
+
+```
+match (status) {
+  case "pending": 0;
+  case _: 1;  // OK: covers "active" and "done"
+};
+```
+
+**For discriminated unions:**
+
+```
+type Shape =
+  | { kind: "circle", radius: Int }
+  | { kind: "rect", width: Int, height: Int }
+  | { kind: "point" };
+
+match (shape) {
+  case { kind: "circle", radius }: 3.14 * radius * radius;
+  case { kind: "rect", width, height }: width * height;
+};  // ERROR: Pattern matching not exhaustive - missing: { kind: "point" }
+```
+
+### Discriminant Identification
+
+The compiler identifies discriminant properties using TypeScript's approach: any property whose type is a union of literals across variants.
+
+```
+type Event =
+  | { type: "click", x: Int, y: Int }
+  | { type: "keypress", key: String }
+  | { type: "scroll", delta: Int };
+```
+
+Here `type` is identified as a discriminant because:
+1. It exists in all variants
+2. Each variant has a distinct literal type for it
+
+Multiple discriminants are allowed:
+
+```
+type Message =
+  | { channel: "email", format: "html", body: String }
+  | { channel: "email", format: "text", body: String }
+  | { channel: "sms", body: String };
+```
+
+Both `channel` and `format` can serve as discriminants (though `format` only discriminates within `channel: "email"`).
+
+### Match Expression Returns a Value
+
+`match` is an expression that returns a value. All branches must have compatible types:
+
+```
+const result: String = match (x) {
+  case 1: "one";
+  case 2: "two";
+  case _: "other";
+};
+```
+
+The return type is the union of all branch types (simplified if identical):
+
+```
+const mixed = match (x) {
+  case Int: x;           // Int
+  case String: x.length; // Int
+};  // type: Int
+
+const varied = match (x) {
+  case Int: x;
+  case String: x;
+};  // type: Int | String
 ```
 
 ## Refinement Types (Work in Progress)
