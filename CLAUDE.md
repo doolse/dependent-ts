@@ -179,12 +179,19 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Discriminant identification**: TypeScript approach - any property with distinct literal types across variants
 - **Expression**: Returns a value; return type is union of branch types
 
+### Error Handling
+
+- **`throw` statement**: Throws exceptions (mirrors JS): `throw Error("message")`
+- **`Try` builtin**: Catches exceptions, returns discriminated union
+- **TryResult type**: `{ ok: true, value: T } | { ok: false, error: Error }`
+- **Result in userland**: Users define their own Result types; keeps language simple
+- **No checked exceptions**: Rely on explicit `Try` at JS interop boundaries
+
 ## Open Questions
 
 These need to be resolved through discussion:
 - TODO: What can be asserted with `assert`
 - TODO: How to handle side effects (pure functional vs controlled effects)
-- TODO: Error handling model
 - TODO: JavaScript interop story
 - TODO: Async handling
 - TODO: Refinement types syntax and semantics (see spec/types.md for current thinking)

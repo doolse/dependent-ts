@@ -1307,6 +1307,87 @@ const varied = match (x) {
 };  // type: Int | String
 ```
 
+## Error Handling
+
+DepJS supports exceptions for JavaScript interop, with a `Try` builtin to convert exceptions to values for functional-style error handling.
+
+### `throw` Statement
+
+Throws an exception (mirrors JavaScript):
+
+```
+throw Error("something went wrong");
+throw "simple string error";  // JS allows any value
+```
+
+Exceptions propagate up the call stack until caught.
+
+### `Try` Builtin
+
+`Try` takes a thunk (zero-argument function) and catches any exception, returning a discriminated union:
+
+```
+const result = Try(() => JSON.parse(input));
+// result: { ok: true, value: Json } | { ok: false, error: Error }
+```
+
+**Return type:**
+
+```
+type TryResult<T> = { ok: true, value: T } | { ok: false, error: Error };
+```
+
+The `ok` property is the discriminant:
+- `ok: true` — the thunk succeeded, `value` contains the result
+- `ok: false` — the thunk threw, `error` contains the caught exception
+
+### Usage with Pattern Matching
+
+```
+match (Try(() => JSON.parse(input))) {
+  case { ok: true, value }: processJson(value);
+  case { ok: false, error }: log(error.message);
+};
+```
+
+### Chaining Try Operations
+
+```
+const parseConfig = (path: String) => {
+  const fileResult = Try(() => readFile(path));
+  match (fileResult) {
+    case { ok: false, error }: { ok: false, error };
+    case { ok: true, value: content }: Try(() => JSON.parse(content));
+  };
+};
+```
+
+### Userland Result Type
+
+For more expressive error handling, users can define their own Result type:
+
+```
+type Result<T, E> = { kind: "ok", value: T } | { kind: "err", error: E };
+
+const Ok = <T>(value: T): Result<T, Never> => ({ kind: "ok", value });
+const Err = <E>(error: E): Result<Never, E> => ({ kind: "err", error });
+
+// Convert Try's output to Result
+const tryToResult = <T>(tried: TryResult<T>): Result<T, Error> =>
+  tried.ok ? Ok(tried.value) : Err(tried.error);
+
+// Usage
+const safeParseJson = (s: String): Result<Json, Error> =>
+  tryToResult(Try(() => JSON.parse(s)));
+```
+
+### Design Rationale
+
+- **Exceptions exist** because JavaScript has them — needed for interop
+- **`Try` builtin** converts exceptions to values for functional composition
+- **Result in userland** keeps the language simple; users can define Result types that fit their needs
+- **No checked exceptions** — keep it simple, rely on explicit `Try` at boundaries
+
 ## Refinement Types (Work in Progress)
 
 Refinement types constrain values with predicates:
