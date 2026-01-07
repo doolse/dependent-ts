@@ -1388,6 +1388,132 @@ const safeParseJson = (s: String): Result<Json, Error> =>
 - **Result in userland** keeps the language simple; users can define Result types that fit their needs
 - **No checked exceptions** — keep it simple, rely on explicit `Try` at boundaries
 
+## Async/Await
+
+DepJS supports async/await with direct 1:1 mapping to JavaScript output.
+
+### Basic Syntax
+
+```
+const fetchUser = async (id: String): Promise<User> => {
+  const response = await fetch(`/users/${id}`);
+  return await response.json();
+};
+```
+
+**Output (JavaScript):**
+```javascript
+const fetchUser = async (id) => {
+  const response = await fetch(`/users/${id}`);
+  return await response.json();
+};
+```
+
+### The `async` Keyword
+
+Functions that use `await` must be marked `async`:
+
+```
+// OK
+const getData = async (): Promise<Data> => {
+  const result = await fetchData();
+  return result;
+};
+
+// ERROR: await used outside async function
+const getData = (): Data => {
+  const result = await fetchData();  // Error!
+  return result;
+};
+```
+
+### The `await` Keyword
+
+`await` unwraps a `Promise<T>` to get the value `T`:
+
+```
+const promise: Promise<Int> = fetchNumber();
+const value: Int = await promise;
+```
+
+The type checker ensures:
+- `await` is only used on expressions of type `Promise<T>`
+- The result type is `T`
+
+### Return Type
+
+Async functions return `Promise<T>`:
+
+```
+const fetchNumber = async (): Promise<Int> => {
+  return 42;  // implicitly wrapped in Promise
+};
+```
+
+### Promise Type
+
+`Promise<T>` is a built-in parameterized type representing an async computation that will produce a value of type `T`.
+
+```
+Promise(String).name         // "Promise<String>"
+Promise(String).elementType  // String (the resolved type)
+```
+
+### Top-Level Await
+
+`await` is allowed at module top level:
+
+```
+// module.dep
+const config = await loadConfig("./config.json");
+export { config };
+```
+
+This outputs ES module top-level await (supported in modern JS).
+
+### Async with Error Handling
+
+`Try` works with async thunks:
+
+```
+// Catching async errors
+const result = await Try(async () => {
+  const response = await fetch(url);
+  return await response.json();
+});
+
+match (result) {
+  case { ok: true, value }: processData(value);
+  case { ok: false, error }: log(error.message);
+};
+```
+
+Note: `Try` with an async thunk returns `Promise<TryResult<T>>`, so you need to `await` the result.
+
+### Promise Combinators
+
+Standard Promise methods are available:
+
+```
+// Parallel execution
+const results = await Promise.all([fetchA(), fetchB(), fetchC()]);
+
+// Race
+const first = await Promise.race([slow(), fast()]);
+
+// Chaining (functional style alternative to await)
+const result = fetchUser(id)
+  .then(user => user.name)
+  .then(name => name.toUpperCase());
+```
+
+### Design Rationale
+
+- **1:1 JS mapping** — simple implementation, outputs JS async/await directly
+- **Explicit `async` keyword** — clear which functions are async (no inference)
+- **Top-level await** — supported for convenience, mirrors modern JS
+- **`Try` integration** — existing error handling works with async code
+
 ## Refinement Types (Work in Progress)
 
 Refinement types constrain values with predicates:

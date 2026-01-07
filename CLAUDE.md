@@ -187,11 +187,19 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Result in userland**: Users define their own Result types; keeps language simple
 - **No checked exceptions**: Rely on explicit `Try` at JS interop boundaries
 
+### Async/Await
+
+- **1:1 JS mapping**: Direct output to JavaScript async/await
+- **`async` keyword required**: Functions using `await` must be marked `async`
+- **`await` keyword**: Unwraps `Promise<T>` to `T`; only valid on Promise types
+- **`Promise<T>` built-in**: Parameterized type for async computations
+- **Top-level await**: Supported at module level
+- **`Try` integration**: `Try` with async thunk returns `Promise<TryResult<T>>`
+
 ## Open Questions
 
 These need to be resolved through discussion:
 - TODO: What can be asserted with `assert`
 - TODO: How to handle side effects (pure functional vs controlled effects)
 - TODO: JavaScript interop story
-- TODO: Async handling
 - TODO: Refinement types syntax and semantics (see spec/types.md for current thinking)
