@@ -38,10 +38,86 @@ Within type contexts, the following sugar applies:
 |-------------|-------------|
 | `A \| B` | `Union(A, B)` |
 | `A & B` | `Intersection(A, B)` |
-| `{ name: String }` | `RecordType({ name: String })` |
+| `{ name: String }` | `RecordType([{ name: "name", type: String, optional: false }])` |
+| `{ name?: String }` | `RecordType([{ name: "name", type: String, optional: true }])` |
+| `{\| name: String \|}` | `RecordType([{ name: "name", type: String, optional: false }], Never)` |
+| `{ [key: String]: Int }` | `RecordType([], Int)` |
 | `(x: A) => B` | `FunctionType([A], B)` |
 | `Array<T>` | `Array(T)` |
 | `type Foo = expr` | `const Foo: Type = expr` |
+
+**Record syntax:**
+- `{ ... }` — Open record (extra fields allowed)
+- `{| ... |}` — Closed record (no extra fields allowed)
+- `{ [key: String]: T }` — Indexed record (any string key maps to T)
+
+### Literal Types
+
+Literal values can be used as types. A literal type matches only that exact value.
+
+**String literals:**
+```
+type Yes = "yes";
+type No = "no";
+type Answer = "yes" | "no";
+
+const a: "yes" = "yes";   // OK
+const b: "yes" = "no";    // ERROR: "no" is not assignable to "yes"
+```
+
+**Number literals:**
+```
+type Zero = 0;
+type One = 1;
+type Bit = 0 | 1;
+```
+
+**Boolean literals:**
+```
+type True = true;
+type False = false;
+```
+
+Literal types are essential for discriminated unions and type-safe APIs:
+
+```
+type Result<T, E> =
+  | { kind: "ok", value: T }
+  | { kind: "err", error: E };
+```
+
+#### Properties on Literal Types
+
+Literal types have a `.value` property that returns the literal value (comptime, but the value itself is runtime-usable):
+
+```
+const T: Type = "hello";
+T.value        // "hello" (String)
+T.name         // "\"hello\"" (the type name)
+
+const N: Type = 42;
+N.value        // 42 (Int)
+
+const B: Type = true;
+B.value        // true (Boolean)
+```
+
+This is useful for constructing types dynamically:
+
+```
+// Create a Record type from a union of string literals
+const Record = (K: Type, V: Type): Type => {
+  const fields = K.variants.map(k => ({
+    name: k.value,  // extract the string from the literal type
+    type: V,
+    optional: false
+  }));
+  return RecordType(fields);
+};
+
+type Keys = "a" | "b" | "c";
+type MyRecord = Record(Keys, Int);  // { a: Int, b: Int, c: Int }
+```
 
 ### Built-in Type Constructors
 
@@ -54,15 +130,195 @@ const Int: Type;
 const Boolean: Type;
 const Null: Type;
 const Undefined: Type;
+const Never: Type;
 
 // Type constructors
-const RecordType: (fields: { [key: String]: Type }) => Type;
+const RecordType: (fields: Array<FieldInfo>, indexType?: Type) => Type;
 const Union: (...types: Array<Type>) => Type;
 const Intersection: (...types: Array<Type>) => Type;
 const FunctionType: (params: Array<Type>, returnType: Type) => Type;
 
 // Parameterized types are functions
 const Array: (elementType: Type) => Type;
+
+// Branded/nominal types
+const Branded: (baseType: Type, brand: String) => Type;
+
+// Self-referential type for fluent interfaces
+const This: Type;  // Special type, only valid within record type definitions
+```
+
+#### The `This` Type (Fluent Interfaces)
+
+`This` is a special type that refers to the type of the receiver, enabling fluent method chaining that preserves subtypes.
+
+**Basic usage:**
+```
+type Builder = {
+  name: String;
+  setName: (name: String) => This;
+};
+
+const builder: Builder = { name: "", setName: (name) => ({ ...builder, name }) };
+builder.setName("Alice");  // returns Builder
+```
+
+**With subtypes:**
+```
+type Builder = {
+  name: String;
+  setName: (name: String) => This;
+};
+
+type AdvancedBuilder = Builder & {
+  age: Int;
+  setAge: (age: Int) => This;
+};
+
+const advanced: AdvancedBuilder = ...;
+
+// setName's return type is This, substituted to AdvancedBuilder
+advanced.setName("Alice").setAge(30);  // Works! Chaining preserves AdvancedBuilder
+```
+
+**How substitution works:**
+
+When accessing a property on a value of type `T`, if the property's type contains `This`, replace `This` with `T`:
+
+```
+const x: AdvancedBuilder = ...;
+
+// x.setName has declared type: (String) => This
+// Receiver x has type: AdvancedBuilder
+// After substitution: (String) => AdvancedBuilder
+```
+
+**Scope:**
+
+`This` is lexically scoped to the innermost enclosing type definition:
+
+```
+type Outer = {
+  inner: {
+    foo: () => This;  // This refers to { foo: () => This }, not Outer
+  };
+  bar: () => This;    // This refers to Outer
+};
+```
+
+**Valid positions:**
+
+`This` can appear anywhere within a record type definition:
+
+```
+type Node = {
+  clone: () => This;           // Method returning self
+  parent: This | Undefined;    // Field of self type
+  children: Array<This>;       // Collection of self type
+};
+```
+
+**Constraints:**
+
+- `This` is only valid within record type definitions
+- Using `This` outside a type definition is a compile error
+- `This` has no properties until substituted (accessing `This.name` is an error)
+
+#### Branded Types (Nominal Typing)
+
+Branded types provide nominal typing within DepJS's structural type system. A branded type wraps a base type with a unique tag that must match for type compatibility.
+
+**Type constructor:**
+```
+const Branded: (baseType: Type, brand: String) => Type;
+
+type UserId = Branded(String, "UserId");
+type OrderId = Branded(String, "OrderId");
+```
+
+**Syntax sugar (`newtype`):**
+```
+// Sugar:
+newtype UserId = String;
+
+// Desugars to:
+const UserId: Type = Branded(String, "UserId");
+```
+
+The brand is implicitly the type name when using `newtype`.
+
+**Properties on branded types:**
+```
+UserId.baseType    // String
+UserId.brand       // "UserId"
+```
+
+**Subtyping rules (strict nominal):**
+```
+type UserId = Branded(String, "UserId");
+type OrderId = Branded(String, "OrderId");
+
+// All of these are type errors:
+const a: String = userId;     // ERROR: Branded(String, "UserId") is not String
+const b: UserId = "hello";    // ERROR: String is not Branded(String, "UserId")
+const c: OrderId = userId;    // ERROR: brands don't match
+```
+
+**Wrapping and unwrapping:**
+```
+type UserId = Branded(String, "UserId");
+
+// Wrap a value (compile-time only, zero runtime cost)
+const id: UserId = UserId.wrap("abc123");
+
+// Unwrap a value (compile-time only, zero runtime cost)
+const str: String = UserId.unwrap(id);
+```
+
+`wrap` and `unwrap` are identity functions at runtime - they only exist for type checking.
+
+**Use cases:**
+```
+// Prevent mixing up IDs
+newtype UserId = String;
+newtype OrderId = String;
+
+const getUser = (id: UserId) => ...;
+const getOrder = (id: OrderId) => ...;
+
+getUser(orderId);  // ERROR: OrderId is not UserId
+
+// Type-safe units
+newtype Meters = Number;
+newtype Feet = Number;
+
+const distance: Meters = Meters.wrap(100);
+const height: Feet = Feet.wrap(6);
+
+distance + height;  // ERROR: can't add Meters and Feet
+```
+
+#### RecordType and Openness
+
+The `indexType` parameter controls record openness:
+
+- **`indexType: undefined`** (default) — **Open record**: extra fields allowed (TypeScript behavior)
+- **`indexType: SomeType`** — **Indexed record**: any string key maps to `SomeType`
+- **`indexType: Never`** — **Closed record**: no extra fields allowed
+
+```
+// Open record (default) - allows extra fields
+RecordType([
+  { name: "id", type: Int, optional: false }
+])
+
+// Indexed record - any string key maps to Int
+RecordType([], Int)
+
+// Closed record - no extra fields allowed
+RecordType([
+  { name: "id", type: Int, optional: false }
+], Never)
 ```
 
 ### Equivalence Examples
@@ -74,7 +330,29 @@ These pairs are equivalent:
 type Person = { name: String, age: Int };
 
 // Explicit:
-const Person: Type = RecordType({ name: String, age: Int });
+const Person: Type = RecordType([
+  { name: "name", type: String, optional: false },
+  { name: "age", type: Int, optional: false }
+]);
+```
+
+```
+// Sugar:
+type ClosedPerson = {| name: String, age: Int |};
+
+// Explicit:
+const ClosedPerson: Type = RecordType([
+  { name: "name", type: String, optional: false },
+  { name: "age", type: Int, optional: false }
+], Never);
+```
+
+```
+// Sugar:
+type Scores = { [key: String]: Int };
+
+// Explicit:
+const Scores: Type = RecordType([], Int);
 ```
 
 ```
@@ -92,8 +370,8 @@ type Result<T, E> = { kind: "ok", value: T } | { kind: "err", error: E };
 // Explicit:
 const Result = (T: Type, E: Type): Type =>
   Union(
-    RecordType({ kind: "ok", value: T }),
-    RecordType({ kind: "err", error: E })
+    RecordType([{ name: "kind", type: "ok", optional: false }, { name: "value", type: T, optional: false }]),
+    RecordType([{ name: "kind", type: "err", optional: false }, { name: "error", type: E, optional: false }])
   );
 ```
 
@@ -260,15 +538,187 @@ Map(String, Int).valueType     // Int (equivalent to .typeArgs[1])
 
 These convenience properties are defined by each parameterized type and provide semantic meaning to the type arguments.
 
+### Properties on Function Types
+
+```
+type Fn = (x: Int, y: String) => Boolean;
+
+Fn.parameterTypes    // [Int, String] - comptime only (Array<Type>)
+Fn.returnType        // Boolean - comptime only
+```
+
+These enable implementing TypeScript's utility types:
+
+```
+// TypeScript: type ReturnType<T> = T extends (...args: any[]) => infer R ? R : never
+const ReturnType = (T: Type): Type => T.returnType;
+
+// TypeScript: type Parameters<T> = T extends (...args: infer P) => any ? P : never
+const Parameters = (T: Type): Array<Type> => T.parameterTypes;
+```
+
+### Intersection of Function Types (Overloaded Functions)
+
+When function types are intersected, the result represents an overloaded function. This is used for importing TypeScript overloaded functions from `.d.ts` files.
+
+```
+type Parse = ((String) => Number) & ((Number) => String);
+```
+
+**Call semantics (order-dependent, first match wins):**
+
+At a call site, signatures are checked in order. The first signature where the argument types are subtypes of the parameter types determines the return type.
+
+```
+parse("hello")     // First signature matches → Number
+parse(42)          // Second signature matches → String
+```
+
+If the argument is a union type, the return type is the union of all matching signatures' return types:
+
+```
+const x: String | Number = ...;
+parse(x)           // Returns Number | String
+```
+
+**Properties on intersection of function types:**
+
+```
+type Parse = ((String) => Number) & ((Number) => String);
+
+Parse.signatures              // Array<FunctionType> - ordered list of signatures
+Parse.signatures[0].parameterTypes  // [String]
+Parse.signatures[0].returnType      // Number
+
+// These are ambiguous and produce errors:
+Parse.parameterTypes          // Error: ambiguous for overloaded functions
+Parse.returnType              // Error: ambiguous for overloaded functions
+```
+
+**Note:** DepJS does not have syntax to declare overloaded functions. This representation exists only for `.d.ts` import compatibility. In DepJS code, use pattern matching to achieve similar effects:
+
+```
+const parse = (value: String | Number) => match (value) {
+  case String: parseInt(value);
+  case Number: value.toString();
+};
+```
+
+### Tuple Types
+
+Tuples are fixed-length arrays with known types at each position. They support optional labels for documentation.
+
+**Syntax:**
+```
+// Unlabeled tuple
+type Pair = [Int, String];
+
+// Labeled tuple
+type Point = [x: Int, y: Int];
+
+// Mixed labels (allowed)
+type Mixed = [Int, name: String, Boolean];
+```
+
+**Desugaring:**
+```
+// [Int, String] desugars to:
+Tuple(Int, String)
+
+// [x: Int, y: Int] desugars to:
+Tuple([{ type: Int, label: "x" }, { type: Int, label: "y" }])
+```
+
+**Properties on Tuple Types:**
+```
+type Point = [x: Int, y: Int];
+
+Point.typeArgs      // [Int, Int] - comptime only
+Point.elementType   // Int (union of typeArgs, lazily created) - comptime only
+Point.elements      // Array<TupleElementInfo> - comptime only
+Point.length        // 2 - runtime usable
+```
+
+**TupleElementInfo type:**
+```
+type TupleElementInfo = {
+  type: Type;
+  label: String | Undefined;
+};
+```
+
+**Example:**
+```
+type Point = [x: Int, y: Int];
+
+Point.elements[0]   // { type: Int, label: "x" }
+Point.elements[1]   // { type: Int, label: "y" }
+
+type Pair = [Int, String];
+
+Pair.elements[0]    // { type: Int, label: undefined }
+Pair.elements[1]    // { type: String, label: undefined }
+```
+
+**Indexed access with compile-time constant:**
+```
+const point: [x: Int, y: Int] = [1, 2];
+
+point[0]            // type is Int (compile-time known index)
+point[1]            // type is Int
+
+const i = computeIndex();
+point[i]            // type is Int (elementType - union of all element types)
+```
+
+**Subtyping:**
+
+Tuples are subtypes of arrays with the union element type:
+
+```
+Tuple(Int, String) <: Array(Int | String)
+```
+
+This means tuples can be passed where arrays are expected:
+
+```
+const processList = (items: Array<Int | String>) => items.map(x => x);
+
+const pair: [Int, String] = [1, "hello"];
+processList(pair);  // OK - Tuple(Int, String) <: Array(Int | String)
+```
+
+**Runtime representation:** Tuples are JavaScript arrays at runtime. The distinction is purely at the type level.
+
+**Variadic tuples:** Out of scope. TypeScript's `[T, ...U[]]` syntax is not supported. If encountered in `.d.ts` imports, it should produce a compile error. If needed later, could extend `TupleElementInfo` with a `rest: Boolean` flag.
+
 ### Properties on Record Types
 
 ```
 type Person = { name: String, age: Int };
 
-Person.fieldNames    // ["name", "age"] - runtime usable (string[])
-Person.fields        // { name: { type: String }, age: { type: Int } } - contains types, comptime only
-Person.fields.name.type       // String - comptime only
-Person.fields.name.type.name  // "String" - runtime usable
+Person.fieldNames    // ["name", "age"] - runtime usable
+Person.fields        // Array<FieldInfo> - comptime only
+Person.fields[0]     // { name: "name", type: String, optional: false }
+Person.keysType      // "name" | "age" - comptime only (union of literal types)
+Person.indexType     // undefined (open record)
+```
+
+The difference between `fieldNames` and `keysType`:
+- `fieldNames` returns `Array<String>` - concrete values, runtime-usable
+- `keysType` returns a union Type of string literals - comptime only, useful for type-safe APIs
+
+```
+type ClosedPerson = {| name: String |};
+
+ClosedPerson.indexType   // Never (closed record)
+```
+
+```
+type Scores = { [key: String]: Int };
+
+Scores.fields        // [] (no named fields)
+Scores.indexType     // Int (indexed record)
 ```
 
 ### Properties on Union Types
@@ -467,10 +917,28 @@ Type field information is represented as:
 type FieldInfo = {
   name: String;
   type: Type;
+  optional: Boolean;
 };
 ```
 
-Accessing `field.name` returns `String` (runtime-usable), accessing `field.type` returns `Type` (comptime-only).
+**Property availability:**
+- `field.name` - `String` (runtime-usable)
+- `field.type` - `Type` (comptime-only)
+- `field.optional` - `Boolean` (runtime-usable)
+
+**Example:**
+
+```
+type Person = {
+  id: Int;
+  name: String;
+  nickname?: String;
+};
+
+Person.fields[0]  // { name: "id", type: Int, optional: false }
+Person.fields[1]  // { name: "name", type: String, optional: false }
+Person.fields[2]  // { name: "nickname", type: String, optional: true }
+```
 
 ## Structural Subtyping
 
@@ -482,6 +950,120 @@ type Point3D = { x: Int, y: Int, z: Int };
 
 const p3: Point3D = { x: 1, y: 2, z: 3 };
 const p2: Point2D = p3;  // OK: Point3D has all fields of Point2D
+```
+
+### Closed Records and Subtyping
+
+Closed records (`{| ... |}`) do not allow extra fields, which affects subtyping:
+
+```
+type OpenPoint = { x: Int, y: Int };
+type ClosedPoint = {| x: Int, y: Int |};
+
+const p3 = { x: 1, y: 2, z: 3 };
+
+const open: OpenPoint = p3;      // OK: open records allow extra fields
+const closed: ClosedPoint = p3;  // ERROR: closed records forbid extra fields
+```
+
+A closed record is only a subtype of another closed record with the exact same fields.
+
+### Subtype Checking with `.extends()`
+
+Types have an `.extends()` method that checks subtype relationships at compile time:
+
+```
+T.extends(U)  // Returns Boolean - true if T is a subtype of U
+```
+
+This enables conditional type logic using standard ternary expressions:
+
+```
+// TypeScript: type NonNullable<T> = T extends null | undefined ? never : T
+const NonNullable = (T: Type): Type =>
+  T.extends(Union(Null, Undefined)) ? Never : T;
+
+// TypeScript: type Extract<T, U> = T extends U ? T : never
+const Extract = (T: Type, U: Type): Type =>
+  T.extends(U) ? T : Never;
+
+// TypeScript: type Exclude<T, U> = T extends U ? never : T
+const Exclude = (T: Type, U: Type): Type =>
+  T.extends(U) ? Never : T;
+```
+
+The `.extends()` method returns a compile-time Boolean, so it can only be used in comptime contexts.
+
+## Mapped Types as Functions
+
+TypeScript's mapped types become regular compile-time functions in DepJS. Since types are first-class values with inspectable properties, type transformations are just functions.
+
+### Common Type Utilities
+
+```
+// Make all fields optional
+const Partial = (T: Type): Type => {
+  const newFields = T.fields.map(f => ({ ...f, optional: true }));
+  return RecordType(newFields, T.indexType);
+};
+
+// Make all fields required
+const Required = (T: Type): Type => {
+  const newFields = T.fields.map(f => ({ ...f, optional: false }));
+  return RecordType(newFields, T.indexType);
+};
+
+// Pick specific fields (type-safe: keys must be valid field names)
+const Pick = (T: Type, keys: Array<T.keysType>): Type => {
+  const newFields = T.fields.filter(f => keys.includes(f.name));
+  return RecordType(newFields, T.indexType);
+};
+
+// Omit specific fields
+const Omit = (T: Type, keys: Array<T.keysType>): Type => {
+  const newFields = T.fields.filter(f => !keys.includes(f.name));
+  return RecordType(newFields, T.indexType);
+};
+```
+
+### Usage Examples
+
+```
+type Person = { name: String, age: Int, email?: String };
+
+type PartialPerson = Partial(Person);
+// equivalent to: { name?: String, age?: Int, email?: String }
+
+type NameOnly = Pick(Person, ["name"]);
+// equivalent to: { name: String }
+
+type WithoutEmail = Omit(Person, ["email"]);
+// equivalent to: { name: String, age: Int }
+```
+
+### Type-Safe Key Constraints
+
+Using `T.keysType` ensures compile-time errors for invalid keys:
+
+```
+type Person = { name: String, age: Int };
+
+Pick(Person, ["name"]);        // OK
+Pick(Person, ["name", "foo"]); // ERROR: "foo" is not in "name" | "age"
+```
+
+### Composing Type Functions
+
+Type functions compose naturally:
+
+```
+// Pick fields and make them optional
+const PartialPick = (T: Type, keys: Array<T.keysType>): Type =>
+  Partial(Pick(T, keys));
+
+// Omit fields and close the record
+const StrictOmit = (T: Type, keys: Array<T.keysType>): Type =>
+  RecordType(Omit(T, keys).fields, Never);
 ```
 
 ## Refinement Types (Work in Progress)

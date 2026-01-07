@@ -86,12 +86,80 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Desugaring rules**:
   - `A | B` → `Union(A, B)`
   - `A & B` → `Intersection(A, B)`
-  - `{ name: String }` → `RecordType({ name: String })`
+  - `{ name: String }` → `RecordType([{ name: "name", type: String, optional: false }])`
+  - `{| name: String |}` → `RecordType([...], Never)` (closed record)
+  - `{ [key: String]: T }` → `RecordType([], T)` (indexed record)
   - `(x: A) => B` → `FunctionType([A], B)`
   - `Array<T>` → `Array(T)` (type application becomes function application)
   - `type Foo = expr` → `const Foo: Type = expr`
 - **Built-in type constructors**: `RecordType`, `Union`, `Intersection`, `FunctionType`
 - **Parameterized types are functions**: `Array`, `Map`, etc. are functions from Type to Type
+
+### Record Types and FieldInfo
+
+- **FieldInfo type**: `{ name: String, type: Type, optional: Boolean }`
+- **RecordType constructor**: `RecordType(fields: Array<FieldInfo>, indexType?: Type)`
+- **Record openness via indexType**:
+  - `undefined` (default): Open record, extra fields allowed
+  - `SomeType`: Indexed record, any string key maps to SomeType
+  - `Never`: Closed record, no extra fields allowed
+- **Closed record syntax**: `{| ... |}` for records that forbid extra fields
+- **`T.keysType`**: Returns union of field name literal types (e.g., `"name" | "age"`) - comptime only
+- **`T.fieldNames`**: Returns `Array<String>` of field names - runtime usable
+
+### Literal Types
+
+- String, number, and boolean literals are valid types: `"foo"`, `42`, `true`
+- Essential for discriminated unions and type-safe APIs
+- `T.keysType` returns a union of string literal types
+
+### Subtype Checking and Conditional Types
+
+- **`T.extends(U)`**: Method returning Boolean - true if T is subtype of U (comptime only)
+- **Conditional types**: Use ternary with `.extends()`: `T.extends(U) ? X : Y`
+
+### Mapped Types as Functions
+
+- TypeScript mapped types become regular comptime functions
+- Use `T.fields.map()`, `T.fields.filter()`, and `RecordType()` to transform types
+- `Pick`, `Omit`, `Partial`, `Required` are user-definable functions, not special syntax
+- Type-safe key constraints via `Array<T.keysType>`
+
+### Tuple Types
+
+- **Separate `Tuple` type**: Distinct from Array but subtypes to it
+- **Subtyping**: `Tuple(Int, String) <: Array(Int | String)`
+- **Labeled tuples supported**: `[x: Int, y: Int]` with optional labels
+- **Mixed labels allowed**: `[Int, name: String, Boolean]`
+- **TupleElementInfo**: `{ type: Type, label: String | Undefined }`
+- **Properties**: `.typeArgs`, `.elementType` (union), `.elements`, `.length` (minimum for variadic)
+- **Indexed access**: Compile-time constant index gives specific type; runtime index gives union
+- **Variadic tuples**: Out of scope - error on `.d.ts` import; could extend `TupleElementInfo` with `rest: Boolean` later
+
+### Overloaded Functions
+
+- **Import representation**: Intersection of function types: `((String) => Number) & ((Number) => String)`
+- **Call semantics**: Order-dependent, first matching signature wins (matches TypeScript)
+- **Union arguments**: Return union of all matching return types
+- **Properties**: `.signatures` returns ordered array of function types; `.parameterTypes`/`.returnType` error for ambiguity
+- **Writing overloads**: Not supported in DepJS - use pattern matching instead
+- **Subtyping**: Overloaded function is subtype of each individual signature and of union covering all cases
+
+### Branded/Nominal Types
+
+- **`Branded` type constructor**: `Branded(baseType: Type, brand: String) => Type`
+- **`newtype` syntax sugar**: `newtype UserId = String` desugars to `Branded(String, "UserId")`
+- **Properties**: `.baseType`, `.brand`
+- **Strict nominal subtyping**: No implicit conversion between branded type and base type, or between different brands
+- **Wrap/unwrap**: `TypeName.wrap(value)` and `TypeName.unwrap(value)` - zero runtime cost, type-checking only
+- **Use cases**: Preventing ID mixups, type-safe units, domain modeling
+
+### This Type (Fluent Interfaces)
+
+- **`This` is a special type**: Only valid within record type definitions
+- **Substitution at property access**: When accessing a property that uses `This`, the receiver's type is substituted
+- **Lexical scoping**: `This` refers to the innermost enclosing type definition
+- **Use cases**: Fluent interfaces, builder pattern, method chaining with type preservation
 
 ### Generics as Type Parameters with Defaults
 
