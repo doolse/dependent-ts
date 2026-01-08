@@ -297,4 +297,34 @@ Create additional spec files as topics are discussed and decided. Don't create p
 ## Open Questions
 
 These need to be resolved through discussion:
+
+### Type Inference
+
+- **Function return type inference**: Are return types required or inferred from body?
+  ```
+  const add = (x: Int, y: Int) => x + y;  // Return type inferred as Int?
+  ```
+
+- **Record literal inference**: Widened or precise field types?
+  ```
+  const x = { a: 1, b: "hi" };  // { a: Int, b: String } or { a: 1, b: "hi" }?
+  ```
+
+- **Generic inference specifics**: With "generics as parameters with defaults", what exactly gets inferred?
+  ```
+  const identity = <T>(x: T) => x;
+  identity(42);  // T = Int or T = 42?
+  ```
+
+- **Inference algorithm**: Local/flow-based (like TypeScript) or bidirectional or something else?
+
+- **Inference failure**: What happens when inference can't determine a type? Error? Fallback to Unknown?
+
+- **Contextual typing**: Does expected type flow down into expressions?
+  ```
+  const f: (x: Int) => Int = x => x + 1;  // x inferred as Int from annotation?
+  ```
+
+### Other
+
 - TODO: Refinement types syntax and semantics (see spec/types.md for current thinking)
