@@ -645,37 +645,67 @@ type Identity = <T>(x: T) => T;
 
 **Status:** Direct mapping.
 
-## Tuple Types
+## Array and Tuple Types
+
+DepJS unifies arrays and tuples into a single type system with two syntactic forms. There is no separate Tuple type.
 
 ```typescript
 // TypeScript
 type Point = [number, number];
 type NamedPoint = [x: number, y: number];  // Labeled tuple
+type Numbers = number[];
 type VarArgs = [string, ...number[]];  // Variadic tuple
 ```
 
 ```
-// DepJS
-type Point = [Int, Int];
-type NamedPoint = [x: Int, y: Int];   // Labeled tuple supported
-type Mixed = [Int, name: String];     // Mixed labels allowed
+// DepJS - two syntactic forms for arrays
+type Point = [Int, Int];                // Fixed 2-element array (bracket syntax)
+type NamedPoint = [x: Int, y: Int];     // Labeled fixed array
+type Numbers = Int[];                   // Variable-length array (postfix syntax)
+type VarArgs = [String, ...Int];        // String followed by any Ints
+type Mixed = [Int, name: String];       // Mixed labels allowed
 ```
 
-**Status:** Supported. Tuples are a separate `Tuple` type with subtyping to Array.
+**Status:** Supported. Two syntaxes handle fixed-length (TypeScript tuples) and variable-length arrays.
+
+**Core syntax:**
+- `Int[]` — Variable-length array of Int (postfix syntax)
+- `[Int, String]` — Fixed 2-element array (bracket syntax)
+- `[Int]` — Fixed 1-element array
+- `[x: Int, y: Int]` — Fixed with labels
+- `[Int, ...String]` — Int followed by any number of Strings
+
+**Desugaring:**
+```
+Int[]            → Array(...Int)           // Variable-length
+[Int, String]    → Array(Int, String)      // Fixed-length
+[Int, ...String] → Array(Int, ...String)   // Mixed (variadic)
+```
 
 **Properties:**
 ```
-type Point = [x: Int, y: Int];
+// Fixed-length array
+type Point = [Int, Int];
 
 Point.typeArgs      // [Int, Int] - comptime only
 Point.elementType   // Int (union of typeArgs) - comptime only
-Point.elements      // Array<TupleElementInfo> - comptime only
+Point.elements      // Array<ArrayElementInfo> - comptime only
 Point.length        // 2 - runtime usable
+Point.isFixed       // true - runtime usable
+
+// Variable-length array
+type Ints = Int[];
+
+Ints.typeArgs       // [Int] - comptime only
+Ints.elementType    // Int - comptime only
+Ints.elements       // undefined (unknown length)
+Ints.length         // undefined (unknown length)
+Ints.isFixed        // false - runtime usable
 ```
 
-**TupleElementInfo:**
+**ArrayElementInfo:**
 ```
-type TupleElementInfo = {
+type ArrayElementInfo = {
   type: Type;
   label: String | Undefined;
 };
@@ -683,28 +713,34 @@ type TupleElementInfo = {
 
 **Indexed access:**
 ```
-const point: [x: Int, y: Int] = [1, 2];
+const point: [Int, String] = [1, "hello"];
 
 point[0]            // type is Int (compile-time known index)
-point[1]            // type is Int
+point[1]            // type is String
 
 const i = computeIndex();
-point[i]            // type is Int (elementType - the union)
+point[i]            // type is Int | String (elementType)
 ```
 
 **Subtyping:**
 ```
-Tuple(Int, String) <: Array(Int | String)
+[Int, Int, Int] <: Int[]              // Fixed subtypes variable
+[Int, String] <: (Int | String)[]     // Heterogeneous subtypes union
 ```
 
-Tuples can be passed where arrays are expected:
+Fixed-length arrays can be passed where variable-length arrays are expected:
 ```
-const processList = (items: Array<Int | String>) => items.map(x => x);
+const processList = (items: (Int | String)[]) => items.map(x => x);
 const pair: [Int, String] = [1, "hello"];
-processList(pair);  // OK
+processList(pair);  // OK - [Int, String] <: (Int | String)[]
 ```
 
-**Variadic tuples:** Out of scope. `[T, ...U[]]` syntax produces a compile error if encountered in `.d.ts` imports. Could be added later by extending `TupleElementInfo` with a `rest: Boolean` flag.
+**Variadic arrays:** Supported via `...` syntax:
+```
+[Int, ...String]   // Int followed by any number of Strings
+```
+
+**TypeScript variadic tuples:** `[T, ...U[]]` maps to `[T, ...U]` on `.d.ts` import.
 
 ## Special Types
 
@@ -820,7 +856,10 @@ import express, { Router, type Request } from "express";
 TypeScript types in `.d.ts` are mapped to DepJS types per this document:
 - `any` → `Unknown`
 - `number` → `Number` (supertype of `Int` and `Float`)
-- Unsupported features (variadic tuples, template literals) → compile error
+- Tuples `[T, U]` → `[T, U]` (fixed-length array, bracket syntax)
+- Arrays `T[]` → `T[]` (variable-length array, postfix syntax)
+- Variadic tuples `[T, ...U[]]` → `[T, ...U]`
+- Unsupported features (template literals) → compile error
 - `interface` → record type
 - Overloaded functions → intersection of function types
 
@@ -873,8 +912,8 @@ Effects (file I/O, console, network) happen at runtime. DepJS treats imported fu
 | `typeof` operator    | Supported | Via `typeOf()` function                        |
 | Function types       | Supported | Direct mapping                                 |
 | Overloaded functions | Supported | Via intersection of function types (`.d.ts` import only) |
-| Tuple types          | Supported | With labels, subtyping to Array                |
-| Variadic tuples      | Out of scope | Error on `.d.ts` import; extend later if needed |
+| Array/Tuple types    | Supported | `T[]` for variable, `[T, U]` for fixed         |
+| Variadic tuples      | Supported | Maps to `[T, ...U]` syntax                     |
 | `this` type          | Supported | Via `This` type with substitution at access    |
 | Branded types        | Supported | Via `Branded()` constructor, `newtype` sugar   |
 | .d.ts imports        | Supported | ES module syntax, Node.js resolution, `.d.ts` required |

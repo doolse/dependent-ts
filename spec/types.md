@@ -138,8 +138,8 @@ const Union: (...types: Array<Type>) => Type;
 const Intersection: (...types: Array<Type>) => Type;
 const FunctionType: (params: Array<Type>, returnType: Type) => Type;
 
-// Parameterized types are functions
-const Array: (elementType: Type) => Type;
+// Array type constructor (variadic)
+const Array: (...elementTypes: Array<Type>) => Type;
 
 // Branded/nominal types
 const Branded: (baseType: Type, brand: String) => Type;
@@ -656,93 +656,187 @@ const parse = (value: String | Number) => match (value) {
 };
 ```
 
-### Tuple Types
+### Array Types
 
-Tuples are fixed-length arrays with known types at each position. They support optional labels for documentation.
+Arrays in DepJS have two syntactic forms that correspond to variable-length and fixed-length arrays. There is no separate "Tuple" type.
 
 **Syntax:**
+
 ```
-// Unlabeled tuple
-type Pair = [Int, String];
+// Variable-length arrays (postfix [])
+Int[]                   // Variable-length array of Int
+String[]                // Variable-length array of String
+(Int | String)[]        // Array of union type
 
-// Labeled tuple
-type Point = [x: Int, y: Int];
-
-// Mixed labels (allowed)
-type Mixed = [Int, name: String, Boolean];
+// Fixed-length arrays (bracket syntax)
+[Int]                   // Fixed 1-element array
+[Int, String]           // Fixed 2-element array
+[Int, String, Bool]     // Fixed 3-element array
+[x: Int, y: Int]        // Fixed with labels
+[Int, ...String]        // Int followed by any number of Strings
 ```
 
 **Desugaring:**
-```
-// [Int, String] desugars to:
-Tuple(Int, String)
 
-// [x: Int, y: Int] desugars to:
-Tuple([{ type: Int, label: "x" }, { type: Int, label: "y" }])
-```
+Both syntaxes desugar to the `Array` type constructor:
 
-**Properties on Tuple Types:**
 ```
-type Point = [x: Int, y: Int];
-
-Point.typeArgs      // [Int, Int] - comptime only
-Point.elementType   // Int (union of typeArgs, lazily created) - comptime only
-Point.elements      // Array<TupleElementInfo> - comptime only
-Point.length        // 2 - runtime usable
+Int[]           → Array(...Int)              // Variable-length
+[Int, String]   → Array(Int, String)         // Fixed-length
+[Int, ...String] → Array(Int, ...String)     // Mixed (variadic)
 ```
 
-**TupleElementInfo type:**
+**Labeled Elements:**
+
+Fixed-length arrays can have optional labels for documentation (like TypeScript tuple labels):
+
 ```
-type TupleElementInfo = {
+type Point = [x: Int, y: Int];  // labeled
+type Pair = [Int, String];       // unlabeled
+
+// Mixed labels allowed
+type Mixed = [Int, name: String, Boolean];
+```
+
+**ArrayElementInfo type:**
+```
+type ArrayElementInfo = {
   type: Type;
   label: String | Undefined;
 };
 ```
 
-**Example:**
+**Properties on Array Types:**
+
 ```
-type Point = [x: Int, y: Int];
+// Fixed-length array
+type Point = [Int, Int];
 
-Point.elements[0]   // { type: Int, label: "x" }
-Point.elements[1]   // { type: Int, label: "y" }
+Point.typeArgs      // [Int, Int] - comptime only
+Point.elementType   // Int (union of all element types) - comptime only
+Point.elements      // Array<ArrayElementInfo> - comptime only (fixed arrays only)
+Point.length        // 2 - runtime usable (fixed arrays only)
+Point.isFixed       // true - runtime usable
 
-type Pair = [Int, String];
+// Variable-length array
+type Ints = Int[];
 
-Pair.elements[0]    // { type: Int, label: undefined }
-Pair.elements[1]    // { type: String, label: undefined }
+Ints.typeArgs       // [Int] - comptime only
+Ints.elementType    // Int - comptime only
+Ints.elements       // undefined (unknown length)
+Ints.length         // undefined (unknown length)
+Ints.isFixed        // false - runtime usable
 ```
 
-**Indexed access with compile-time constant:**
+**Indexed access:**
 ```
-const point: [x: Int, y: Int] = [1, 2];
+const point: [Int, String] = [1, "hello"];
 
 point[0]            // type is Int (compile-time known index)
-point[1]            // type is Int
+point[1]            // type is String
 
 const i = computeIndex();
-point[i]            // type is Int (elementType - union of all element types)
+point[i]            // type is Int | String (elementType)
+
+const arr: Int[] = [1, 2, 3];
+arr[0]              // type is Int (same for any index)
 ```
 
 **Subtyping:**
 
-Tuples are subtypes of arrays with the union element type:
+Fixed-length arrays are subtypes of variable-length arrays:
 
 ```
-Tuple(Int, String) <: Array(Int | String)
+[Int, Int, Int] <: Int[]              // Fixed 3 <: variable
+[Int, String] <: (Int | String)[]     // Heterogeneous fixed <: variable union
+[1, 2, 3] <: [Int, Int, Int]          // Literal <: widened
+[Int, Int] <: [Int, ...Int]           // Fixed 2 matches "1 or more"
 ```
 
-This means tuples can be passed where arrays are expected:
+This means fixed-length arrays can be passed where variable-length arrays are expected:
 
 ```
-const processList = (items: Array<Int | String>) => items.map(x => x);
+const sum = (numbers: Int[]) => numbers.reduce((a, b) => a + b, 0);
 
-const pair: [Int, String] = [1, "hello"];
-processList(pair);  // OK - Tuple(Int, String) <: Array(Int | String)
+const triple: [Int, Int, Int] = [1, 2, 3];
+sum(triple);  // OK - [Int, Int, Int] <: Int[]
 ```
 
-**Runtime representation:** Tuples are JavaScript arrays at runtime. The distinction is purely at the type level.
+**Variadic arrays:**
 
-**Variadic tuples:** Out of scope. TypeScript's `[T, ...U[]]` syntax is not supported. If encountered in `.d.ts` imports, it should produce a compile error. If needed later, could extend `TupleElementInfo` with a `rest: Boolean` flag.
+The `...` syntax allows expressing "fixed prefix followed by variable rest":
+
+```
+[Int, ...String]        // Int, then any number of Strings
+[Int, String, ...Bool]  // Int, String, then any Bools
+```
+
+**Generic patterns:**
+
+```
+// Extract first element type
+const first = <T>(arr: [T, ...]) => arr[0];
+first([1, "hello", true]);  // T = Int, returns Int
+
+// Require homogeneous variable-length array
+const sum = <T>(arr: T[]) => arr.reduce((a, b) => a + b);
+sum([1, 2, 3]);  // T = Int
+
+// Head and tail pattern
+const head = <H, ...T>(arr: [H, ...T]) => arr[0];
+const tail = <H, ...T>(arr: [H, ...T]): [...T] => arr.slice(1);
+```
+
+**Runtime representation:** All arrays are JavaScript arrays at runtime. The fixed vs variable distinction is purely at the type level for compile-time checking.
+
+### Array Literal Inference
+
+When an array literal is written without a type annotation, the compiler infers a fixed-length array type with **widened element types**.
+
+**Inference rules:**
+
+```
+const a = [1, 2, 3];        // [Int, Int, Int] (not [1, 2, 3])
+const b = ["a", "b"];       // [String, String] (not ["a", "b"])
+const c = [1, "hello"];     // [Int, String]
+const d = [true, false];    // [Boolean, Boolean]
+```
+
+**Key decisions:**
+
+1. **Length is preserved:** Array literals infer to fixed-length types, preserving the number of elements
+2. **Literals are widened:** Numeric literals widen to `Int` or `Float`, string literals widen to `String`, boolean literals widen to `Boolean`
+3. **Actual values available at comptime:** Even though the *type* is widened, the actual values are still known at compile time and can be accessed via `comptime`
+
+**Rationale:**
+
+Widening by default avoids the "too precise" problem where every array literal has a unique type. Since DepJS has `comptime`, you can always access actual values when needed:
+
+```
+const x = [1, 2, 3];  // Type: [Int, Int, Int]
+
+// At comptime, actual values are still accessible
+comptime {
+  assert(x[0] == 1);    // Works - comptime knows the value
+  assert(x.length == 3); // Works - length is known
+}
+```
+
+**Explicit literal types:**
+
+If you need literal types in an array, use explicit type annotation:
+
+```
+const status: ["pending", "active"] = ["pending", "active"];
+```
+
+**With type annotation widening:**
+
+If you annotate with a variable-length type, the literal widens further:
+
+```
+const a: Int[] = [1, 2, 3];  // Type is Int[], length info lost
+```
 
 ### Properties on Record Types
 

@@ -138,16 +138,37 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - `Pick`, `Omit`, `Partial`, `Required` are user-definable functions, not special syntax
 - Type-safe key constraints via `Array<T.keysType>`
 
-### Tuple Types
+### Array Types
 
-- **Separate `Tuple` type**: Distinct from Array but subtypes to it
-- **Subtyping**: `Tuple(Int, String) <: Array(Int | String)`
-- **Labeled tuples supported**: `[x: Int, y: Int]` with optional labels
-- **Mixed labels allowed**: `[Int, name: String, Boolean]`
-- **TupleElementInfo**: `{ type: Type, label: String | Undefined }`
-- **Properties**: `.typeArgs`, `.elementType` (union), `.elements`, `.length` (minimum for variadic)
-- **Indexed access**: Compile-time constant index gives specific type; runtime index gives union
-- **Variadic tuples**: Out of scope - error on `.d.ts` import; could extend `TupleElementInfo` with `rest: Boolean` later
+- **No separate Tuple type**: Arrays handle both fixed and variable length
+- **Two syntactic forms**:
+  - `Int[]` — Variable-length array of Int (postfix syntax)
+  - `[Int, String]` — Fixed 2-element array (bracket syntax)
+  - `[Int]` — Fixed 1-element array
+  - `[x: Int, y: Int]` — Fixed with labels
+  - `[Int, ...String]` — Int followed by any number of Strings (variadic)
+- **Desugaring**: `Int[]` → `Array(...Int)`, `[Int, String]` → `Array(Int, String)`
+- **ArrayElementInfo**: `{ type: Type, label: String | Undefined }`
+- **Properties**:
+  - `.typeArgs` — Array of type arguments (comptime only)
+  - `.elementType` — Union of all element types (comptime only)
+  - `.elements` — `Array<ArrayElementInfo>` for fixed arrays, undefined for variable (comptime only)
+  - `.length` — Number for fixed arrays, undefined for variable (runtime usable)
+  - `.isFixed` — Boolean (runtime usable)
+- **Indexed access**: Compile-time constant index gives specific type; runtime index gives elementType (union)
+- **Subtyping**:
+  - `[Int, Int, Int] <: Int[]` — Fixed subtypes variable
+  - `[Int, String] <: (Int | String)[]` — Heterogeneous subtypes union
+  - `[1, 2, 3] <: [Int, Int, Int]` — Literal subtypes widened
+- **Generic patterns**: `<T>(arr: [T, ...])` extracts first element type; `<T>(arr: T[])` requires homogeneous
+
+### Array Literal Inference
+
+- **Length preserved**: `[1, 2, 3]` infers to `[Int, Int, Int]` (fixed length)
+- **Literals widened**: Numeric literals widen to `Int`/`Float`, string to `String`, boolean to `Boolean`
+- **Not literal types**: `[1, 2, 3]` is `[Int, Int, Int]`, not `[1, 2, 3]`
+- **Values available at comptime**: Actual values still accessible via `comptime` even though type is widened
+- **Rationale**: Avoids "too precise" problem; use explicit annotation for literal types when needed
 
 ### Overloaded Functions
 
