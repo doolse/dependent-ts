@@ -52,7 +52,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Pattern matching**: `match` expression with `case` clauses, semicolon separated (see Pattern Matching section)
 - **Iteration**: Method chaining (map, filter, reduce, etc.)
 - **Modules**: ES modules
-- **Compile-time assertions**: `assert` keyword
+- **Compile-time assertions**: `assert` builtin function (see Compile-Time Assertions section)
 
 ### Compile-Time Execution Model
 
@@ -92,6 +92,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
   - `(x: A) => B` → `FunctionType([A], B)`
   - `Array<T>` → `Array(T)` (type application becomes function application)
   - `type Foo = expr` → `const Foo: Type = expr`
+  - `x is T` → `typeOf(x).extends(T)` (type predicate)
 - **Built-in type constructors**: `RecordType`, `Union`, `Intersection`, `FunctionType`
 - **Parameterized types are functions**: `Array`, `Map`, etc. are functions from Type to Type
 
@@ -107,9 +108,21 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **`T.keysType`**: Returns union of field name literal types (e.g., `"name" | "age"`) - comptime only
 - **`T.fieldNames`**: Returns `Array<String>` of field names - runtime usable
 
+### Numeric Types
+
+- **`Int` and `Float`**: Separate primitive types for integers and floating-point numbers
+- **`Number`**: Supertype of both (`Int <: Number`, `Float <: Number`)
+- **Literal inference**: `42` is `Int`, `3.14` is `Float`
+- **Array indexing**: Requires `Int` (Float index is an error)
+- **TypeScript interop**: `number` maps to `Number`, accepting both `Int` and `Float`
+- **Compile-time only**: At runtime, all are JS numbers
+- **Conversion**: `toInt(3.14)` and `toFloat(42)` for explicit conversion
+
 ### Literal Types
 
 - String, number, and boolean literals are valid types: `"foo"`, `42`, `true`
+- Integer literals (`42`) have type that is a subtype of `Int`
+- Float literals (`3.14`) have type that is a subtype of `Float`
 - Essential for discriminated unions and type-safe APIs
 - `T.keysType` returns a union of string literal types
 
@@ -168,6 +181,14 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Partial inference supported**: Unlike TypeScript, you can provide some type args and infer the rest
 - **Unambiguous calls**: `identity("hello")` clearly passes to x; `identity("hello", String)` provides T explicitly
 
+### Generic Constraints via Bounded Type
+
+- **`Type<Bound>`**: Parameterized Type representing types that are subtypes of Bound
+- **`Type` is shorthand for `Type<Unknown>`**: Unbounded type parameter
+- **Constraint desugaring**: `<T extends Foo>(x: T)` desugars to `(x: T, T: Type<Foo> = typeOf(x))`
+- **Consistent with other parameterized types**: Just as `Array<String>` means "arrays of strings", `Type<Foo>` means "types subtyping Foo"
+- **Enables body usage**: When `T: Type<Foo>`, the type checker knows `x: T` has all properties of Foo
+
 ### Pattern Matching
 
 - **Syntax**: `match (expr) { case pattern: result; ... };`
@@ -196,10 +217,63 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Top-level await**: Supported at module level
 - **`Try` integration**: `Try` with async thunk returns `Promise<TryResult<T>>`
 
+### Compile-Time Assertions
+
+- **`assert` is a builtin function**: `assert: (condition: Boolean, message?: String) => Void`
+- **Comptime-only**: Condition must be evaluable at compile time
+- **Failure = compile error**: If condition is `false`, compilation fails (with optional message)
+- **No runtime code**: Assertions disappear after compilation
+- **`is` sugar**: `x is T` desugars to `typeOf(x).extends(T)`
+
+### Statement-Position Execution
+
+- **Expressions in statement position are executed for effects**: Even if the result is unused
+- **Ensures `assert(...)` runs**: The compiler evaluates statement-position expressions
+- **Matches JavaScript semantics**: Intuitive for JS developers
+- **No full effect system needed**: Simple rule covers the common cases
+
+### Side Effects and Purity
+
+- **Pure functional core**: DepJS code itself is pure and immutable
+- **`const` only**: All bindings are immutable, no reassignment
+- **Immutable data**: Record updates create new records (`{ ...person, age: 30 }`)
+- **No effect tracking**: Effects are not tracked in the type system
+- **JS interop is the effect boundary**: Calling JS functions can have side effects (console, DOM, network)
+- **Statement-position execution**: Ensures effectful expressions run in order
+- **Pragmatic approach**: "Pure functional core, impure JS shell"
+
+**Runtime effects allowed via JS interop:**
+- Console output (`console.log`)
+- DOM manipulation
+- Network requests (via async/await)
+- Throwing exceptions
+
+**Compile-time effects:**
+- File reading (for codegen)
+- Failing compilation (`assert`)
+
+### JavaScript/TypeScript Interop
+
+- **TypeScript-only interop**: All imported modules must have `.d.ts` type definitions
+- **ES module syntax**: Standard `import { } from "module"` syntax
+- **Named imports**: `import { foo, bar } from "module";`
+- **Default imports**: `import lib from "module";`
+- **Namespace imports**: `import * as lib from "module";`
+- **Type-only imports**: `import type { SomeType } from "module";`
+- **Node.js resolution**: Standard node_modules resolution for finding `.d.ts` files
+- **No raw JS**: Importing modules without `.d.ts` is a compile error
+- **Type mapping**: TypeScript types map to DepJS types (see typescript-compat.md)
+
+**Current scope:**
+- Single file compilation
+- Importing from external modules with `.d.ts`
+
+**Not yet supported:**
+- Exporting from DepJS modules
+- DepJS-to-DepJS imports
+- Multi-file compilation
+
 ## Open Questions
 
 These need to be resolved through discussion:
-- TODO: What can be asserted with `assert`
-- TODO: How to handle side effects (pure functional vs controlled effects)
-- TODO: JavaScript interop story
 - TODO: Refinement types syntax and semantics (see spec/types.md for current thinking)

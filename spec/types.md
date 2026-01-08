@@ -469,7 +469,7 @@ Since type parameters are just optional arguments with defaults, you can provide
 |-------|-------------|
 | `<T>(x: T) => x` | `(x: T, T: Type = typeOf(x)) => x` |
 | `<T, U>(x: T, y: U)` | `(x: T, y: U, T: Type = typeOf(x), U: Type = typeOf(y))` |
-| `<T extends Foo>(x: T)` | TODO: Constraints need design |
+| `<T extends Foo>(x: T)` | `(x: T, T: Type<Foo> = typeOf(x)) => x` |
 
 ### Call-Site Type Argument Sugar
 
@@ -491,10 +491,62 @@ pair(1, "hello", Int);  // U inferred as String
 
 This maintains familiar TypeScript-style call syntax while desugaring to the type-params-at-end model.
 
-### Open Questions
+### Generic Constraints via Bounded Type
 
-- **Constraints**: How does `<T extends Foo>` desugar? Perhaps `T: Type = typeOf(x) & Foo` or a separate constraint mechanism?
-- **Type properties needed**: `typeOf(x).elementType`, `typeOf(f).returnType`, etc.
+Generic constraints use `Type<Bound>` — a parameterized version of `Type` that represents types which are subtypes of `Bound`.
+
+**The `Type<Bound>` type:**
+
+- `Type<Bound>` is the type of all `Type` values that are subtypes of `Bound`
+- `Type` (without parameter) is shorthand for `Type<Unknown>` — any type
+- `Type<Foo> <: Type<Bar>` when `Foo <: Bar` (covariant in the bound)
+
+**Constraint desugaring:**
+
+```
+// Sugar:
+const logLength = <T extends { length: Int }>(x: T) => console.log(x.length);
+
+// Desugars to:
+const logLength = (x: T, T: Type<{ length: Int }> = typeOf(x)) => console.log(x.length);
+```
+
+**How it enables body usage:**
+
+When `T: Type<Foo>`, the type checker knows that any value `x: T` has all the properties of `Foo`. This is what allows `x.length` in the example above — the constraint guarantees `T` has a `length` property.
+
+**Consistency with other parameterized types:**
+
+This follows the same pattern as other parameterized types:
+
+```
+Array<String>    // values that are arrays of strings
+Type<Foo>        // values that are types subtyping Foo
+```
+
+**Examples:**
+
+```
+// Constrained generic function
+const first = <T extends Array<Unknown>>(arr: T) => arr[0];
+// Desugars to:
+const first = (arr: T, T: Type<Array<Unknown>> = typeOf(arr)) => arr[0];
+
+// Multiple constraints via intersection
+const process = <T extends Serializable & Comparable>(x: T) => ...;
+// Desugars to:
+const process = (x: T, T: Type<Serializable & Comparable> = typeOf(x)) => ...;
+```
+
+**Validation:**
+
+When a generic function is called, the type checker verifies that the inferred or provided type argument satisfies the bound:
+
+```
+logLength("hello");     // OK: String <: { length: Int }
+logLength([1, 2, 3]);   // OK: Array<Int> <: { length: Int }
+logLength(42);          // ERROR: Int is not a subtype of { length: Int }
+```
 
 ## Type Properties
 

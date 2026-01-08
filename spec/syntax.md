@@ -105,13 +105,39 @@ See `spec/types.md` for full type system specification.
 
 ## Compile-Time Assertions
 
-Use `assert` keyword:
+`assert` is a comptime-only builtin function:
 
 ```
-assert x is Int;
+assert: (condition: Boolean, message?: String) => Void
 ```
 
-TODO: Full assertion syntax and what can be asserted
+**Basic usage:**
+```
+assert(T.fields.length > 0);
+assert(config.version === 2, "Config must be version 2");
+```
+
+**Type checking with `is` sugar:**
+```
+assert(x is Int);
+// desugars to:
+assert(typeOf(x).extends(Int));
+```
+
+**Semantics:**
+- The condition expression must be comptime-evaluable
+- If condition is `false`, compilation fails with an error
+- If message is provided, it's included in the compile error
+- No runtime code is generated — assertions disappear after compilation
+
+**Statement-position execution:**
+Expressions in statement position (not used as a value) are always executed for their effects. This ensures `assert(...)` calls are evaluated even though they return `Void`.
+
+```
+const x = 5;
+assert(x > 0);   // executed for effect, even though result is unused
+const y = x + 1;
+```
 
 ## Modules
 
@@ -126,4 +152,3 @@ export function helper(s: String): String { return s.toUpperCase(); }
 ## Open Questions
 
 - How pattern matching works with discriminated unions
-- What assertions can be made with `assert`

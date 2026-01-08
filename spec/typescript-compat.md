@@ -15,14 +15,14 @@ This document systematically maps TypeScript type features to DepJS, showing how
 | TypeScript | DepJS | Notes |
 |------------|-------|-------|
 | `string` | `String` | Direct mapping |
-| `number` | `Number` | TODO: Do we distinguish Int/Float? |
+| `number` | `Number` | Supertype of `Int` and `Float` |
 | `boolean` | `Boolean` | Direct mapping |
 | `null` | `Null` | Direct mapping |
 | `undefined` | `Undefined` | Direct mapping |
 | `void` | `Void` | For function returns |
 | `never` | `Never` | Bottom type |
 | `unknown` | `Unknown` | Top type |
-| `any` | TODO | Do we support `any`? Contradicts type safety goals |
+| `any` | `Unknown` | Maps to `Unknown` on `.d.ts` import (preserves soundness) |
 
 ### Literal Types
 
@@ -41,6 +41,46 @@ type Yes = true;
 ```
 
 **Status:** Direct mapping - literal types work the same way.
+
+### Numeric Types
+
+DepJS distinguishes between integers and floating-point numbers, unlike TypeScript which only has `number`.
+
+```
+// DepJS numeric type hierarchy
+Int <: Number
+Float <: Number
+```
+
+**Literal inference:**
+```
+const i = 42;       // type is Int (integer literal)
+const f = 3.14;     // type is Float (floating-point literal)
+const n: Number = i; // OK: Int <: Number
+```
+
+**TypeScript interop:**
+- TypeScript `number` maps to DepJS `Number`
+- Functions accepting `Number` can receive both `Int` and `Float`
+- This is compile-time only; at runtime everything is JS numbers
+
+**Array indexing:**
+```
+const arr = [1, 2, 3];
+const i: Int = 0;
+const f: Float = 0.5;
+
+arr[i]    // OK: Int index
+arr[f]    // ERROR: Float index not allowed
+```
+
+**Conversion:**
+```
+const i: Int = toInt(3.14);     // truncates to 3
+const f: Float = toFloat(42);   // converts to 42.0
+```
+
+**Status:** Supported. `Int` and `Float` are separate primitive types that both subtype `Number`.
 
 ## Object Types
 
@@ -226,7 +266,17 @@ const loggingIdentity = <T extends Lengthwise>(arg: T) => {
 };
 ```
 
-**Status:** Syntax supported, but exact desugaring TBD. The `<T extends Foo>` syntax is recognized, but how it desugars to the type-params-at-end model needs design work (see types.md).
+**Status:** Supported. Constraints desugar using `Type<Bound>`:
+
+```
+// Desugars to:
+const loggingIdentity = (arg: T, T: Type<Lengthwise> = typeOf(arg)) => {
+  console.log(arg.length);
+  return arg;
+};
+```
+
+`Type<Bound>` is a parameterized type representing types that are subtypes of `Bound`. This enables the type checker to verify constraints and allow body usage of constrained properties.
 
 ### Default Type Parameters
 
@@ -738,23 +788,72 @@ const str: String = UserId.unwrap(id);
 
 ## Importing from .d.ts
 
-OPEN QUESTION: How does DepJS import types from `.d.ts` files?
+DepJS uses standard ES module syntax to import from TypeScript-typed modules. All imported modules **must** have `.d.ts` type definitions.
+
+### Syntax
 
 ```
-// Potential syntax
-import type { SomeType } from "some-library";
+// Named imports
+import { readFile, writeFile } from "fs";
+
+// Default imports
+import express from "express";
+
+// Namespace imports
+import * as path from "path";
+
+// Type-only imports
+import type { Request, Response } from "express";
+
+// Mixed
+import express, { Router, type Request } from "express";
 ```
 
-Considerations:
-- Which TypeScript features must be supported for practical .d.ts compatibility?
-- How do we handle features DepJS doesn't support (e.g., `any`)?
-- Do we need a subset of .d.ts or full compatibility?
+### Resolution
+
+- Standard Node.js module resolution
+- Compiler reads `.d.ts` files from `node_modules/@types/*` or bundled declarations
+- If no `.d.ts` exists, the import is a compile error
+
+### Type Mapping
+
+TypeScript types in `.d.ts` are mapped to DepJS types per this document:
+- `any` → `Unknown`
+- `number` → `Number` (supertype of `Int` and `Float`)
+- Unsupported features (variadic tuples, template literals) → compile error
+- `interface` → record type
+- Overloaded functions → intersection of function types
+
+### Calling Imported Functions
+
+```
+import { readFileSync } from "fs";
+
+// readFileSync has type from .d.ts
+// Call it like any other function
+const content = readFileSync("file.txt", "utf-8");
+```
+
+Effects (file I/O, console, network) happen at runtime. DepJS treats imported functions as opaque — their implementations are JavaScript.
+
+### Current Scope
+
+**Supported:**
+- Single file compilation
+- Importing from external modules with `.d.ts`
+
+**Not yet supported:**
+- Exporting from DepJS modules
+- DepJS-to-DepJS imports
+- Multi-file compilation
 
 ## Summary Table
 
 | Feature              | Status    | Notes                                          |
 |----------------------|-----------|------------------------------------------------|
 | Primitive types      | Supported | Direct mapping                                 |
+| Numeric types        | Supported | `Int` and `Float` subtype `Number`; TS `number` → `Number` |
+| `any` type           | Supported | Maps to `Unknown` on import (preserves soundness) |
 | Literal types        | Supported | Direct mapping, `.value` extracts literal      |
 | Object types         | Supported | Use `type` only (no `interface`)               |
 | Optional properties  | Supported | Same `?` syntax                                |
@@ -763,7 +862,7 @@ Considerations:
 | Union types          | Supported | Direct mapping                                 |
 | Intersection types   | Supported | Same `&` syntax                                |
 | Generic types        | Supported | Direct mapping                                 |
-| Generic constraints  | Partial   | Syntax recognized, desugaring TBD              |
+| Generic constraints  | Supported | Via `Type<Bound>` bounded type parameter       |
 | Default type params  | Supported | Via generics desugaring                        |
 | Mapped types         | Supported | Via first-class type functions                 |
 | Conditional types    | Supported | Via `.extends()` and ternary                   |
@@ -778,4 +877,4 @@ Considerations:
 | Variadic tuples      | Out of scope | Error on `.d.ts` import; extend later if needed |
 | `this` type          | Supported | Via `This` type with substitution at access    |
 | Branded types        | Supported | Via `Branded()` constructor, `newtype` sugar   |
-| .d.ts imports        | TODO      | Critical for interop                           |
+| .d.ts imports        | Supported | ES module syntax, Node.js resolution, `.d.ts` required |
