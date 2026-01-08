@@ -47,6 +47,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Type annotations**: TypeScript-style (colon after name)
 - **Bindings**: `const` only (immutable)
 - **Generics**: Angle brackets `<T>`
+- **Comparison operators**: Space-sensitive disambiguation with `<` and `>`
 - **Data types**: `type` keyword only (no `interface` - record types use `type`)
 - **Sum types**: TypeScript-style discriminated unions
 - **Pattern matching**: `match` expression with `case` clauses, semicolon separated (see Pattern Matching section)
@@ -68,6 +69,20 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **`typeof`**: Reserved for JavaScript's runtime `typeof` operator only
 - Use `typeOf(x)` (function call) for compile-time type introspection
 
+### Space Sensitivity for Comparison Operators
+
+- **`<` and `>` disambiguation**: Space determines meaning
+  - `f<T>` (no space) → type argument application
+  - `f < T` (space) → less-than comparison
+- **Rule**: `<` immediately after identifier = type arguments; `<` after whitespace = comparison
+- **Same for `>`**: closing type arguments vs greater-than
+- **Example**:
+  ```
+  f<Int>(x)     // type argument call
+  f < x         // comparison
+  a < b && c > d  // two comparisons (spaces required)
+  ```
+
 ### First-Class Types
 
 - **Types are opaque values**: Can be passed around but only inspected via properties
@@ -82,19 +97,43 @@ Create additional spec files as topics are discussed and decided. Don't create p
 ### Type Syntax as Sugar
 
 - **Type syntax desugars to function calls**: There is no separate type-level language; type syntax is sugar for operations on `Type` values
-- **Type contexts**: Type syntax is triggered in: `type X = <expr>`, `const x: <expr>`, `<T, U>` generic params/args
-- **Desugaring rules**:
-  - `A | B` → `Union(A, B)`
-  - `A & B` → `Intersection(A, B)`
+- **`<>` vs `()` for function/constructor calls**:
+  - `f<args>` — arguments are parsed with **type syntax** (sugar applies)
+  - `f(args)` — arguments are parsed with **expression syntax** (no sugar)
+  - `f<typeArgs>(valueArgs)` — type syntax for type args, expression syntax for value args
+- **Type contexts**: Type syntax is triggered in:
+  - `type X = <expr>` — the expression after `=`
+  - `const x: <expr>` — the type annotation
+  - `<T, U>` — generic parameter declarations
+  - `f<args>` — arguments inside angle brackets
+- **Desugaring rules** (in type syntax):
+  - `A | B` → `Union<A, B>`
+  - `A & B` → `Intersection<A, B>`
   - `{ name: String }` → `RecordType([{ name: "name", type: String, optional: false }])`
   - `{| name: String |}` → `RecordType([...], Never)` (closed record)
   - `{ [key: String]: T }` → `RecordType([], T)` (indexed record)
-  - `(x: A) => B` → `FunctionType([A], B)`
-  - `Array<T>` → `Array(T)` (type application becomes function application)
+  - `(x: A) => B` → `FunctionType<[A], B>`
   - `type Foo = expr` → `const Foo: Type = expr`
   - `x is T` → `typeOf(x).extends(T)` (type predicate)
+- **`<>` works on any function**: Not just type constructors. Allows passing inline record types to any function expecting `Type`
 - **Built-in type constructors**: `RecordType`, `Union`, `Intersection`, `FunctionType`
 - **Parameterized types are functions**: `Array`, `Map`, etc. are functions from Type to Type
+- **`|` and `&` operators**:
+  - In type syntax: `A | B` → `Union<A, B>`, `A & B` → `Intersection<A, B>`
+  - In expression syntax: `|` is bitwise OR, `&` is bitwise AND (JavaScript semantics)
+  - To create unions in expression context, use `Union(A, B)` or `Union<A, B>`
+- **Example disambiguation**:
+  ```
+  Array<{ a: Int }>           // { a: Int } is a record TYPE (type syntax)
+  Array({ a: Int })           // { a: Int } is a record LITERAL (expression syntax) - error!
+  Union<{ a: Int }, { b: Int }>  // Both are record types
+  RecordType([{ name: "a", type: Int, optional: false }])  // Record literal (FieldInfo)
+
+  // Operators in different contexts
+  type X = Int | String;      // Union (type syntax)
+  const x = 5 | 3;            // Bitwise OR = 7 (expression syntax)
+  const Y = Union(Int, String); // Union via function call (expression syntax)
+  ```
 
 ### Record Types and FieldInfo
 

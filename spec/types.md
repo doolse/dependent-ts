@@ -21,30 +21,79 @@ logTypeName(Person);  // "Person"
 
 Type syntax is sugar for function calls on Type values. There is no separate "type-level language" - just expressions that evaluate to `Type` values with convenient syntax.
 
+### `<>` vs `()` for Function Calls
+
+The key to disambiguation between type syntax and expression syntax is the choice of brackets for function/constructor calls:
+
+- **`f<args>`** — arguments are parsed with **type syntax** (sugar applies)
+- **`f(args)`** — arguments are parsed with **expression syntax** (no sugar)
+- **`f<typeArgs>(valueArgs)`** — type syntax for type args, expression syntax for value args
+
+This applies to **any function**, not just type constructors. Using `<>` triggers type syntax for the arguments.
+
+**Examples:**
+```
+Array<Int>                  // Int is in type syntax (trivially the same)
+Array<{ a: Int }>           // { a: Int } is a record TYPE
+Array({ a: Int })           // { a: Int } is a record LITERAL - type error!
+
+Union<{ a: Int }, { b: Int }>  // Both are record types
+Union(A, B)                    // A and B are expressions (must be Type values)
+
+// Passing inline record types to any function
+processType<{ name: String }>;  // Works - type syntax
+type T = { name: String };
+processType(T);                 // Also works - T is a Type value
+```
+
 ### Type Contexts
 
-Certain syntactic positions trigger "type syntax" interpretation:
+Type syntax is triggered in these positions:
 
 1. **Type definitions:** `type Foo = <type-expr>`
 2. **Type annotations:** `const x: <type-expr>` or `(x: <type-expr>) =>`
 3. **Generic parameters:** `<T, U>` in definitions
-4. **Generic arguments:** `Array<String>` in type application
+4. **Angle bracket arguments:** `f<args>` — arguments inside `<>`
 
 ### Desugaring Rules
 
-Within type contexts, the following sugar applies:
+Within type syntax, the following sugar applies:
 
 | Type Syntax | Desugars To |
 |-------------|-------------|
-| `A \| B` | `Union(A, B)` |
-| `A & B` | `Intersection(A, B)` |
+| `A \| B` | `Union<A, B>` |
+| `A & B` | `Intersection<A, B>` |
 | `{ name: String }` | `RecordType([{ name: "name", type: String, optional: false }])` |
 | `{ name?: String }` | `RecordType([{ name: "name", type: String, optional: true }])` |
 | `{\| name: String \|}` | `RecordType([{ name: "name", type: String, optional: false }], Never)` |
 | `{ [key: String]: Int }` | `RecordType([], Int)` |
-| `(x: A) => B` | `FunctionType([A], B)` |
-| `Array<T>` | `Array(T)` |
+| `(x: A) => B` | `FunctionType<[A], B>` |
 | `type Foo = expr` | `const Foo: Type = expr` |
+
+Note: `RecordType` uses `()` because it takes `Array<FieldInfo>` (value), not `Type` arguments.
+
+### Operators in Expression Context
+
+In expression syntax, `|` and `&` are **bitwise operators** (matching JavaScript):
+
+```
+// Type syntax - union/intersection
+type X = Int | String;        // Union<Int, String>
+type Y = Foo & Bar;           // Intersection<Foo, Bar>
+
+// Expression syntax - bitwise
+const a = 5 | 3;              // bitwise OR = 7
+const b = 5 & 3;              // bitwise AND = 1
+const c = 5 ^ 3;              // bitwise XOR = 6
+const d = ~5;                 // bitwise NOT
+
+// Creating unions in expression context - use function call
+const Z = Union(Int, String);       // () with Type values
+const W = Union<Int, String>;       // <> with type syntax
+const V = Intersection(Foo, Bar);   // () with Type values
+```
+
+This matches JavaScript semantics and provides a clear mental model: the meaning of `|` and `&` depends on context.
 
 **Record syntax:**
 - `{ ... }` — Open record (extra fields allowed)
@@ -326,10 +375,10 @@ RecordType([
 These pairs are equivalent:
 
 ```
-// Sugar:
+// Sugar (type syntax):
 type Person = { name: String, age: Int };
 
-// Explicit:
+// Explicit (expression syntax):
 const Person: Type = RecordType([
   { name: "name", type: String, optional: false },
   { name: "age", type: Int, optional: false }
@@ -337,10 +386,10 @@ const Person: Type = RecordType([
 ```
 
 ```
-// Sugar:
+// Sugar (type syntax):
 type ClosedPerson = {| name: String, age: Int |};
 
-// Explicit:
+// Explicit (expression syntax):
 const ClosedPerson: Type = RecordType([
   { name: "name", type: String, optional: false },
   { name: "age", type: Int, optional: false }
@@ -348,32 +397,38 @@ const ClosedPerson: Type = RecordType([
 ```
 
 ```
-// Sugar:
+// Sugar (type syntax):
 type Scores = { [key: String]: Int };
 
-// Explicit:
+// Explicit (expression syntax):
 const Scores: Type = RecordType([], Int);
 ```
 
 ```
-// Sugar:
+// Sugar (type syntax):
 type StringOrInt = String | Int;
 
-// Explicit:
-const StringOrInt: Type = Union(String, Int);
+// Explicit (expression syntax) - both forms work:
+const StringOrInt: Type = Union<String, Int>;  // <> for type syntax
+const StringOrInt: Type = Union(String, Int);  // () works too since String/Int are Type values
 ```
 
 ```
-// Sugar:
+// Sugar (type syntax):
 type Result<T, E> = { kind: "ok", value: T } | { kind: "err", error: E };
 
-// Explicit:
+// Explicit (expression syntax):
 const Result = (T: Type, E: Type): Type =>
   Union(
     RecordType([{ name: "kind", type: "ok", optional: false }, { name: "value", type: T, optional: false }]),
     RecordType([{ name: "kind", type: "err", optional: false }, { name: "error", type: E, optional: false }])
   );
 ```
+
+**Key insight:** For simple type identifiers like `String`, `Int`, etc., both `<>` and `()` work identically because the identifier evaluates to the same Type value either way. The distinction matters for:
+- Inline record types: `Union<{ a: Int }, { b: Int }>` vs `Union({ a: Int }, { b: Int })` (error!)
+- Inline function types: `Array<(x: Int) => String>` vs `Array((x: Int) => String)` (arrow function!)
+- Union/intersection sugar: `A | B` only works in type syntax
 
 ### Mixing Sugar and Explicit Forms
 

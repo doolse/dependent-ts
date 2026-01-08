@@ -28,11 +28,70 @@ const transform: (x: Int) => Int = (x) => x * 2;
 
 ## Generics
 
-Angle bracket syntax:
+Angle bracket syntax for type parameters:
 
 ```
 function identity<T>(x: T): T { return x; }
 const nums: Array<Int> = [1, 2, 3];
+```
+
+**Call syntax:** Type arguments come BEFORE value arguments:
+```
+identity<Int>(5);
+pair<Int, String>(1, "hello");
+```
+
+**Desugaring:** Type params become regular params at the END with defaults:
+```
+// Definition
+const identity = <T>(x: T) => x;
+// Desugars to:
+const identity = (x: T, T: Type = typeOf(x)) => x;
+
+// Call
+identity<Int>(5);
+// Desugars to:
+identity(5, Int);
+```
+
+This allows partial inference — provide some type args, infer the rest:
+```
+pair<Int>(1, "hello");      // T=Int explicit, U=String inferred
+pair(1, "hello", Int);      // equivalent desugared form
+```
+
+## Comparison Operators and Space Sensitivity
+
+To disambiguate `<` and `>` between comparison operators and type arguments, **space sensitivity** applies:
+
+- `f<T>` (no space) → type argument application
+- `f < T` (space required) → comparison operator
+
+```
+// Type arguments (no space before <)
+identity<Int>(5);
+Array<String>;
+process<{ name: String }>;
+
+// Comparisons (space required before <)
+x < y;
+a < b && c > d;
+count < limit;
+```
+
+**Rules:**
+- `<` immediately following an identifier (no whitespace) starts a type argument list
+- `<` preceded by whitespace is the less-than comparison operator
+- Same logic applies to `>` for closing type arguments vs greater-than
+
+```
+// These are different:
+f<T>(x)      // call f with type arg T, then value arg x
+f < T        // compare f to T
+
+// Complex expressions - use parentheses for clarity
+(a < b) > c  // two comparisons
+a < (b > c)  // two comparisons
 ```
 
 ## Data Types
@@ -51,25 +110,77 @@ type Person = {
 TypeScript-style discriminated unions:
 
 ```
-type Result<T, E> = { kind: 'ok'; value: T } | { kind: 'err'; error: E };
-type Option<T> = { kind: 'some'; value: T } | { kind: 'none' };
+type Result<T, E> = { kind: "ok", value: T } | { kind: "err", error: E };
+type Option<T> = { kind: "some", value: T } | { kind: "none" };
 ```
 
-TODO: How the compiler identifies the discriminant property is not yet decided.
+**Discriminant identification:** The compiler uses the TypeScript approach — any property whose type is a union of distinct literals across variants serves as a discriminant.
+
+```
+type Event =
+  | { type: "click", x: Int, y: Int }
+  | { type: "keypress", key: String }
+  | { type: "scroll", delta: Int };
+// 'type' is a discriminant (distinct literal in each variant)
+```
 
 ## Pattern Matching
 
 `match` expression with `case` clauses separated by semicolons:
 
 ```
-const describe = (x: Int): String => match(x) {
-  case 0: "zero";
-  case 1: "one";
-  case _: "many";
+match (expr) {
+  case pattern: result;
+  case pattern: result;
 };
 ```
 
-TODO: Syntax for matching on sum types/tagged unions
+**Pattern types:**
+
+```
+// Literal patterns
+match (x) {
+  case 0: "zero";
+  case 1: "one";
+  case _: "other";  // wildcard
+};
+
+// Type patterns (narrows the type)
+match (x) {
+  case Int: x + 1;
+  case String: x.length;
+  case _: 0;
+};
+
+// Property patterns (discriminated unions)
+match (result) {
+  case { kind: "ok", value }: value * 2;
+  case { kind: "err", message }: log(message);
+};
+
+// Nested patterns
+match (response) {
+  case { status: "ok", data: { items } }: items.length;
+  case { status: "error" }: -1;
+};
+```
+
+**Binding syntax:**
+- Implicit: `{ value }` binds `value`
+- Explicit rename: `{ value: v }` binds `v`
+
+**Guards with `when`:**
+```
+match (x) {
+  case Int when x > 0: "positive";
+  case Int when x < 0: "negative";
+  case Int: "zero";
+};
+```
+
+**Exhaustiveness:** The compiler verifies all cases are handled. Wildcard `_` satisfies exhaustiveness.
+
+**Return type:** Union of all branch types.
 
 ## Iteration
 
@@ -92,16 +203,119 @@ type Person = { name: String, age: Int };
 const T = Person;
 
 // Types can be passed to functions
-const describeType = (T) => T.name;
+const describeType = (T: Type) => T.name;
 describeType(Person);  // "Person"
 
-// Type introspection via properties
+// Type introspection via properties (runtime-usable)
 Person.name          // "Person"
 Person.fieldNames    // ["name", "age"]
-Person.fields        // { name: { type: String }, age: { type: Int } }
+
+// Type introspection (comptime-only)
+Person.fields        // Array<FieldInfo>
+Person.fields[0]     // { name: "name", type: String, optional: false }
 ```
 
+**Note:** `Type` values exist only at compile time. Properties returning `Type` (like `.fields[n].type`) are comptime-only.
+
 See `spec/types.md` for full type system specification.
+
+## Type Syntax vs Expression Syntax
+
+The `<>` vs `()` distinction controls how function arguments are parsed:
+
+- `f<args>` — arguments parsed with **type syntax** (sugar applies)
+- `f(args)` — arguments parsed with **expression syntax** (no sugar)
+- `f<typeArgs>(valueArgs)` — both
+
+```
+// Type syntax (sugar applies)
+Array<Int>
+Array<{ name: String }>      // { } is record TYPE
+Union<{ a: Int }, { b: Int }>
+processType<(x: Int) => String>  // function TYPE
+
+// Expression syntax (no sugar)
+RecordType([{ name: "a", type: Int, optional: false }])  // { } is record literal
+someFunc((x: Int) => x + 1)  // arrow function
+```
+
+**Type contexts** (where type syntax applies):
+- `type X = <expr>` — after `=`
+- `const x: <expr>` — type annotations
+- `<T, U>` — generic parameter declarations
+- `f<args>` — inside angle brackets
+
+## Operators
+
+**Arithmetic:** `+`, `-`, `*`, `/`, `%`
+
+**Comparison:** `<`, `>`, `<=`, `>=`, `===`, `!==`
+- Note: `<` and `>` require space before them (see Space Sensitivity section)
+
+**Logical:** `&&`, `||`, `!`
+
+**Bitwise:** `|`, `&`, `^`, `~`
+- In **expression syntax**: bitwise operations (JavaScript semantics)
+- In **type syntax**: `|` → Union, `&` → Intersection
+
+```
+// Type syntax
+type X = Int | String;      // Union
+
+// Expression syntax
+const a = 5 | 3;            // Bitwise OR = 7
+const b = 5 & 3;            // Bitwise AND = 1
+```
+
+## Primitive Types
+
+- `Int` — integers
+- `Float` — floating-point numbers
+- `Number` — supertype of `Int` and `Float`
+- `String` — strings
+- `Boolean` — `true` or `false`
+- `Null`, `Undefined` — null and undefined values
+- `Never` — bottom type (no values)
+- `Unknown` — top type (any value)
+
+```
+const i: Int = 42;
+const f: Float = 3.14;
+const n: Number = i;     // Int <: Number
+```
+
+## Error Handling
+
+**throw statement:**
+```
+throw Error("something went wrong");
+```
+
+**Try builtin** (catches exceptions, returns union):
+```
+const result = Try(() => JSON.parse(input));
+// result: { ok: true, value: Json } | { ok: false, error: Error }
+
+match (result) {
+  case { ok: true, value }: processJson(value);
+  case { ok: false, error }: log(error.message);
+};
+```
+
+## Async/Await
+
+Direct 1:1 mapping to JavaScript:
+
+```
+const fetchUser = async (id: String): Promise<User> => {
+  const response = await fetch(`/users/${id}`);
+  return await response.json();
+};
+```
+
+- `async` keyword required for functions using `await`
+- `await` only valid on `Promise<T>` expressions
+- Top-level await supported
 
 ## Compile-Time Assertions
 
@@ -151,4 +365,4 @@ export function helper(s: String): String { return s.toUpperCase(); }
 
 ## Open Questions
 
-- How pattern matching works with discriminated unions
+None currently — see CLAUDE.md for any remaining design decisions.
