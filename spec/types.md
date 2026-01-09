@@ -193,9 +193,138 @@ const Array: (...elementTypes: Array<Type>) => Type;
 // Branded/nominal types
 const Branded: (baseType: Type, brand: String) => Type;
 
+// Type metadata wrapper
+const WithMetadata: (baseType: Type, metadata: TypeMetadata) => Type;
+
 // Self-referential type for fluent interfaces
 const This: Type;  // Special type, only valid within record type definitions
 ```
+
+#### WithMetadata and TypeMetadata
+
+`WithMetadata` attaches metadata (name, type arguments, annotations) to a type. This is the underlying mechanism that powers parameterized type definitions and annotations.
+
+**TypeMetadata type:**
+```
+type TypeMetadata = {
+  name?: String;
+  typeArgs?: Array<Type>;
+  annotations?: Array<Unknown>;
+};
+```
+
+**Basic usage:**
+```
+// Attaching a name to a type alias
+const UserId: Type = WithMetadata(String, { name: "UserId" });
+UserId.name  // "UserId"
+
+// Parameterized type with typeArgs
+const Container = (T: Type): Type => WithMetadata(
+  RecordType([{ name: "value", type: T, optional: false }]),
+  { name: "Container", typeArgs: [T] }
+);
+Container<String>.name      // "Container<String>"
+Container<String>.baseName  // "Container"
+Container<String>.typeArgs  // [String]
+
+// With annotations
+const DeprecatedUser: Type = WithMetadata(
+  RecordType([{ name: "name", type: String, optional: false }]),
+  { name: "DeprecatedUser", annotations: [Deprecated({ reason: "use User" })] }
+);
+DeprecatedUser.annotations  // [{ reason: "use User" }]
+```
+
+**Key property:** `WithMetadata` does not change type identity for subtyping purposes. A type with metadata is still structurally equivalent to the base type:
+
+```
+const AnnotatedString = WithMetadata(String, { annotations: [NonEmpty] });
+
+// AnnotatedString is still assignable to/from String
+const s: String = AnnotatedString.wrap("hello");  // ERROR - no wrap needed
+const s: String = "hello";  // This works
+const a: AnnotatedString = "hello";  // This also works - same underlying type
+```
+
+This contrasts with `Branded`, which *does* affect subtyping.
+
+**Desugaring of `type` declarations:**
+
+The `type` syntax desugars to functions using `WithMetadata`:
+
+```
+// Non-parameterized type alias
+type UserId = String;
+// desugars to:
+const UserId: Type = WithMetadata(String, { name: "UserId" });
+
+// Parameterized type
+type Container<T> = { value: T };
+// desugars to:
+const Container = (T: Type): Type => WithMetadata(
+  RecordType([{ name: "value", type: T, optional: false }]),
+  { name: "Container", typeArgs: [T] }
+);
+
+// Type alias wrapping another parameterized type
+type Wrapper<T> = Container<T>;
+// desugars to:
+const Wrapper = (T: Type): Type => WithMetadata(
+  Container(T),
+  { name: "Wrapper", typeArgs: [T] }
+);
+
+// With annotations
+@Deprecated({ reason: "use NewContainer" })
+type OldContainer<T> = { value: T };
+// desugars to:
+const OldContainer = (T: Type): Type => WithMetadata(
+  RecordType([{ name: "value", type: T, optional: false }]),
+  {
+    name: "OldContainer",
+    typeArgs: [T],
+    annotations: [Deprecated({ reason: "use NewContainer" })]
+  }
+);
+
+// With type parameter annotations
+type Container<@Covariant T> = { value: T };
+// desugars to:
+const Container = (T: Type): Type => WithMetadata(
+  RecordType([{ name: "value", type: T, optional: false }]),
+  {
+    name: "Container",
+    typeArgs: [WithMetadata(T, { annotations: [Covariant] })]
+  }
+);
+
+// Combined: type annotations + type parameter annotations
+@Serializable
+type Box<@Covariant T extends Showable> = { value: T };
+// desugars to:
+const Box = (T: Type<Showable>): Type => WithMetadata(
+  RecordType([{ name: "value", type: T, optional: false }]),
+  {
+    name: "Box",
+    typeArgs: [WithMetadata(T, { annotations: [Covariant] })],
+    annotations: [Serializable]
+  }
+);
+```
+
+**Type parameter annotations** are accessed via the `typeArgs` entries:
+
+```
+Container<String>.typeArgs[0]              // String (structurally)
+Container<String>.typeArgs[0].annotations  // [Covariant]
+Container<String>.annotations              // [] (type-level annotations)
+
+Box<Int>.typeArgs[0].annotations           // [Covariant]
+Box<Int>.annotations                       // [Serializable]
+```
+
+The annotation describes how the type is *used in that parameter position*, not an intrinsic property of the type argument itself. Since `WithMetadata` doesn't affect subtyping, `Container<String>.typeArgs[0]` is still structurally equivalent to `String`.
 
 #### The `This` Type (Fluent Interfaces)
 
@@ -460,7 +589,7 @@ const identity = (x: T, T: Type = typeOf(x)): T => x;
 **Key insight:** Type parameters come LAST, after value parameters. This makes inference unambiguous:
 
 ```
-identity("hello");          // x = "hello", T inferred as String
+identity("hello");          // x = "hello", T inferred as "hello"
 identity("hello", String);  // x = "hello", T explicitly String
 ```
 
@@ -481,7 +610,7 @@ const pair = (
   U: Type = typeOf(b)
 ) => { fst: a, snd: b };
 
-pair(1, "hello");  // T=Int, U=String (both inferred)
+pair(1, "hello");  // T=1, U="hello" (both inferred)
 
 // With array/function types - need type properties
 const map = (
@@ -526,6 +655,57 @@ Since type parameters are just optional arguments with defaults, you can provide
 | `<T, U>(x: T, y: U)` | `(x: T, y: U, T: Type = typeOf(x), U: Type = typeOf(y))` |
 | `<T extends Foo>(x: T)` | `(x: T, T: Type<Foo> = typeOf(x)) => x` |
 
+### Function Return Type Inference
+
+Function return types are inferred from the function body using **flow-based (local) inference**. This means types are determined by analyzing the body forward, one expression at a time.
+
+**Basic inference:**
+
+```
+const double = (x: Int) => x * 2;           // Return type inferred as Int
+const greet = (name: String) => `Hi ${name}`; // Return type inferred as String
+const pair = (a: Int, b: String) => [a, b]; // Return type inferred as [Int, String]
+```
+
+**Explicit return types are optional but allowed:**
+
+```
+const double = (x: Int): Int => x * 2;      // Explicit annotation
+const greet = (name: String): String => `Hi ${name}`;
+```
+
+**Recursive functions require explicit return type annotations:**
+
+```
+// ERROR: Cannot infer return type of recursive function
+const factorial = (n: Int) => n === 0 ? 1 : n * factorial(n - 1);
+
+// OK: Return type explicitly annotated
+const factorial = (n: Int): Int => n === 0 ? 1 : n * factorial(n - 1);
+```
+
+This is because flow-based inference analyzes the function body left-to-right. When it encounters the recursive call `factorial(n - 1)`, it doesn't yet know `factorial`'s return type—that's what we're trying to determine. With an explicit annotation, the type checker knows the return type before analyzing the body.
+
+**Mutually recursive functions also require annotations:**
+
+```
+// Both need annotations
+const isEven = (n: Int): Boolean => n === 0 ? true : isOdd(n - 1);
+const isOdd = (n: Int): Boolean => n === 0 ? false : isEven(n - 1);
+```
+
+**Why flow-based inference (not Hindley-Milner)?**
+
+DepJS uses flow-based inference rather than Hindley-Milner (HM) because:
+
+1. **Subtyping compatibility**: HM with subtyping is notoriously complex. DepJS has structural subtyping for records, which doesn't mix well with HM's unification-based approach.
+
+2. **Predictable errors**: Flow-based inference produces errors at the point of inconsistency. HM can report errors far from the actual problem, making debugging harder.
+
+3. **TypeScript familiarity**: Flow-based inference matches TypeScript's behavior, making the language more approachable.
+
+The trade-off is requiring annotations on recursive functions, which is a reasonable cost for these benefits.
+
 ### Call-Site Type Argument Sugar
 
 When calling a generic function, angle bracket syntax is sugar for passing type arguments at the end:
@@ -541,10 +721,220 @@ pair(1, "hello", Int, String);
 
 // Partial application - provide first type, infer second:
 pair<Int>(1, "hello");
-pair(1, "hello", Int);  // U inferred as String
+pair(1, "hello", Int);  // U inferred as "hello"
 ```
 
 This maintains familiar TypeScript-style call syntax while desugaring to the type-params-at-end model.
+
+### Generic Type Inference
+
+When a generic function is called without explicit type arguments, the type parameter is inferred from `typeOf(x)` — the **literal type** of the argument, not a widened type.
+
+**Literal types are preserved in generic inference:**
+
+```
+const identity = <T>(x: T): T => x;
+
+identity(42);        // T = 42 (literal type), returns type 42
+identity("hello");   // T = "hello" (literal type), returns type "hello"
+identity(true);      // T = true (literal type), returns type true
+```
+
+**Rationale:**
+
+This follows from the desugaring and literal type preservation:
+1. `<T>(x: T)` desugars to `(x: T, T: Type = typeOf(x))`
+2. `const y = 42` has type `42` (literal preservation)
+3. Therefore `typeOf(42)` returns `42`
+4. So T defaults to `42`
+
+**Structural subtyping handles assignment:**
+
+```
+const result = identity(42);  // result: 42
+const n: Int = result;        // OK, 42 <: Int
+const m: Number = result;     // OK, 42 <: Number
+```
+
+**Explicit type arguments can widen:**
+
+```
+identity<Int>(42);     // T = Int (explicit), returns type Int
+identity(42, Int);     // Same, using desugared form
+```
+
+**With multiple type parameters:**
+
+```
+const pair = <T, U>(a: T, b: U) => { fst: a, snd: b };
+
+pair(1, "hello");              // T = 1, U = "hello"
+                               // Returns { fst: 1, snd: "hello" }
+
+pair<Int, String>(1, "hello"); // T = Int, U = String (explicit)
+                               // Returns { fst: Int, snd: String }
+```
+
+**Consistency with arrays and records:**
+
+This is consistent with array and record literal inference:
+- `[1, 2, 3]` has type `[1, 2, 3]` (literal preservation)
+- `{ a: 1 }` has type `{ a: 1 }` (literal preservation)
+- `identity(42)` returns type `42` (literal preservation)
+
+All follow the same principle: preserve literal types, let structural subtyping handle widening when needed.
+
+### Contextual Typing
+
+Contextual typing allows the **expected type** of an expression to flow downward, helping infer types that couldn't otherwise be determined. DepJS supports full contextual typing.
+
+**Lambda parameter inference:**
+
+The most important use case — lambda parameters are inferred from expected function type:
+
+```
+const f: (x: Int) => Int = x => x + 1;
+//                         ^-- x inferred as Int from annotation
+
+// Without contextual typing, this would require redundant annotation:
+const f: (x: Int) => Int = (x: Int) => x + 1;
+```
+
+**Callback parameters:**
+
+When passing lambdas to functions, parameter types are inferred from the expected signature:
+
+```
+const nums: Int[] = [1, 2, 3];
+nums.map(x => x + 1);       // x inferred as Int from Array<Int>.map signature
+nums.filter(x => x > 0);    // x inferred as Int
+
+// Higher-order functions
+const apply = (f: (Int) => Int, x: Int) => f(x);
+apply(n => n * 2, 5);       // n inferred as Int
+```
+
+**Array literals:**
+
+Expected array type flows into elements:
+
+```
+const names: String[] = ["alice", "bob"];
+// Elements contextually typed as String
+
+// Useful for ensuring compatibility:
+const coords: [Int, Int] = [x, y];
+// x and y must be Int-compatible
+```
+
+**Record literals:**
+
+Expected record type flows into field values:
+
+```
+type Config = { timeout: Int, retries: Int };
+const cfg: Config = { timeout: 5000, retries: 3 };
+// Field values contextually typed
+```
+
+**Interaction with literal preservation:**
+
+Contextual typing provides an expected type, but literal types are still preserved when compatible:
+
+```
+const f: (x: Int) => Int = x => x + 1;
+// x has type Int (from context), not a literal type
+
+const arr: Int[] = [1, 2, 3];
+// Array has type Int[] (from annotation), not [1, 2, 3]
+// The annotation "wins" — this is explicit widening
+```
+
+When there's no annotation, literal types are preserved:
+
+```
+const arr = [1, 2, 3];           // Type: [1, 2, 3] (no context, literal preserved)
+const arr: Int[] = [1, 2, 3];   // Type: Int[] (context provides wider type)
+```
+
+**How it works:**
+
+1. Before analyzing an expression, check if there's an expected type from context
+2. If so, use it to fill in missing type information (lambda params, etc.)
+3. Verify the expression's type is compatible with the expected type
+4. The expected type can widen what would otherwise be inferred as literal types
+
+This matches TypeScript's contextual typing behavior, making the language familiar and reducing annotation burden.
+
+### Inference Failure
+
+When the compiler cannot determine a type, it produces a **compile error** rather than silently falling back to `Unknown`.
+
+**Examples of inference failure:**
+
+```
+// ERROR: Cannot infer type of parameter 'x'
+const f = x => x + 1;
+
+// ERROR: Cannot infer type - no contextual type and no annotation
+const g = (x) => x;
+```
+
+**Why error instead of Unknown:**
+
+1. **Explicit is better than implicit**: Falling back to `Unknown` would hide programmer mistakes
+2. **Predictable behavior**: Errors point directly to where annotations are needed
+3. **No runtime surprises**: `Unknown` would require runtime checks that might fail unexpectedly
+4. **Matches TypeScript's `noImplicitAny`**: Familiar behavior for TypeScript users
+
+**When annotations are required:**
+
+- Lambda parameters without contextual typing
+- Recursive function return types
+- Ambiguous expressions where multiple types are valid
+
+**The fix is always explicit annotation:**
+
+```
+const f = (x: Int) => x + 1;           // OK: parameter annotated
+const g = <T>(x: T): T => x;           // OK: generic with annotation
+```
+
+### Flow-Based Inference
+
+DepJS uses **flow-based (local) type inference**, analyzing code forward one expression at a time. This is the same approach as TypeScript.
+
+**How it works:**
+
+1. Analyze expressions left-to-right, top-to-bottom
+2. Each binding's type is determined when it's declared
+3. Types flow forward through the program
+4. Contextual typing flows expected types downward into expressions
+
+**Example:**
+
+```
+const x = 42;                    // x: 42 (inferred from literal)
+const y = x + 1;                 // y: Int (inferred from + operation)
+const z = [x, y];                // z: [42, Int] (inferred from elements)
+const f = (a: Int) => a * 2;     // f: (Int) => Int (param annotated, return inferred)
+```
+
+**Why flow-based (not Hindley-Milner):**
+
+1. **Subtyping compatibility**: HM with subtyping is notoriously complex. DepJS has structural subtyping for records, which doesn't mix well with HM's unification-based approach.
+
+2. **Predictable errors**: Flow-based inference produces errors at the point of inconsistency. HM can report errors far from the actual problem, making debugging harder.
+
+3. **TypeScript familiarity**: Flow-based inference matches TypeScript's behavior, making the language more approachable.
+
+4. **Simpler mental model**: Programmers can trace type inference by reading code top-to-bottom.
+
+**Trade-offs:**
+
+- Recursive functions require explicit return type annotations
+- Some programs that would type-check under HM need annotations in flow-based
+- But: errors are more localized and easier to understand
 
 ### Generic Constraints via Bounded Type
 
@@ -846,51 +1236,95 @@ const tail = <H, ...T>(arr: [H, ...T]): [...T] => arr.slice(1);
 
 ### Array Literal Inference
 
-When an array literal is written without a type annotation, the compiler infers a fixed-length array type with **widened element types**.
+When an array literal is written without a type annotation, the compiler infers a fixed-length array type with **literal element types preserved**.
 
 **Inference rules:**
 
 ```
-const a = [1, 2, 3];        // [Int, Int, Int] (not [1, 2, 3])
-const b = ["a", "b"];       // [String, String] (not ["a", "b"])
-const c = [1, "hello"];     // [Int, String]
-const d = [true, false];    // [Boolean, Boolean]
+const a = [1, 2, 3];        // [1, 2, 3]
+const b = ["a", "b"];       // ["a", "b"]
+const c = [1, "hello"];     // [1, "hello"]
+const d = [true, false];    // [true, false]
 ```
 
 **Key decisions:**
 
 1. **Length is preserved:** Array literals infer to fixed-length types, preserving the number of elements
-2. **Literals are widened:** Numeric literals widen to `Int` or `Float`, string literals widen to `String`, boolean literals widen to `Boolean`
-3. **Actual values available at comptime:** Even though the *type* is widened, the actual values are still known at compile time and can be accessed via `comptime`
+2. **Literal types preserved:** Each element retains its literal type (`1`, `"hello"`, `true`)
+3. **Subtyping handles compatibility:** `[1, 2, 3] <: [Int, Int, Int] <: Int[]`, so literal-typed arrays work anywhere wider types are expected
 
 **Rationale:**
 
-Widening by default avoids the "too precise" problem where every array literal has a unique type. Since DepJS has `comptime`, you can always access actual values when needed:
+In an immutable language with structural subtyping, preserving literal types provides strictly more information without causing problems:
 
 ```
-const x = [1, 2, 3];  // Type: [Int, Int, Int]
+const x = [1, 2, 3];  // Type: [1, 2, 3]
 
-// At comptime, actual values are still accessible
-comptime {
-  assert(x[0] == 1);    // Works - comptime knows the value
-  assert(x.length == 3); // Works - length is known
-}
+// Still works everywhere Int[] is expected (subtyping)
+const sum = (nums: Int[]) => nums.reduce((a, b) => a + b, 0);
+sum(x);  // OK: [1, 2, 3] <: Int[]
+
+// But you get precise type info when you want it
+const first: 1 = x[0];  // OK: first element is known to be 1
 ```
 
-**Explicit literal types:**
+**Explicit widening:**
 
-If you need literal types in an array, use explicit type annotation:
-
-```
-const status: ["pending", "active"] = ["pending", "active"];
-```
-
-**With type annotation widening:**
-
-If you annotate with a variable-length type, the literal widens further:
+If you want a wider type, use explicit annotation:
 
 ```
-const a: Int[] = [1, 2, 3];  // Type is Int[], length info lost
+const a: [Int, Int, Int] = [1, 2, 3];  // Widened to [Int, Int, Int]
+const b: Int[] = [1, 2, 3];            // Widened to Int[], length info lost
+```
+
+### Record Literal Inference
+
+When a record literal is written without a type annotation, the compiler infers a record type with **literal field types preserved**.
+
+**Inference rules:**
+
+```
+const x = { a: 1, b: "hi" };     // { a: 1, b: "hi" }
+const y = { name: "Alice" };     // { name: "Alice" }
+const z = { flag: true, n: 42 }; // { flag: true, n: 42 }
+```
+
+**Key decisions:**
+
+1. **Literal types preserved:** Each field retains its literal type (`1`, `"hi"`, `true`)
+2. **Structure is preserved:** The set of field names and their optionality is preserved exactly
+3. **Subtyping handles compatibility:** `{ a: 1 } <: { a: Int }`, so literal-typed records work anywhere wider types are expected
+
+**Rationale:**
+
+In an immutable language with structural subtyping, preserving literal types provides strictly more information without causing problems:
+
+```
+const config = { port: 8080, debug: true };  // Type: { port: 8080, debug: true }
+
+// Still works everywhere { port: Int, debug: Boolean } is expected (subtyping)
+const startServer = (c: { port: Int, debug: Boolean }) => ...;
+startServer(config);  // OK: { port: 8080, debug: true } <: { port: Int, debug: Boolean }
+
+// But you get precise type info - discriminants work naturally
+const result = { kind: "ok", value: 42 };  // Type: { kind: "ok", value: 42 }
+// No annotation needed for discriminated unions!
+```
+
+**Explicit widening:**
+
+If you want a wider type, use explicit annotation:
+
+```
+const config: { port: Int, debug: Boolean } = { port: 8080, debug: true };
+```
+
+**Nested records:**
+
+Literal type preservation applies recursively to nested structures:
+
+```
+const nested = { outer: { inner: 1 } };  // { outer: { inner: 1 } }
 ```
 
 ### Properties on Record Types
@@ -1140,6 +1574,266 @@ Person.fields[0]  // { name: "id", type: Int, optional: false }
 Person.fields[1]  // { name: "name", type: String, optional: false }
 Person.fields[2]  // { name: "nickname", type: String, optional: true }
 ```
+
+## Annotations
+
+Annotations attach compile-time metadata to types and fields. They have no special semantics in the language itself—they are simply comptime-available data that can be inspected via type properties.
+
+### Syntax
+
+The `@` prefix attaches a comptime value as an annotation:
+
+**On type definitions** (before the name):
+```
+@Deprecated({ reason: "use NewUser" })
+type OldUser = { name: String };
+
+@JsonName("user_record")
+@Versioned(2)
+type User = { name: String, age: Int };
+```
+
+**On record fields** (before the field name):
+```
+type User = {
+  @JsonName("user_id") userId: String;
+  @Min(0) @Max(150) age: Int;
+  @NonEmpty name: String;
+};
+```
+
+**On function parameters and return types** (before the type):
+```
+const validate = (name: @NonEmpty String, age: @Positive Int): @Valid User => {
+  // ...
+};
+
+const parse = (input: String): @Validated Config => {
+  // ...
+};
+```
+
+**On type parameters** (before the parameter name):
+```
+type Container<@Covariant T> = { value: T };
+type Function<@Contravariant A, @Covariant B> = (a: A) => B;
+type Box<@Covariant T extends Showable> = { value: T };
+```
+
+### Annotation Values
+
+Any comptime-evaluable expression can be an annotation:
+
+```
+// String annotation
+@"deprecated" type OldApi = { ... };
+
+// Record annotation
+@{ author: "Alice", version: 1 } type MyType = { ... };
+
+// Type instance annotation (most common)
+@Deprecated({ reason: "use v2", since: "1.0" })
+type OldUser = { ... };
+```
+
+Annotation types are just regular types—there is no special `Annotation` base type required:
+
+```
+type Deprecated = { reason: String, since?: String };
+type JsonName = String;
+type Min = { value: Int };
+type Max = { value: Int };
+type NonEmpty = { kind: "NonEmpty" };
+type Positive = { kind: "Positive" };
+```
+
+### Accessing Annotations
+
+#### On Types
+
+Types have two annotation-related properties:
+
+```
+T.annotations           // Array<Unknown> - all annotations (comptime only)
+T.annotation<A>         // A | Undefined - first annotation of type A (comptime only)
+```
+
+**Example:**
+
+```
+@Deprecated({ reason: "use NewUser" })
+@JsonName("old_user")
+type OldUser = { name: String };
+
+OldUser.annotations;              // [{ reason: "use NewUser" }, "old_user"]
+OldUser.annotation<Deprecated>;   // { reason: "use NewUser" }
+OldUser.annotation<JsonName>;     // "old_user"
+OldUser.annotation<Min>;          // undefined
+```
+
+#### On Fields
+
+The `FieldInfo` type is extended to include annotations:
+
+```
+type FieldInfo = {
+  name: String;
+  type: Type;
+  optional: Boolean;
+  annotations: Array<Unknown>;  // annotations on this field
+};
+```
+
+**Example:**
+
+```
+type User = {
+  @JsonName("user_id") userId: String;
+  @Min(0) @Max(150) age: Int;
+};
+
+User.fields[0].annotations;  // ["user_id"]
+User.fields[1].annotations;  // [{ value: 0 }, { value: 150 }]
+```
+
+#### On Function Parameter Types
+
+For function types, annotations on parameter types are accessible via the type's annotation properties:
+
+```
+type Validator = (name: @NonEmpty String, age: @Positive Int) => Boolean;
+
+Validator.parameterTypes[0].annotation<NonEmpty>;   // { kind: "NonEmpty" }
+Validator.parameterTypes[1].annotation<Positive>;   // { kind: "Positive" }
+```
+
+### Use Cases
+
+Annotations are purely compile-time metadata. Common use cases include:
+
+**Validation code generation:**
+```
+const withValidation = <F extends Function>(f: F): F => {
+  const params = F.parameters;
+
+  const validators = params.map(p => {
+    const nonEmpty = p.type.annotation<NonEmpty>;
+    const positive = p.type.annotation<Positive>;
+
+    match (true) {
+      case _ when nonEmpty != undefined:
+        (value: Unknown) => {
+          if ((value as String).length === 0) {
+            throw Error(`${p.name} cannot be empty`);
+          };
+        };
+      case _ when positive != undefined:
+        (value: Unknown) => {
+          if ((value as Int) <= 0) {
+            throw Error(`${p.name} must be positive`);
+          };
+        };
+      case _: (_: Unknown) => {};
+    };
+  });
+
+  (...args: F.parameterTypes) => {
+    validators.forEach((v, i) => v(args[i]));
+    f(...args);
+  };
+};
+```
+
+**Serialization hints:**
+```
+type ApiResponse = {
+  @JsonName("user_id") userId: String;
+  @JsonName("created_at") createdAt: String;
+};
+
+// Generate serialization code at compile time
+const serializer = generateSerializer(ApiResponse);
+```
+
+**Documentation/deprecation:**
+```
+@Deprecated({ reason: "use fetchUserV2", since: "2.0" })
+const fetchUser = (id: String): Promise<User> => { ... };
+
+// Compile-time warning generation
+const checkDeprecations = (module: Module) => {
+  module.exports.forEach(e => {
+    const dep = typeOf(e).annotation<Deprecated>;
+    if (dep != undefined) {
+      warn(`${e.name} is deprecated: ${dep.reason}`);
+    };
+  });
+};
+```
+
+### Desugaring
+
+Annotations desugar to `WithMetadata` calls (see [WithMetadata and TypeMetadata](#withmetadata-and-typemetadata)):
+
+**Type annotations:**
+```
+@Deprecated({ reason: "use NewUser" })
+type OldUser = { name: String };
+
+// desugars to:
+const OldUser: Type = WithMetadata(
+  RecordType([{ name: "name", type: String, optional: false }]),
+  { name: "OldUser", annotations: [Deprecated({ reason: "use NewUser" })] }
+);
+```
+
+**Multiple annotations:**
+```
+@Serializable
+@Versioned(2)
+type User = { name: String };
+
+// desugars to:
+const User: Type = WithMetadata(
+  RecordType([{ name: "name", type: String, optional: false }]),
+  { name: "User", annotations: [Serializable, Versioned(2)] }
+);
+```
+
+**Field annotations** are included in `FieldInfo`:
+```
+type User = {
+  @JsonName("user_id") userId: String;
+};
+
+// desugars to:
+const User: Type = WithMetadata(
+  RecordType([
+    { name: "userId", type: String, optional: false, annotations: [JsonName("user_id")] }
+  ]),
+  { name: "User" }
+);
+```
+
+**Annotated parameter/return types** use `WithMetadata` on the type:
+```
+const validate = (name: @NonEmpty String): @Valid User => { ... };
+
+// The parameter type @NonEmpty String desugars to:
+WithMetadata(String, { annotations: [NonEmpty] })
+
+// The return type @Valid User desugars to:
+WithMetadata(User, { annotations: [Valid] })
+```
+
+### Design Notes
+
+- Annotations are **comptime only**—they have no runtime representation
+- The `@` syntax is sugar for `WithMetadata` with the `annotations` field
+- Multiple annotations are allowed on the same target
+- Annotation order is preserved in the `annotations` array
+- There is no special `Annotation` base type—any value can be an annotation
+- `WithMetadata` does not affect subtyping—`@NonEmpty String` is still assignable to `String`
 
 ## Structural Subtyping
 
@@ -1715,20 +2409,185 @@ const result = fetchUser(id)
 - **Top-level await** — supported for convenience, mirrors modern JS
 - **`Try` integration** — existing error handling works with async code
 
-## Refinement Types (Work in Progress)
+## Compile-Time AST Access (Expr Type)
 
-Refinement types constrain values with predicates:
+DepJS supports compile-time access to expression ASTs via the `Expr<T>` type, similar to C#'s `Expression<T>`. When a function parameter is typed as `Expr<T>`, the compiler captures the argument's AST rather than evaluating it.
 
+### Basic Usage
+
+```
+const logQuery = (filter: Expr<(User) => Boolean>) => {
+  console.log("Filter AST:", filter);
+  // filter is the AST representation, not a function
+};
+
+logQuery(u => u.age > 18);  // Captures AST, doesn't evaluate
+```
+
+The `Expr<T>` type is **comptime-only** because it contains `Type` values. If you need runtime AST access, you must manually extract the information you need into runtime-usable structures.
+
+### The Expr Type
+
+`Expr<T>` is a parameterized type where `T` is the type of the expression if it were evaluated. The AST is represented as a discriminated union:
+
+```
+type Expr<T> =
+  | { kind: "literal", value: Unknown, type: Type }
+  | { kind: "identifier", name: String, type: Type }
+  | { kind: "binary", op: BinaryOp, left: Expr<Unknown>, right: Expr<Unknown>, type: Type }
+  | { kind: "unary", op: UnaryOp, operand: Expr<Unknown>, type: Type }
+  | { kind: "call", fn: Expr<Unknown>, args: Array<Expr<Unknown>>, type: Type }
+  | { kind: "lambda", params: Array<ParamInfo>, body: Expr<Unknown>, type: Type }
+  | { kind: "property", object: Expr<Unknown>, name: String, type: Type }
+  | { kind: "index", object: Expr<Unknown>, index: Expr<Unknown>, type: Type }
+  | { kind: "conditional", condition: Expr<Boolean>, then: Expr<Unknown>, else: Expr<Unknown>, type: Type }
+  | { kind: "record", fields: Array<{ name: String, value: Expr<Unknown> }>, type: Type }
+  | { kind: "array", elements: Array<Expr<Unknown>>, type: Type }
+  | { kind: "spread", expr: Expr<Unknown>, type: Type };
+
+type BinaryOp = "+" | "-" | "*" | "/" | "%" | "==" | "!=" | "<" | ">" | "<=" | ">=" | "&&" | "||" | "|" | "&" | "^";
+type UnaryOp = "-" | "!" | "~";
+
+type ParamInfo = { name: String, type: Type };
+```
+
+Every node includes a `type` field containing the compile-time type of that subexpression.
+
+### Capture Semantics
+
+When an argument position has type `Expr<T>`:
+
+1. The argument expression is **not evaluated**
+2. Instead, the compiler builds an AST representation
+3. The AST is passed to the function at compile time
+4. Type checking ensures the expression would have type `T` if evaluated
+
+```
+const inspect = (e: Expr<Int>) => {
+  match (e) {
+    case { kind: "binary", op: "+", left, right }:
+      console.log("Addition of", left, "and", right);
+    case { kind: "literal", value }:
+      console.log("Literal:", value);
+    case _:
+      console.log("Other expression");
+  };
+};
+
+inspect(1 + 2);      // Captures binary expression AST
+inspect(42);         // Captures literal AST
+inspect("hello");    // ERROR: String is not Int
+```
+
+### Use Cases
+
+**Query Translation (LINQ-style):**
+
+```
+type Query<T> = { filter: Expr<(T) => Boolean> | Undefined, /* ... */ };
+
+const where = <T>(q: Query<T>, predicate: Expr<(T) => Boolean>): Query<T> =>
+  { ...q, filter: predicate };
+
+const toSQL = <T>(q: Query<T>): String => {
+  const filterSQL = q.filter ? exprToSQL(q.filter) : "1=1";
+  return `SELECT * FROM ${T.name} WHERE ${filterSQL}`;
+};
+
+const exprToSQL = (e: Expr<Unknown>): String => match (e) {
+  case { kind: "binary", op: ">", left: { kind: "property", name }, right: { kind: "literal", value } }:
+    `${name} > ${value}`;
+  case { kind: "binary", op: "==", left: { kind: "property", name }, right: { kind: "literal", value } }:
+    `${name} = ${value}`;
+  // ... more cases
+  case _: throw Error("Unsupported expression");
+};
+
+// Usage
+const query = where(from<User>(), u => u.age > 18);
+const sql = toSQL(query);  // "SELECT * FROM User WHERE age > 18"
+```
+
+**Compile-Time Validation:**
+
+```
+const assertPure = (e: Expr<Unknown>): Void => {
+  match (e) {
+    case { kind: "call" }: throw Error("Calls not allowed in pure expression");
+    case { kind: "binary", left, right }:
+      assertPure(left);
+      assertPure(right);
+    // ... recursively check all nodes
+    case _: {};
+  };
+};
+```
+
+**DSL Construction:**
+
+```
+const formula = (e: Expr<Number>): Formula => {
+  match (e) {
+    case { kind: "binary", op: "+", left, right }:
+      Add(formula(left), formula(right));
+    case { kind: "identifier", name }:
+      Variable(name);
+    case { kind: "literal", value }:
+      Constant(value as Number);
+    case _: throw Error("Unsupported formula syntax");
+  };
+};
+
+const f = formula(x + y * 2);  // Builds Formula AST from expression
+```
+
+### Manual Reification
+
+Since `Expr<T>` is comptime-only (contains `Type`), it cannot exist at runtime. If you need runtime AST access, manually extract the information:
+
+```
+// Runtime-usable AST (no Type fields)
+type RuntimeExpr =
+  | { kind: "literal", value: Unknown }
+  | { kind: "binary", op: String, left: RuntimeExpr, right: RuntimeExpr }
+  | { kind: "property", objectType: String, name: String }
+  // ... etc
+
+const reify = (e: Expr<Unknown>): RuntimeExpr => match (e) {
+  case { kind: "literal", value }: { kind: "literal", value };
+  case { kind: "binary", op, left, right }:
+    { kind: "binary", op, left: reify(left), right: reify(right) };
+  case { kind: "property", object, name, type }:
+    { kind: "property", objectType: type.name, name };
+  // ... etc
+};
+
+// At compile time, reify the Expr
+comptime const runtimeAST = reify(someExpr);
+// runtimeAST is now a regular value usable at runtime
+```
+
+### Limitations
+
+- `Expr<T>` is **comptime-only** — cannot be stored in runtime data structures without reification
+- Only expressions can be captured, not statements or declarations
+- The captured AST reflects source syntax, not any transformations or optimizations
+- Identifiers in the AST are names only — they don't carry scope/binding information
+
+## Refinement Types (Future Version)
+
+Refinement types are **deferred to a future version** of DepJS. The core type system is complete without them.
+
+**Potential future syntax:**
 ```
 type PosInt = Int where this > 0;
 type NonEmpty<T> = Array<T> where this.length > 0;
 ```
 
-**Open questions:**
-- Syntax: `where` clause vs other options
-- When should refinements be checked (compile-time vs runtime)?
-- Need explicit control: if marked `comptime`, must not silently fall back to runtime
-- What predicates can be proven at compile time?
-- Subtyping rules: when does `A where p1` subtype `A where p2`?
+This feature would require resolving:
+- Syntax design (`where` clause vs alternatives)
+- Compile-time vs runtime checking strategy
+- Decidable predicate subset
+- Subtyping rules for refinements
 
-TODO: Full refinement type design pending further discussion.
+For now, use branded types or runtime validation for similar use cases.

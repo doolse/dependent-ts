@@ -135,9 +135,19 @@ Create additional spec files as topics are discussed and decided. Don't create p
   const Y = Union(Int, String); // Union via function call (expression syntax)
   ```
 
+### WithMetadata and Type Metadata
+
+- **`WithMetadata` builtin**: `WithMetadata(baseType: Type, metadata: TypeMetadata) => Type`
+- **TypeMetadata type**: `{ name?: String, typeArgs?: Array<Type>, annotations?: Array<Unknown> }`
+- **Attaches metadata to types**: name, type arguments for parameterized types, annotations
+- **Does not affect subtyping**: `WithMetadata(String, { annotations: [NonEmpty] })` is still assignable to `String`
+- **Desugaring of `type` declarations**: `type Foo = T` desugars to `const Foo = WithMetadata(T, { name: "Foo" })`
+- **Parameterized types**: `type Container<T> = { value: T }` desugars to function returning `WithMetadata(..., { name: "Container", typeArgs: [T] })`
+- **Annotations desugar to WithMetadata**: `@Deprecated type X = T` → `WithMetadata(T, { name: "X", annotations: [Deprecated] })`
+
 ### Record Types and FieldInfo
 
-- **FieldInfo type**: `{ name: String, type: Type, optional: Boolean }`
+- **FieldInfo type**: `{ name: String, type: Type, optional: Boolean, annotations: Array<Unknown> }`
 - **RecordType constructor**: `RecordType(fields: Array<FieldInfo>, indexType?: Type)`
 - **Record openness via indexType**:
   - `undefined` (default): Open record, extra fields allowed
@@ -203,11 +213,21 @@ Create additional spec files as topics are discussed and decided. Don't create p
 
 ### Array Literal Inference
 
-- **Length preserved**: `[1, 2, 3]` infers to `[Int, Int, Int]` (fixed length)
-- **Literals widened**: Numeric literals widen to `Int`/`Float`, string to `String`, boolean to `Boolean`
-- **Not literal types**: `[1, 2, 3]` is `[Int, Int, Int]`, not `[1, 2, 3]`
-- **Values available at comptime**: Actual values still accessible via `comptime` even though type is widened
-- **Rationale**: Avoids "too precise" problem; use explicit annotation for literal types when needed
+- **Length preserved**: `[1, 2, 3]` infers to `[1, 2, 3]` (fixed length)
+- **Literal types preserved**: Each element retains its literal type
+- **Structural subtyping handles widening**: `[1, 2, 3] <: [Int, Int, Int]` so assignment to wider types just works
+- **Rationale**: In an immutable language with structural subtyping, preserving literal types provides strictly more information without problems
+- **Explicit widening**: Use type annotation if wider type needed: `const x: Int[] = [1, 2, 3]`
+
+### Record Literal Inference
+
+- **Literal types preserved**: `{ a: 1, b: "hi" }` infers to `{ a: 1, b: "hi" }` (not `{ a: Int, b: String }`)
+- **Structure preserved**: Field names and optionality preserved exactly
+- **Nested preservation**: Applies recursively: `{ outer: { inner: 1 } }` → `{ outer: { inner: 1 } }`
+- **Consistent with arrays**: Same literal preservation rules as array literal inference
+- **Structural subtyping handles widening**: `{ a: 1 } <: { a: Int }` so assignment just works
+- **Discriminated unions benefit**: Literal types preserved naturally for discriminant fields
+- **Explicit widening**: Use type annotation if wider type needed: `const x: { a: Int } = { a: 1 }`
 
 ### Overloaded Functions
 
@@ -234,6 +254,31 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Lexical scoping**: `This` refers to the innermost enclosing type definition
 - **Use cases**: Fluent interfaces, builder pattern, method chaining with type preservation
 
+### Annotations
+
+- **`@` syntax**: Attaches comptime values as metadata to types, fields, function parameter/return types, and type parameters
+- **Placement**:
+  - On type definitions: `@Deprecated type OldUser = ...` (before the name)
+  - On record fields: `{ @JsonName("user_id") userId: String }` (before the field name)
+  - On function params/returns: `(x: @NonEmpty String): @Valid User` (before the type)
+  - On type parameters: `type Container<@Covariant T> = ...` (before the parameter name)
+- **Any comptime value**: Annotations can be strings, records, or type instances—no special `Annotation` base type required
+- **Access via properties**:
+  - `T.annotations` — `Array<Unknown>` of all annotations (comptime only)
+  - `T.annotation<A>` — First annotation of type A, returns `A | Undefined` (comptime only)
+  - Type parameter annotations: Access via `T.typeArgs[i].annotations` (type args wrapped in `WithMetadata`)
+- **FieldInfo extended**: `{ name, type, optional, annotations }` includes field annotations
+- **No special semantics**: Annotations are purely metadata; they don't affect language behavior
+- **Use cases**: Validation, serialization hints, documentation/deprecation, code generation, variance markers
+
+### Function Return Type Inference
+
+- **Return types inferred from body**: Non-recursive functions don't need return type annotations
+- **Flow-based inference**: Types determined by forward analysis, one expression at a time
+- **Recursive functions require annotation**: Cannot infer when the recursive call is encountered before the type is known
+- **Mutually recursive functions also require annotations**: Same reason as direct recursion
+- **Why not Hindley-Milner**: HM with subtyping is complex; flow-based gives predictable errors and matches TypeScript
+
 ### Generics as Type Parameters with Defaults
 
 - **Type params come last**: `<T>(x: T)` desugars to `(x: T, T: Type = typeOf(x))`
@@ -248,6 +293,48 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Constraint desugaring**: `<T extends Foo>(x: T)` desugars to `(x: T, T: Type<Foo> = typeOf(x))`
 - **Consistent with other parameterized types**: Just as `Array<String>` means "arrays of strings", `Type<Foo>` means "types subtyping Foo"
 - **Enables body usage**: When `T: Type<Foo>`, the type checker knows `x: T` has all properties of Foo
+
+### Generic Type Inference
+
+- **Literal types preserved**: `identity(42)` infers T = `42` (not `Int`)
+- **Follows from desugaring**: `<T>(x: T)` desugars to `(x: T, T: Type = typeOf(x))`, and `typeOf(42)` returns `42`
+- **Consistent with arrays/records**: Same literal preservation principle throughout the type system
+- **Explicit widening**: Use `identity<Int>(42)` to get T = `Int`
+- **Structural subtyping handles assignment**: Result type `42` is assignable to `Int` or `Number`
+- **Multiple type params**: `pair(1, "hello")` infers T = `1`, U = `"hello"`
+
+### Contextual Typing
+
+- **Full contextual typing**: Expected type flows down into expressions (like TypeScript)
+- **Lambda parameters**: `const f: (x: Int) => Int = x => x + 1` — x inferred as Int from annotation
+- **Callback parameters**: `[1,2,3].map(x => x + 1)` — x inferred from Array<Int>.map signature
+- **Array/record literals**: Expected type flows into elements/fields
+- **Interaction with literal preservation**: Context can widen literal types: `const arr: Int[] = [1, 2, 3]` gives type `Int[]`, not `[1, 2, 3]`
+- **No context = literal types preserved**: `const arr = [1, 2, 3]` gives type `[1, 2, 3]`
+
+### Inference Failure
+
+- **Error, not Unknown**: When inference cannot determine a type, it's a compile error (not fallback to `Unknown`)
+- **Matches TypeScript's `noImplicitAny`**: Explicit is better than implicit
+- **Annotations required**: Lambda params without context, recursive function returns, ambiguous expressions
+- **Fix is explicit annotation**: `const f = (x: Int) => x + 1`
+
+### Flow-Based Inference
+
+- **Flow-based (local) inference**: Analyze code forward, one expression at a time (like TypeScript)
+- **Left-to-right, top-to-bottom**: Each binding's type determined at declaration
+- **Contextual typing flows downward**: Expected types flow into expressions
+- **Not Hindley-Milner**: HM with subtyping is complex; flow-based gives predictable, localized errors
+- **Trade-off**: Recursive functions need annotations, but errors are easier to understand
+
+### Compile-Time AST Access (Expr Type)
+
+- **`Expr<T>` type**: When parameter typed as `Expr<T>`, compiler captures AST instead of evaluating (like C# `Expression<T>`)
+- **Comptime-only**: Contains `Type` values, so cannot exist at runtime without manual reification
+- **Capture semantics**: Expression not evaluated; AST passed to function at compile time
+- **AST as discriminated union**: `{ kind: "literal" | "binary" | "call" | ... , type: Type, ... }`
+- **Use cases**: Query translation (LINQ-style), DSL construction, compile-time validation
+- **Manual reification**: Extract runtime-usable data from AST at compile time if needed
 
 ### Pattern Matching
 
@@ -333,37 +420,39 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - DepJS-to-DepJS imports
 - Multi-file compilation
 
-## Open Questions
+## Open Questions (Pre-Implementation)
 
-These need to be resolved through discussion:
+These need to be resolved before or during implementation:
 
-### Type Inference
+### Grammar / Syntax Formalization
+- Complete operator precedence table
+- Reserved keywords list
+- Comments syntax (`//` and `/* */`?)
+- String interpolation / template literals syntax
 
-- **Function return type inference**: Are return types required or inferred from body?
-  ```
-  const add = (x: Int, y: Int) => x + y;  // Return type inferred as Int?
-  ```
+### Standard Library / Builtins
+- Array methods: Which are built-in? (map, filter, reduce, forEach, find, findIndex, some, every, includes, indexOf, slice, concat, flat, flatMap, etc.)
+- String methods: Which are built-in?
+- Math functions: Built-in or imported?
+- Console API: Built-in or imported?
+- What's built-in vs imported from JS?
 
-- **Record literal inference**: Widened or precise field types?
-  ```
-  const x = { a: 1, b: "hi" };  // { a: Int, b: String } or { a: 1, b: "hi" }?
-  ```
+### Module System
+- DepJS exports syntax and semantics
+- DepJS-to-DepJS imports
+- Multi-file compilation model
+- Module resolution algorithm
 
-- **Generic inference specifics**: With "generics as parameters with defaults", what exactly gets inferred?
-  ```
-  const identity = <T>(x: T) => x;
-  identity(42);  // T = Int or T = 42?
-  ```
+### TypeScript Compatibility
+- Full type mapping table (expand spec/typescript-compat.md)
+- Handling unsupported TS features (classes, enums, namespaces, decorators)
+- .d.ts parsing specifics
 
-- **Inference algorithm**: Local/flow-based (like TypeScript) or bidirectional or something else?
+### Compile-Time Specifics
+- File reading API for codegen
+- Fuel limit configuration
+- Allowed comptime effects (beyond file reading and assert)
 
-- **Inference failure**: What happens when inference can't determine a type? Error? Fallback to Unknown?
+## Deferred to Future Versions
 
-- **Contextual typing**: Does expected type flow down into expressions?
-  ```
-  const f: (x: Int) => Int = x => x + 1;  // x inferred as Int from annotation?
-  ```
-
-### Other
-
-- TODO: Refinement types syntax and semantics (see spec/types.md for current thinking)
+- **Refinement types**: Predicate-constrained types like `Int where this > 0`. Deferred due to complexity (decidability, runtime vs compile-time checking). Use branded types or runtime validation for now.
