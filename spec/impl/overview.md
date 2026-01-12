@@ -110,123 +110,30 @@ Generates JavaScript from the runtime AST.
 
 ## Shared Data Types
 
-### Source Locations
-
-All AST nodes carry source location for error reporting:
-
-```typescript
-type SourceLocation = {
-  file: string;
-  startLine: number;
-  startColumn: number;
-  endLine: number;
-  endColumn: number;
-};
-
-type Located<T> = T & { loc: SourceLocation };
-```
+See `core-ast.md` for complete type definitions. Summary:
 
 ### Lezer Tree (SurfaceAST)
 
-The Lezer tree serves as our SurfaceAST. It's a concrete syntax tree that preserves all source information. We traverse it using Lezer's cursor API.
+The Lezer tree serves as our SurfaceAST. We traverse it using Lezer's cursor API during desugaring. See `lezer.md` for node types.
 
-```typescript
-import { Tree, TreeCursor } from "@lezer/common";
+### CoreAST
 
-// Lezer provides the tree structure - we traverse it with cursors
-// See lezer.md for node types and traversal patterns
-```
+Uniform representation with all sugar removed. Key points:
+- No separate "type" expressions - types are expressions evaluating to `Type` values
+- No `typeCall` - desugared to regular `call` with type args appended
+- No `type`/`newtype` declarations - desugared to `const` declarations
 
-Desugaring traverses the Lezer tree directly using cursors and produces CoreAST. There is no intermediate TypeScript representation—the Lezer node types (`ConstDecl`, `TypeCallExpression`, `UnionType`, etc.) already represent the surface syntax.
+### Type
 
-### Core AST (abbreviated)
+Internal representation of types during type checking (the values `Type` expressions evaluate to).
 
-The core AST is uniform - all sugar removed. Full definition in `desugar.md`.
+### TypedAST
 
-```typescript
-type CoreExpr =
-  | { kind: "identifier"; name: string }
-  | { kind: "literal"; value: unknown; literalKind: "int" | "float" | "string" | "boolean" | "null" | "undefined" }
-  | { kind: "binary"; op: BinaryOp; left: CoreExpr; right: CoreExpr }
-  | { kind: "unary"; op: UnaryOp; operand: CoreExpr }
-  | { kind: "call"; fn: CoreExpr; args: CoreExpr[] }
-  | { kind: "property"; object: CoreExpr; name: string }
-  | { kind: "index"; object: CoreExpr; index: CoreExpr }
-  | { kind: "lambda"; params: CoreParam[]; body: CoreExpr; async: boolean }
-  | { kind: "match"; expr: CoreExpr; cases: CoreCase[] }
-  | { kind: "conditional"; condition: CoreExpr; then: CoreExpr; else: CoreExpr }
-  | { kind: "record"; fields: CoreRecordField[] }
-  | { kind: "array"; elements: CoreExpr[] }
-  | { kind: "spread"; expr: CoreExpr }
-  | { kind: "await"; expr: CoreExpr }
-  | { kind: "throw"; expr: CoreExpr }
-  | { kind: "template"; parts: CoreTemplatePart[] }
+CoreAST annotated with types and comptime values after type checking.
 
-// No separate "type" nodes - types are just expressions that evaluate to Type values
-// No typeCall - desugared to regular call with type arguments appended
-// No union/intersection syntax - desugared to Union(...)/Intersection(...) calls
+### RuntimeAST
 
-type CoreDecl =
-  | { kind: "const"; name: string; typeAnnotation?: CoreExpr; init: CoreExpr; comptime: boolean }
-  | { kind: "import"; ... }
-  | { kind: "export"; ... }
-  // Note: no "type" or "newtype" - desugared to const declarations
-```
-
-### Type Representation
-
-Internal representation of types during type checking:
-
-```typescript
-type Type =
-  | { kind: "primitive"; name: "Int" | "Float" | "Number" | "String" | "Boolean" | "Null" | "Undefined" | "Never" | "Unknown" | "Void" }
-  | { kind: "literal"; value: unknown; baseType: "Int" | "Float" | "String" | "Boolean" }
-  | { kind: "record"; fields: FieldInfo[]; indexType?: Type; closed: boolean; name?: string }
-  | { kind: "function"; params: ParamInfo[]; returnType: Type; async: boolean }
-  | { kind: "array"; elementTypes: Type[]; variadic: boolean }  // [A, B] or T[]
-  | { kind: "union"; types: Type[] }
-  | { kind: "intersection"; types: Type[] }
-  | { kind: "branded"; baseType: Type; brand: string; name: string }
-  | { kind: "typeVar"; name: string; bound?: Type }
-  | { kind: "this" }
-  | { kind: "withMetadata"; baseType: Type; metadata: TypeMetadata }
-
-type FieldInfo = {
-  name: string;
-  type: Type;
-  optional: boolean;
-  annotations: unknown[];
-};
-
-type ParamInfo = {
-  name: string;
-  type: Type;
-  optional: boolean;
-  defaultValue?: CoreExpr;
-};
-
-type TypeMetadata = {
-  name?: string;
-  typeArgs?: Type[];
-  annotations?: unknown[];
-};
-```
-
-### Typed AST
-
-After type checking, the AST is annotated with types:
-
-```typescript
-type TypedExpr = CoreExpr & {
-  type: Type;
-  comptimeValue?: unknown;  // If expression was evaluated at comptime
-};
-
-type TypedDecl = CoreDecl & {
-  type: Type;
-  comptimeOnly: boolean;  // If this binding only exists at comptime
-};
-```
+TypedAST with comptime-only code removed after erasure.
 
 ## Interleaved Type Checking and Comptime Evaluation
 

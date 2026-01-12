@@ -40,12 +40,13 @@ DepJS is a new programming language with these known design goals (from initial-
 - `spec/typescript-compat.md` - TypeScript type system compatibility mapping
 
 ### Implementation Specification
-- `spec/impl/overview.md` - Pipeline overview, shared types, architecture
+- `spec/impl/overview.md` - Pipeline overview, architecture
+- `spec/impl/core-ast.md` - Shared AST types (CoreAST, Type, TypedAST, RuntimeAST)
 - `spec/impl/lezer.md` - Lezer grammar, parsing, space-sensitive `<` handling
-- `spec/impl/desugar.md` - Desugaring transforms (TODO)
-- `spec/impl/typecheck.md` - Type checking + comptime eval (overview)
-- `spec/impl/erasure.md` - Comptime elimination (TODO)
-- `spec/impl/codegen.md` - JS output (TODO)
+- `spec/impl/desugar.md` - Desugaring transforms (Lezer Tree → CoreAST)
+- `spec/impl/typecheck.md` - Type checking + comptime eval
+- `spec/impl/erasure.md` - Comptime elimination (TypedAST → RuntimeAST)
+- `spec/impl/codegen.md` - JS output (RuntimeAST → JavaScript)
 
 Create additional spec files as topics are discussed and decided. Don't create placeholder files with invented content.
 
