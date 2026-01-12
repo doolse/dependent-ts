@@ -6,12 +6,12 @@
  */
 
 import * as readline from "readline";
-import { parse } from "./parser/simple-parser.js";
-import { ComptimeEvaluator } from "./typecheck/comptime-eval.js";
+import { parse } from "./parser";
+import { ComptimeEvaluator } from "./typecheck/comptime-eval";
 import {
   createInitialComptimeEnv,
   createInitialTypeEnv,
-} from "./typecheck/builtins.js";
+} from "./typecheck/builtins";
 import {
   ComptimeValue,
   ComptimeEnv,
@@ -19,10 +19,10 @@ import {
   isClosureValue,
   isBuiltinValue,
   isRecordValue,
-} from "./typecheck/comptime-env.js";
-import { TypeEnv } from "./typecheck/type-env.js";
-import { formatType } from "./types/format.js";
-import { CoreDecl, CompileError } from "./ast/core-ast.js";
+} from "./typecheck/comptime-env";
+import { TypeEnv } from "./typecheck/type-env";
+import { formatType } from "./types/format";
+import { CoreDecl, CompileError } from "./ast/core-ast";
 
 // ANSI colors for terminal output
 const colors = {

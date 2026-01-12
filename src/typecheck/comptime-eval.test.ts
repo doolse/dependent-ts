@@ -3,12 +3,12 @@
  */
 
 import { describe, test, expect } from "vitest";
-import { ComptimeEvaluator, comptimeEquals } from "./comptime-eval.js";
-import { ComptimeEnv, ComptimeValue, isTypeValue } from "./comptime-env.js";
-import { TypeEnv } from "./type-env.js";
-import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins.js";
-import { CoreExpr, BinaryOp, dummyLoc, located } from "../ast/core-ast.js";
-import { primitiveType, recordType, unionType, Type } from "../types/types.js";
+import { ComptimeEvaluator, comptimeEquals } from "./comptime-eval";
+import { ComptimeEnv, ComptimeValue, isTypeValue } from "./comptime-env";
+import { TypeEnv } from "./type-env";
+import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
+import { CoreExpr, BinaryOp, dummyLoc, located } from "../ast/core-ast";
+import { primitiveType, recordType, unionType, Type } from "../types/types";
 
 // Helper to create expressions with dummy locations
 function loc<T>(expr: T): T & { loc: { from: number; to: number } } {
@@ -659,5 +659,825 @@ describe("comptimeEquals", () => {
   test("types", () => {
     expect(comptimeEquals(primitiveType("Int"), primitiveType("Int"))).toBe(true);
     expect(comptimeEquals(primitiveType("Int"), primitiveType("String"))).toBe(false);
+  });
+});
+
+describe("Array methods at compile time", () => {
+  describe("map", () => {
+    test("transforms array elements", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].map(x => x * 2)
+      const mapExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "map"),
+        [lambda(["x"], binary("*", id("x"), literal(2)))]
+      );
+
+      expect(evaluator.evaluate(mapExpr, env, typeEnv)).toEqual([2, 4, 6]);
+    });
+
+    test("passes index as second argument", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // ["a", "b", "c"].map((_, i) => i)
+      const mapExpr = call(
+        prop(array(literal("a"), literal("b"), literal("c")), "map"),
+        [lambda(["x", "i"], id("i"))]
+      );
+
+      expect(evaluator.evaluate(mapExpr, env, typeEnv)).toEqual([0, 1, 2]);
+    });
+
+    test("works with record transformation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [{ a: 1 }, { a: 2 }].map(r => r.a)
+      env.defineEvaluated("arr", [{ a: 1 }, { a: 2 }]);
+      const mapExpr = call(
+        prop(id("arr"), "map"),
+        [lambda(["r"], prop(id("r"), "a"))]
+      );
+
+      expect(evaluator.evaluate(mapExpr, env, typeEnv)).toEqual([1, 2]);
+    });
+  });
+
+  describe("filter", () => {
+    test("filters array elements", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3, 4, 5].filter(x => x > 2)
+      const filterExpr = call(
+        prop(array(literal(1), literal(2), literal(3), literal(4), literal(5)), "filter"),
+        [lambda(["x"], binary(">", id("x"), literal(2)))]
+      );
+
+      expect(evaluator.evaluate(filterExpr, env, typeEnv)).toEqual([3, 4, 5]);
+    });
+
+    test("returns empty array when no matches", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].filter(x => x > 10)
+      const filterExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "filter"),
+        [lambda(["x"], binary(">", id("x"), literal(10)))]
+      );
+
+      expect(evaluator.evaluate(filterExpr, env, typeEnv)).toEqual([]);
+    });
+  });
+
+  describe("includes", () => {
+    test("returns true when element exists", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].includes(2)
+      const includesExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "includes"),
+        [literal(2)]
+      );
+
+      expect(evaluator.evaluate(includesExpr, env, typeEnv)).toBe(true);
+    });
+
+    test("returns false when element does not exist", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].includes(5)
+      const includesExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "includes"),
+        [literal(5)]
+      );
+
+      expect(evaluator.evaluate(includesExpr, env, typeEnv)).toBe(false);
+    });
+
+    test("works with strings", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // ["a", "b", "c"].includes("b")
+      const includesExpr = call(
+        prop(array(literal("a"), literal("b"), literal("c")), "includes"),
+        [literal("b")]
+      );
+
+      expect(evaluator.evaluate(includesExpr, env, typeEnv)).toBe(true);
+    });
+  });
+
+  describe("find", () => {
+    test("returns first matching element", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3, 4].find(x => x > 2)
+      const findExpr = call(
+        prop(array(literal(1), literal(2), literal(3), literal(4)), "find"),
+        [lambda(["x"], binary(">", id("x"), literal(2)))]
+      );
+
+      expect(evaluator.evaluate(findExpr, env, typeEnv)).toBe(3);
+    });
+
+    test("returns undefined when not found", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].find(x => x > 10)
+      const findExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "find"),
+        [lambda(["x"], binary(">", id("x"), literal(10)))]
+      );
+
+      expect(evaluator.evaluate(findExpr, env, typeEnv)).toBe(undefined);
+    });
+  });
+
+  describe("findIndex", () => {
+    test("returns index of first matching element", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3, 4].findIndex(x => x > 2)
+      const findIndexExpr = call(
+        prop(array(literal(1), literal(2), literal(3), literal(4)), "findIndex"),
+        [lambda(["x"], binary(">", id("x"), literal(2)))]
+      );
+
+      expect(evaluator.evaluate(findIndexExpr, env, typeEnv)).toBe(2);
+    });
+
+    test("returns -1 when not found", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].findIndex(x => x > 10)
+      const findIndexExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "findIndex"),
+        [lambda(["x"], binary(">", id("x"), literal(10)))]
+      );
+
+      expect(evaluator.evaluate(findIndexExpr, env, typeEnv)).toBe(-1);
+    });
+  });
+
+  describe("some", () => {
+    test("returns true when some elements match", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].some(x => x > 2)
+      const someExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "some"),
+        [lambda(["x"], binary(">", id("x"), literal(2)))]
+      );
+
+      expect(evaluator.evaluate(someExpr, env, typeEnv)).toBe(true);
+    });
+
+    test("returns false when no elements match", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].some(x => x > 10)
+      const someExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "some"),
+        [lambda(["x"], binary(">", id("x"), literal(10)))]
+      );
+
+      expect(evaluator.evaluate(someExpr, env, typeEnv)).toBe(false);
+    });
+  });
+
+  describe("every", () => {
+    test("returns true when all elements match", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].every(x => x > 0)
+      const everyExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "every"),
+        [lambda(["x"], binary(">", id("x"), literal(0)))]
+      );
+
+      expect(evaluator.evaluate(everyExpr, env, typeEnv)).toBe(true);
+    });
+
+    test("returns false when some elements don't match", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].every(x => x > 1)
+      const everyExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "every"),
+        [lambda(["x"], binary(">", id("x"), literal(1)))]
+      );
+
+      expect(evaluator.evaluate(everyExpr, env, typeEnv)).toBe(false);
+    });
+  });
+
+  describe("reduce", () => {
+    test("reduces with initial value", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].reduce((acc, x) => acc + x, 0)
+      const reduceExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "reduce"),
+        [lambda(["acc", "x"], binary("+", id("acc"), id("x"))), literal(0)]
+      );
+
+      expect(evaluator.evaluate(reduceExpr, env, typeEnv)).toBe(6);
+    });
+
+    test("reduces without initial value", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3, 4].reduce((acc, x) => acc + x)
+      const reduceExpr = call(
+        prop(array(literal(1), literal(2), literal(3), literal(4)), "reduce"),
+        [lambda(["acc", "x"], binary("+", id("acc"), id("x")))]
+      );
+
+      expect(evaluator.evaluate(reduceExpr, env, typeEnv)).toBe(10);
+    });
+  });
+
+  describe("concat", () => {
+    test("concatenates arrays", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2].concat([3, 4])
+      const concatExpr = call(
+        prop(array(literal(1), literal(2)), "concat"),
+        [array(literal(3), literal(4))]
+      );
+
+      expect(evaluator.evaluate(concatExpr, env, typeEnv)).toEqual([1, 2, 3, 4]);
+    });
+
+    test("concatenates single values", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2].concat(3)
+      const concatExpr = call(
+        prop(array(literal(1), literal(2)), "concat"),
+        [literal(3)]
+      );
+
+      expect(evaluator.evaluate(concatExpr, env, typeEnv)).toEqual([1, 2, 3]);
+    });
+  });
+
+  describe("slice", () => {
+    test("slices with start and end", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3, 4, 5].slice(1, 4)
+      const sliceExpr = call(
+        prop(array(literal(1), literal(2), literal(3), literal(4), literal(5)), "slice"),
+        [literal(1), literal(4)]
+      );
+
+      expect(evaluator.evaluate(sliceExpr, env, typeEnv)).toEqual([2, 3, 4]);
+    });
+
+    test("slices with only start", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3, 4, 5].slice(2)
+      const sliceExpr = call(
+        prop(array(literal(1), literal(2), literal(3), literal(4), literal(5)), "slice"),
+        [literal(2)]
+      );
+
+      expect(evaluator.evaluate(sliceExpr, env, typeEnv)).toEqual([3, 4, 5]);
+    });
+  });
+
+  describe("indexOf", () => {
+    test("returns index of element", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].indexOf(2)
+      const indexOfExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "indexOf"),
+        [literal(2)]
+      );
+
+      expect(evaluator.evaluate(indexOfExpr, env, typeEnv)).toBe(1);
+    });
+
+    test("returns -1 when not found", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].indexOf(5)
+      const indexOfExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "indexOf"),
+        [literal(5)]
+      );
+
+      expect(evaluator.evaluate(indexOfExpr, env, typeEnv)).toBe(-1);
+    });
+  });
+
+  describe("join", () => {
+    test("joins with separator", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // ["a", "b", "c"].join("-")
+      const joinExpr = call(
+        prop(array(literal("a"), literal("b"), literal("c")), "join"),
+        [literal("-")]
+      );
+
+      expect(evaluator.evaluate(joinExpr, env, typeEnv)).toBe("a-b-c");
+    });
+
+    test("joins with default comma separator", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // ["a", "b", "c"].join()
+      const joinExpr = call(
+        prop(array(literal("a"), literal("b"), literal("c")), "join"),
+        []
+      );
+
+      expect(evaluator.evaluate(joinExpr, env, typeEnv)).toBe("a,b,c");
+    });
+  });
+
+  describe("flat", () => {
+    test("flattens one level by default", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [[1, 2], [3, 4]].flat()
+      env.defineEvaluated("nested", [[1, 2], [3, 4]]);
+      const flatExpr = call(prop(id("nested"), "flat"), []);
+
+      expect(evaluator.evaluate(flatExpr, env, typeEnv)).toEqual([1, 2, 3, 4]);
+    });
+
+    test("flattens to specified depth", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [[[1]], [[2]]].flat(2)
+      env.defineEvaluated("nested", [[[1]], [[2]]]);
+      const flatExpr = call(prop(id("nested"), "flat"), [literal(2)]);
+
+      expect(evaluator.evaluate(flatExpr, env, typeEnv)).toEqual([1, 2]);
+    });
+  });
+
+  describe("flatMap", () => {
+    test("maps and flattens result", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].flatMap(x => [x, x * 2])
+      env.defineEvaluated("arr", [1, 2, 3]);
+      const flatMapExpr = call(
+        prop(id("arr"), "flatMap"),
+        [lambda(["x"], array(id("x"), binary("*", id("x"), literal(2))))]
+      );
+
+      expect(evaluator.evaluate(flatMapExpr, env, typeEnv)).toEqual([1, 2, 2, 4, 3, 6]);
+    });
+  });
+
+  describe("chained array methods", () => {
+    test("map then filter", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3, 4].map(x => x * 2).filter(x => x > 4)
+      const chainExpr = call(
+        prop(
+          call(
+            prop(array(literal(1), literal(2), literal(3), literal(4)), "map"),
+            [lambda(["x"], binary("*", id("x"), literal(2)))]
+          ),
+          "filter"
+        ),
+        [lambda(["x"], binary(">", id("x"), literal(4)))]
+      );
+
+      expect(evaluator.evaluate(chainExpr, env, typeEnv)).toEqual([6, 8]);
+    });
+
+    test("filter then map then reduce", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3, 4, 5].filter(x => x > 2).map(x => x * 10).reduce((a, b) => a + b, 0)
+      const filterExpr = call(
+        prop(array(literal(1), literal(2), literal(3), literal(4), literal(5)), "filter"),
+        [lambda(["x"], binary(">", id("x"), literal(2)))]
+      );
+      const mapExpr = call(
+        prop(filterExpr, "map"),
+        [lambda(["x"], binary("*", id("x"), literal(10)))]
+      );
+      const reduceExpr = call(
+        prop(mapExpr, "reduce"),
+        [lambda(["a", "b"], binary("+", id("a"), id("b"))), literal(0)]
+      );
+
+      expect(evaluator.evaluate(reduceExpr, env, typeEnv)).toBe(120); // (3+4+5)*10 = 120
+    });
+  });
+
+  describe("mapped type utilities pattern", () => {
+    test("T.fields.map to transform fields", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Create a record type with fields
+      const fieldInfo1 = record({
+        name: literal("x"),
+        type: id("Int"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const fieldInfo2 = record({
+        name: literal("y"),
+        type: id("String"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const recTypeExpr = call(id("RecordType"), [array(fieldInfo1, fieldInfo2)]);
+      env.defineEvaluated("MyRecord", evaluator.evaluate(recTypeExpr, env, typeEnv));
+
+      // T.fields.map(f => ({ ...f, optional: true }))
+      // Since we can't use spread in our AST helpers easily, we'll create new records
+      const mapExpr = call(
+        prop(prop(id("MyRecord"), "fields"), "map"),
+        [
+          lambda(
+            ["f"],
+            record({
+              name: prop(id("f"), "name"),
+              type: prop(id("f"), "type"),
+              optional: literal(true),
+              annotations: prop(id("f"), "annotations"),
+            })
+          ),
+        ]
+      );
+
+      const mappedFields = evaluator.evaluate(mapExpr, env, typeEnv) as ComptimeValue[];
+      expect(Array.isArray(mappedFields)).toBe(true);
+      expect(mappedFields).toHaveLength(2);
+      expect((mappedFields[0] as Record<string, unknown>).optional).toBe(true);
+      expect((mappedFields[1] as Record<string, unknown>).optional).toBe(true);
+    });
+
+    test("T.fields.filter to select fields", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Create a record type with fields
+      const fieldInfo1 = record({
+        name: literal("x"),
+        type: id("Int"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const fieldInfo2 = record({
+        name: literal("y"),
+        type: id("String"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const recTypeExpr = call(id("RecordType"), [array(fieldInfo1, fieldInfo2)]);
+      env.defineEvaluated("MyRecord", evaluator.evaluate(recTypeExpr, env, typeEnv));
+
+      // Create an array of keys to pick
+      env.defineEvaluated("keys", ["x"]);
+
+      // T.fields.filter(f => keys.includes(f.name))
+      const filterExpr = call(
+        prop(prop(id("MyRecord"), "fields"), "filter"),
+        [
+          lambda(
+            ["f"],
+            call(prop(id("keys"), "includes"), [prop(id("f"), "name")])
+          ),
+        ]
+      );
+
+      const filteredFields = evaluator.evaluate(filterExpr, env, typeEnv) as ComptimeValue[];
+      expect(Array.isArray(filteredFields)).toBe(true);
+      expect(filteredFields).toHaveLength(1);
+      expect((filteredFields[0] as Record<string, unknown>).name).toBe("x");
+    });
+
+    test("Partial utility function - makes all fields optional", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Create a record type: { name: String, age: Int }
+      const fieldInfo1 = record({
+        name: literal("name"),
+        type: id("String"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const fieldInfo2 = record({
+        name: literal("age"),
+        type: id("Int"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const personTypeExpr = call(id("RecordType"), [array(fieldInfo1, fieldInfo2)]);
+      env.defineEvaluated("Person", evaluator.evaluate(personTypeExpr, env, typeEnv));
+
+      // Define Partial function:
+      // const Partial = (T: Type): Type => {
+      //   const newFields = T.fields.map(f => ({ ...f, optional: true }));
+      //   return RecordType(newFields, T.indexType);
+      // };
+      const partialFn = lambda(
+        ["T"],
+        call(id("RecordType"), [
+          call(
+            prop(prop(id("T"), "fields"), "map"),
+            [
+              lambda(
+                ["f"],
+                record({
+                  name: prop(id("f"), "name"),
+                  type: prop(id("f"), "type"),
+                  optional: literal(true),
+                  annotations: prop(id("f"), "annotations"),
+                })
+              ),
+            ]
+          ),
+          prop(id("T"), "indexType"),
+        ])
+      );
+      env.defineEvaluated("Partial", evaluator.evaluate(partialFn, env, typeEnv));
+
+      // Call Partial(Person)
+      const partialPersonExpr = call(id("Partial"), [id("Person")]);
+      const partialPerson = evaluator.evaluate(partialPersonExpr, env, typeEnv) as Type;
+
+      // Verify it's a record type with optional fields
+      expect(isTypeValue(partialPerson)).toBe(true);
+      expect(partialPerson.kind).toBe("record");
+      if (partialPerson.kind === "record") {
+        expect(partialPerson.fields).toHaveLength(2);
+        expect(partialPerson.fields[0].optional).toBe(true);
+        expect(partialPerson.fields[1].optional).toBe(true);
+        expect(partialPerson.fields[0].name).toBe("name");
+        expect(partialPerson.fields[1].name).toBe("age");
+      }
+    });
+
+    test("Partial preserves closed records", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Create a CLOSED record type: {| name: String, age: Int |}
+      const fieldInfo1 = record({
+        name: literal("name"),
+        type: id("String"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const fieldInfo2 = record({
+        name: literal("age"),
+        type: id("Int"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      // Pass Never as second arg to make it closed
+      const closedTypeExpr = call(id("RecordType"), [array(fieldInfo1, fieldInfo2), id("Never")]);
+      env.defineEvaluated("ClosedPerson", evaluator.evaluate(closedTypeExpr, env, typeEnv));
+
+      // Verify it's closed
+      const closedPerson = env.getEvaluatedValue("ClosedPerson") as Type;
+      expect(closedPerson.kind).toBe("record");
+      if (closedPerson.kind === "record") {
+        expect(closedPerson.closed).toBe(true);
+      }
+
+      // Define Partial function (same as before)
+      const partialFn = lambda(
+        ["T"],
+        call(id("RecordType"), [
+          call(
+            prop(prop(id("T"), "fields"), "map"),
+            [
+              lambda(
+                ["f"],
+                record({
+                  name: prop(id("f"), "name"),
+                  type: prop(id("f"), "type"),
+                  optional: literal(true),
+                  annotations: prop(id("f"), "annotations"),
+                })
+              ),
+            ]
+          ),
+          prop(id("T"), "indexType"),
+        ])
+      );
+      env.defineEvaluated("Partial", evaluator.evaluate(partialFn, env, typeEnv));
+
+      // Call Partial(ClosedPerson)
+      const partialClosedExpr = call(id("Partial"), [id("ClosedPerson")]);
+      const partialClosed = evaluator.evaluate(partialClosedExpr, env, typeEnv) as Type;
+
+      // Verify result is also a closed record with optional fields
+      expect(partialClosed.kind).toBe("record");
+      if (partialClosed.kind === "record") {
+        expect(partialClosed.closed).toBe(true);
+        expect(partialClosed.fields).toHaveLength(2);
+        expect(partialClosed.fields[0].optional).toBe(true);
+        expect(partialClosed.fields[1].optional).toBe(true);
+      }
+    });
+
+    test("Pick utility function - selects specific fields", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Create a record type: { name: String, age: Int, email: String }
+      const fieldInfo1 = record({
+        name: literal("name"),
+        type: id("String"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const fieldInfo2 = record({
+        name: literal("age"),
+        type: id("Int"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const fieldInfo3 = record({
+        name: literal("email"),
+        type: id("String"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const personTypeExpr = call(id("RecordType"), [array(fieldInfo1, fieldInfo2, fieldInfo3)]);
+      env.defineEvaluated("Person", evaluator.evaluate(personTypeExpr, env, typeEnv));
+
+      // Define Pick function:
+      // const Pick = (T: Type, keys: Array<String>): Type => {
+      //   const newFields = T.fields.filter(f => keys.includes(f.name));
+      //   return RecordType(newFields, T.indexType);
+      // };
+      const pickFn = lambda(
+        ["T", "keys"],
+        call(id("RecordType"), [
+          call(
+            prop(prop(id("T"), "fields"), "filter"),
+            [
+              lambda(
+                ["f"],
+                call(prop(id("keys"), "includes"), [prop(id("f"), "name")])
+              ),
+            ]
+          ),
+          prop(id("T"), "indexType"),
+        ])
+      );
+      env.defineEvaluated("Pick", evaluator.evaluate(pickFn, env, typeEnv));
+
+      // Call Pick(Person, ["name", "email"])
+      const pickExpr = call(id("Pick"), [id("Person"), array(literal("name"), literal("email"))]);
+      const pickedType = evaluator.evaluate(pickExpr, env, typeEnv) as Type;
+
+      // Verify it's a record type with only name and email fields
+      expect(isTypeValue(pickedType)).toBe(true);
+      expect(pickedType.kind).toBe("record");
+      if (pickedType.kind === "record") {
+        expect(pickedType.fields).toHaveLength(2);
+        expect(pickedType.fields.map(f => f.name)).toEqual(["name", "email"]);
+      }
+    });
+
+    test("Omit utility function - excludes specific fields", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Create a record type: { name: String, age: Int, password: String }
+      const fieldInfo1 = record({
+        name: literal("name"),
+        type: id("String"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const fieldInfo2 = record({
+        name: literal("age"),
+        type: id("Int"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const fieldInfo3 = record({
+        name: literal("password"),
+        type: id("String"),
+        optional: literal(false),
+        annotations: array(),
+      });
+      const userTypeExpr = call(id("RecordType"), [array(fieldInfo1, fieldInfo2, fieldInfo3)]);
+      env.defineEvaluated("User", evaluator.evaluate(userTypeExpr, env, typeEnv));
+
+      // Define Omit function:
+      // const Omit = (T: Type, keys: Array<String>): Type => {
+      //   const newFields = T.fields.filter(f => !keys.includes(f.name));
+      //   return RecordType(newFields, T.indexType);
+      // };
+      const omitFn = lambda(
+        ["T", "keys"],
+        call(id("RecordType"), [
+          call(
+            prop(prop(id("T"), "fields"), "filter"),
+            [
+              lambda(
+                ["f"],
+                loc({ kind: "unary", op: "!", operand: call(prop(id("keys"), "includes"), [prop(id("f"), "name")]) })
+              ),
+            ]
+          ),
+          prop(id("T"), "indexType"),
+        ])
+      );
+      env.defineEvaluated("Omit", evaluator.evaluate(omitFn, env, typeEnv));
+
+      // Call Omit(User, ["password"])
+      const omitExpr = call(id("Omit"), [id("User"), array(literal("password"))]);
+      const omittedType = evaluator.evaluate(omitExpr, env, typeEnv) as Type;
+
+      // Verify it's a record type without password field
+      expect(isTypeValue(omittedType)).toBe(true);
+      expect(omittedType.kind).toBe("record");
+      if (omittedType.kind === "record") {
+        expect(omittedType.fields).toHaveLength(2);
+        expect(omittedType.fields.map(f => f.name)).toEqual(["name", "age"]);
+      }
+    });
   });
 });

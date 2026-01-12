@@ -1,11 +1,11 @@
-// DepJS Grammar - Minimal version for type checking pipeline
-// Avoids complex ambiguities by restricting some syntax
+// DepJS Grammar
+// Uses GLR features to handle arrow function and other ambiguities
 
 @top Program { statement* }
 
 @external tokens spaceTokens from "./tokens" {
-  ltType    // < for type arguments (no preceding space)
-  ltCompare // < for comparison (preceding space)
+  ltType              // < for type arguments (no preceding space)
+  ltCompare[@name="<"] // < for comparison (preceding space)
 }
 
 // ============================================
@@ -17,11 +17,12 @@ statement {
   TypeDecl |
   NewtypeDecl |
   ImportDecl |
+  ExportDecl |
   ExpressionStatement
 }
 
 ConstDecl {
-  kw<"comptime">? kw<"const"> identifier TypeAnnotation? "=" expression ";"
+  kw<"comptime">? kw<"const"> identifierOrTypeName TypeAnnotation? "=" expression ";"
 }
 
 TypeDecl {
@@ -45,20 +46,59 @@ ImportClause {
 
 ImportSpecifier { identifier (kw<"as"> identifier)? }
 
+ExportDecl {
+  kw<"export"> (ConstDecl | TypeDecl | NewtypeDecl)
+}
+
 ExpressionStatement {
   expression ";"
 }
 
 // ============================================
-// Expressions - simplified precedence
+// Expressions
 // ============================================
 
+// Arrow functions are at expression level with dynamic precedence
+// This allows the GLR parser to try both interpretations and prefer arrow when => follows
 expression {
+  ArrowFn |
   TernaryExpr |
   binaryExpr
 }
 
-TernaryExpr { binaryExpr "?" expression ":" expression }
+// Arrow function with high dynamic precedence to prefer over parenthesized expressions
+ArrowFn[@dynamicPrecedence=2] {
+  kw<"async">? ArrowParams "=>" ArrowBody
+}
+
+// Arrow params: either single identifier or parenthesized list
+// ~arrow marks GLR split point - allows (x) to be parsed as both
+// arrow params and paren expr until we see => or not
+ArrowParams {
+  identifier ~arrow |
+  "(" ListOf<ArrowParam>? ")" TypeAnnotation?
+}
+
+// Arrow params can be lowercase or uppercase (for type params like T)
+ArrowParam {
+  identifierOrTypeName ~arrow TypeAnnotation? DefaultValue?
+}
+
+DefaultValue { "=" expressionNoComma }
+
+ArrowBody {
+  expressionNoComma |
+  Block
+}
+
+// Expression without comma operator (for arrow bodies, ternary branches, etc.)
+expressionNoComma {
+  ArrowFn |
+  TernaryExpr |
+  binaryExpr
+}
+
+TernaryExpr { binaryExpr !ternary "?" expressionNoComma ":" expressionNoComma }
 
 binaryExpr {
   unaryExpr |
@@ -87,47 +127,27 @@ postfixExpr {
   IndexExpr { postfixExpr !member "[" expression "]" }
 }
 
-Argument { Spread? expression }
+Argument { Spread? expressionNoComma }
 Spread { "..." }
 
+// ~arrow: GLR split for (x) => vs (x) parenthesized
+// ~record: GLR split for { x } record vs { x } block
 atomExpr {
-  VariableExpr { identifier } |
+  VariableExpr { identifier ~arrow ~record } |
+  TypeExpr { TypeName ~arrow ~record } |
   Literal |
   ArrayExpr { "[" ListOf<ArrayElement>? "]" } |
   RecordExpr { "{" ListOf<RecordField>? "}" } |
-  ArrowFn |
   MatchExpr |
   ThrowExpr { kw<"throw"> unaryExpr } |
   ParenExpr { "(" expression ")" }
 }
 
-ArrayElement { Spread? expression }
+ArrayElement { Spread? expressionNoComma }
 
 RecordField {
-  SpreadField { Spread expression } |
-  FieldDef { PropertyName (":" expression)? }
-}
-
-// Arrow function - simplified to avoid ambiguity
-// Only parenthesized params can have type annotations
-ArrowFn {
-  kw<"async">? ArrowHead "=>" ArrowBody
-}
-
-ArrowHead {
-  SimpleParam { identifier } |
-  ParamList { "(" ListOf<ArrowParam>? ")" TypeAnnotation? }
-}
-
-ArrowParam {
-  identifier TypeAnnotation? DefaultValue?
-}
-
-DefaultValue { "=" expression }
-
-ArrowBody {
-  expression |
-  Block
+  SpreadField { Spread expressionNoComma } |
+  FieldDef { PropertyName (":" expressionNoComma)? }
 }
 
 // Block always contains statements or ends with expression
@@ -201,11 +221,10 @@ IndexSignature {
   "[" identifier ":" typeExpression "]" ":" typeExpression
 }
 
+// TupleElement must have a type - can't be empty
+// Supports: Type, label: Type, ...Type
 TupleElement {
-  Spread? LabeledType?
-}
-
-LabeledType {
+  Spread typeExpression |
   (identifier ":")? typeExpression
 }
 
@@ -227,7 +246,8 @@ TypeParam {
 
 TypeAnnotation { ":" typeExpression }
 
-Annotation { "@" atomExpr }
+// Annotations can be calls like @JsonName("x") so use postfixExpr
+Annotation { "@" postfixExpr }
 
 // ============================================
 // Literals
@@ -251,6 +271,15 @@ ListOf1<item> { item ("," item)* }
 kw<term> { @specialize[@name={term}]<VariableName, term> }
 
 identifier { VariableName }
+
+// Allow both lowercase and uppercase names for const bindings (e.g., const Partial = ...)
+// Also used for arrow params like (T) => T where T is a type variable
+identifierOrTypeName { VariableName ~arrow | TypeName ~arrow }
+
+// Property names can be either lowercase or uppercase identifiers
+// This is a grammar rule, not a token, to avoid tokenizer ambiguity
+// ~record marks GLR split point for { x } ambiguity (expression vs record field)
+PropertyName { VariableName ~record | TypeName ~record }
 
 // ============================================
 // Tokens
@@ -277,7 +306,6 @@ identifier { VariableName }
 
   TypeName { $[A-Z] $[a-zA-Z0-9_]* }
   VariableName { $[a-z_] $[a-zA-Z0-9_]* }
-  PropertyName { $[a-zA-Z_] $[a-zA-Z0-9_]* }
 
   "="
   ";" "," "." ":" "?"[@name=Question] "@"
@@ -287,18 +315,18 @@ identifier { VariableName }
   "..."
   "_"
 
-  "+" "-" "*" "/" "%"
+  "+"[@name=ArithOp] "-"[@name=ArithOp] "*"[@name=ArithOp] "/"[@name=ArithOp] "%"[@name=ArithOp]
 
-  "==" "!="
-  "<=" ">=" ">"
+  "=="[@name=CompareOp] "!="[@name=CompareOp]
+  "<="[@name=CompareOp] ">="[@name=CompareOp] ">"[@name=CompareOp]
 
-  "&&" "||"
+  "&&"[@name=LogicOp] "||"[@name=LogicOp]
 
   // Distinguish | and & in tokens to help with type syntax
   BitOr[@name="|"] { "|" }
   BitAnd[@name="&"] { "&" }
 
-  "^"
+  "^"[@name=BitOp]
   "!" "~"
 
   @precedence { BlockComment, LineComment, "/" }
@@ -306,13 +334,14 @@ identifier { VariableName }
   @precedence { "{|", "{" }
   @precedence { "|}", BitOr }
   @precedence { "...", "." }
-  @precedence { TypeName, VariableName, PropertyName }
+  @precedence { "_", TypeName, VariableName }
 }
 
 @skip { whitespace | LineComment | BlockComment }
 
 // Operator precedence (low to high)
 @precedence {
+  ternary @right,
   or @left,
   and @left,
   bitor @left,

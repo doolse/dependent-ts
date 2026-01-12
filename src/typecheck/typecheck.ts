@@ -23,9 +23,9 @@ import {
   unionType,
   FieldInfo,
   ParamInfo,
-} from "../types/types.js";
-import { isSubtype } from "../types/subtype.js";
-import { formatType } from "../types/format.js";
+} from "../types/types";
+import { isSubtype } from "../types/subtype";
+import { formatType } from "../types/format";
 import {
   CoreExpr,
   CoreDecl,
@@ -36,12 +36,12 @@ import {
   TypedProgram,
   CompileError,
   SourceLocation,
-} from "../ast/core-ast.js";
-import { TypeEnv, TypeBinding, ComptimeStatus } from "./type-env.js";
-import { ComptimeEnv, ComptimeValue, isTypeValue, isClosureValue, isBuiltinValue } from "./comptime-env.js";
-import { ComptimeEvaluator } from "./comptime-eval.js";
-import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins.js";
-import { isComptimeOnlyProperty } from "./type-properties.js";
+} from "../ast/core-ast";
+import { TypeEnv, TypeBinding, ComptimeStatus } from "./type-env";
+import { ComptimeEnv, ComptimeValue, isTypeValue, isClosureValue, isBuiltinValue } from "./comptime-env";
+import { ComptimeEvaluator } from "./comptime-eval";
+import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
+import { isComptimeOnlyProperty } from "./type-properties";
 
 /**
  * Type checker configuration.

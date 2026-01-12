@@ -10,7 +10,7 @@
   },
   "scripts": {
     "build": "tsc",
-    "build:parser": "lezer-generator src/parser/depjs.grammar -o src/parser/parser.ts",
+    "build:parser": "lezer-generator src/parser/depjs.grammar --typeScript -o src/parser/parser.ts",
     "test": "vitest",
     "test:run": "vitest run",
     "typecheck": "tsc --noEmit",

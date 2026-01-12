@@ -13,8 +13,8 @@ import {
   arrayType,
   unionType,
   brandedType,
-} from "./types.js";
-import { isSubtype, typesEqual } from "./subtype.js";
+} from "./types";
+import { isSubtype, typesEqual } from "./subtype";
 
 describe("isSubtype", () => {
   describe("primitives", () => {

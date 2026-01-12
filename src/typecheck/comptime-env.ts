@@ -7,9 +7,9 @@
  * - Caching: evaluated values are cached
  */
 
-import { Type } from "../types/types.js";
-import { CoreExpr, CompileError, SourceLocation } from "../ast/core-ast.js";
-import { TypeEnv } from "./type-env.js";
+import { Type } from "../types/types";
+import { CoreExpr, CompileError, SourceLocation } from "../ast/core-ast";
+import { TypeEnv } from "./type-env";
 
 /**
  * Comptime values that can exist during compile-time evaluation.
@@ -67,6 +67,16 @@ export interface ComptimeEvaluatorInterface {
     expr: CoreExpr,
     comptimeEnv: ComptimeEnv,
     typeEnv: TypeEnv
+  ): ComptimeValue;
+
+  /**
+   * Call a closure with pre-evaluated arguments.
+   * Used by builtins (like array methods) that need to invoke user callbacks.
+   */
+  applyClosureWithValues(
+    closure: ComptimeClosure,
+    args: ComptimeValue[],
+    loc?: SourceLocation
   ): ComptimeValue;
 }
 

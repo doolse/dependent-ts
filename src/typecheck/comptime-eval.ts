@@ -5,7 +5,7 @@
  * assert conditions, and other comptime computations.
  */
 
-import { Type } from "../types/types.js";
+import { Type } from "../types/types";
 import {
   CoreExpr,
   CoreDecl,
@@ -18,8 +18,8 @@ import {
   UnaryOp,
   CompileError,
   SourceLocation,
-} from "../ast/core-ast.js";
-import { TypeEnv } from "./type-env.js";
+} from "../ast/core-ast";
+import { TypeEnv } from "./type-env";
 import {
   ComptimeEnv,
   ComptimeValue,
@@ -31,8 +31,8 @@ import {
   isClosureValue,
   isBuiltinValue,
   isRecordValue,
-} from "./comptime-env.js";
-import { getTypeProperty } from "./type-properties.js";
+} from "./comptime-env";
+import { getTypeProperty } from "./type-properties";
 
 /**
  * Fuel-limited compile-time evaluator.
@@ -298,6 +298,40 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
     return this.evaluate(closure.body, newEnv, newTypeEnv);
   }
 
+  /**
+   * Call a closure with pre-evaluated arguments.
+   * Used by builtins (like array methods) that need to invoke user callbacks.
+   */
+  applyClosureWithValues(
+    closure: ComptimeClosure,
+    args: ComptimeValue[],
+    loc?: SourceLocation
+  ): ComptimeValue {
+    const newEnv = closure.env.extend();
+    const newTypeEnv = closure.typeEnv.extend();
+
+    for (let i = 0; i < closure.params.length; i++) {
+      const param = closure.params[i];
+      let argValue: ComptimeValue;
+
+      if (i < args.length) {
+        argValue = args[i];
+      } else if (param.defaultValue) {
+        argValue = this.evaluate(param.defaultValue, closure.env, closure.typeEnv);
+      } else {
+        throw new CompileError(
+          `Missing argument for parameter '${param.name}'`,
+          "typecheck",
+          loc
+        );
+      }
+
+      newEnv.defineEvaluated(param.name, argValue);
+    }
+
+    return this.evaluate(closure.body, newEnv, newTypeEnv);
+  }
+
   private evalProperty(
     objectExpr: CoreExpr,
     name: string,
@@ -312,9 +346,13 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
       return getTypeProperty(obj, name, this, loc);
     }
 
-    // Array length
-    if (Array.isArray(obj) && name === "length") {
-      return obj.length;
+    // Array properties and methods
+    if (Array.isArray(obj)) {
+      if (name === "length") {
+        return obj.length;
+      }
+      const method = getArrayMethod(obj, name, loc);
+      if (method) return method;
     }
 
     // Record property access
@@ -556,6 +594,321 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
     }
 
     return result;
+  }
+}
+
+// ============================================
+// Array method factories
+// ============================================
+
+/**
+ * Call a callback function (closure or builtin) with arguments.
+ */
+function callCallback(
+  fn: ComptimeValue,
+  args: ComptimeValue[],
+  evaluator: ComptimeEvaluatorInterface,
+  loc?: SourceLocation
+): ComptimeValue {
+  if (isClosureValue(fn)) {
+    return evaluator.applyClosureWithValues(fn, args, loc);
+  }
+  if (isBuiltinValue(fn)) {
+    return fn.impl(args, evaluator, loc);
+  }
+  throw new CompileError(
+    `Expected function in array method callback, got ${typeof fn}`,
+    "typecheck",
+    loc
+  );
+}
+
+/**
+ * Get an array method as a builtin function.
+ */
+function getArrayMethod(
+  arr: ComptimeValue[],
+  name: string,
+  loc?: SourceLocation
+): ComptimeBuiltin | undefined {
+  switch (name) {
+    case "map":
+      return {
+        kind: "builtin",
+        name: "Array.map",
+        impl: (args, evaluator, callLoc) => {
+          const fn = args[0];
+          if (fn === undefined) {
+            throw new CompileError(
+              "Array.map requires a callback function",
+              "typecheck",
+              callLoc ?? loc
+            );
+          }
+          return arr.map((element, index) =>
+            callCallback(fn, [element, index, arr], evaluator, callLoc ?? loc)
+          );
+        },
+      };
+
+    case "filter":
+      return {
+        kind: "builtin",
+        name: "Array.filter",
+        impl: (args, evaluator, callLoc) => {
+          const fn = args[0];
+          if (fn === undefined) {
+            throw new CompileError(
+              "Array.filter requires a callback function",
+              "typecheck",
+              callLoc ?? loc
+            );
+          }
+          return arr.filter((element, index) => {
+            const result = callCallback(fn, [element, index, arr], evaluator, callLoc ?? loc);
+            return !!result;
+          });
+        },
+      };
+
+    case "includes":
+      return {
+        kind: "builtin",
+        name: "Array.includes",
+        impl: (args, _evaluator, callLoc) => {
+          const searchElement = args[0];
+          return arr.some((element) => comptimeEquals(element, searchElement));
+        },
+      };
+
+    case "find":
+      return {
+        kind: "builtin",
+        name: "Array.find",
+        impl: (args, evaluator, callLoc) => {
+          const fn = args[0];
+          if (fn === undefined) {
+            throw new CompileError(
+              "Array.find requires a callback function",
+              "typecheck",
+              callLoc ?? loc
+            );
+          }
+          for (let i = 0; i < arr.length; i++) {
+            const element = arr[i];
+            const result = callCallback(fn, [element, i, arr], evaluator, callLoc ?? loc);
+            if (result) return element;
+          }
+          return undefined;
+        },
+      };
+
+    case "findIndex":
+      return {
+        kind: "builtin",
+        name: "Array.findIndex",
+        impl: (args, evaluator, callLoc) => {
+          const fn = args[0];
+          if (fn === undefined) {
+            throw new CompileError(
+              "Array.findIndex requires a callback function",
+              "typecheck",
+              callLoc ?? loc
+            );
+          }
+          for (let i = 0; i < arr.length; i++) {
+            const result = callCallback(fn, [arr[i], i, arr], evaluator, callLoc ?? loc);
+            if (result) return i;
+          }
+          return -1;
+        },
+      };
+
+    case "some":
+      return {
+        kind: "builtin",
+        name: "Array.some",
+        impl: (args, evaluator, callLoc) => {
+          const fn = args[0];
+          if (fn === undefined) {
+            throw new CompileError(
+              "Array.some requires a callback function",
+              "typecheck",
+              callLoc ?? loc
+            );
+          }
+          return arr.some((element, index) => {
+            const result = callCallback(fn, [element, index, arr], evaluator, callLoc ?? loc);
+            return !!result;
+          });
+        },
+      };
+
+    case "every":
+      return {
+        kind: "builtin",
+        name: "Array.every",
+        impl: (args, evaluator, callLoc) => {
+          const fn = args[0];
+          if (fn === undefined) {
+            throw new CompileError(
+              "Array.every requires a callback function",
+              "typecheck",
+              callLoc ?? loc
+            );
+          }
+          return arr.every((element, index) => {
+            const result = callCallback(fn, [element, index, arr], evaluator, callLoc ?? loc);
+            return !!result;
+          });
+        },
+      };
+
+    case "reduce":
+      return {
+        kind: "builtin",
+        name: "Array.reduce",
+        impl: (args, evaluator, callLoc) => {
+          const fn = args[0];
+          if (fn === undefined) {
+            throw new CompileError(
+              "Array.reduce requires a callback function",
+              "typecheck",
+              callLoc ?? loc
+            );
+          }
+          let accumulator: ComptimeValue;
+          let startIndex: number;
+          if (args.length > 1) {
+            accumulator = args[1];
+            startIndex = 0;
+          } else {
+            if (arr.length === 0) {
+              throw new CompileError(
+                "Array.reduce on empty array requires initial value",
+                "typecheck",
+                callLoc ?? loc
+              );
+            }
+            accumulator = arr[0];
+            startIndex = 1;
+          }
+          for (let i = startIndex; i < arr.length; i++) {
+            accumulator = callCallback(
+              fn,
+              [accumulator, arr[i], i, arr],
+              evaluator,
+              callLoc ?? loc
+            );
+          }
+          return accumulator;
+        },
+      };
+
+    case "concat":
+      return {
+        kind: "builtin",
+        name: "Array.concat",
+        impl: (args, _evaluator, _callLoc) => {
+          const result = [...arr];
+          for (const arg of args) {
+            if (Array.isArray(arg)) {
+              result.push(...arg);
+            } else {
+              result.push(arg);
+            }
+          }
+          return result;
+        },
+      };
+
+    case "slice":
+      return {
+        kind: "builtin",
+        name: "Array.slice",
+        impl: (args, _evaluator, callLoc) => {
+          const start = args[0] as number | undefined;
+          const end = args[1] as number | undefined;
+          return arr.slice(start, end);
+        },
+      };
+
+    case "indexOf":
+      return {
+        kind: "builtin",
+        name: "Array.indexOf",
+        impl: (args, _evaluator, _callLoc) => {
+          const searchElement = args[0];
+          const fromIndex = (args[1] as number | undefined) ?? 0;
+          for (let i = fromIndex; i < arr.length; i++) {
+            if (comptimeEquals(arr[i], searchElement)) {
+              return i;
+            }
+          }
+          return -1;
+        },
+      };
+
+    case "join":
+      return {
+        kind: "builtin",
+        name: "Array.join",
+        impl: (args, _evaluator, _callLoc) => {
+          const separator = (args[0] as string | undefined) ?? ",";
+          return arr.map((v) => String(v)).join(separator);
+        },
+      };
+
+    case "flat":
+      return {
+        kind: "builtin",
+        name: "Array.flat",
+        impl: (args, _evaluator, _callLoc) => {
+          const depth = (args[0] as number | undefined) ?? 1;
+          const flatten = (arr: ComptimeValue[], d: number): ComptimeValue[] => {
+            if (d <= 0) return arr;
+            const result: ComptimeValue[] = [];
+            for (const item of arr) {
+              if (Array.isArray(item)) {
+                result.push(...flatten(item, d - 1));
+              } else {
+                result.push(item);
+              }
+            }
+            return result;
+          };
+          return flatten(arr, depth);
+        },
+      };
+
+    case "flatMap":
+      return {
+        kind: "builtin",
+        name: "Array.flatMap",
+        impl: (args, evaluator, callLoc) => {
+          const fn = args[0];
+          if (fn === undefined) {
+            throw new CompileError(
+              "Array.flatMap requires a callback function",
+              "typecheck",
+              callLoc ?? loc
+            );
+          }
+          const result: ComptimeValue[] = [];
+          for (let i = 0; i < arr.length; i++) {
+            const mapped = callCallback(fn, [arr[i], i, arr], evaluator, callLoc ?? loc);
+            if (Array.isArray(mapped)) {
+              result.push(...mapped);
+            } else {
+              result.push(mapped);
+            }
+          }
+          return result;
+        },
+      };
+
+    default:
+      return undefined;
   }
 }
 

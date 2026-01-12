@@ -2,8 +2,8 @@
  * Type Environment - tracks type bindings during type checking.
  */
 
-import { Type } from "../types/types.js";
-import { CompileError, SourceLocation } from "../ast/core-ast.js";
+import { Type } from "../types/types";
+import { CompileError, SourceLocation } from "../ast/core-ast";
 
 /**
  * Comptime status of a binding.

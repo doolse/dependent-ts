@@ -2,10 +2,10 @@
  * DepJS Parser
  */
 
-// Simple recursive descent parser (handles core syntax)
-export { parse, Parser } from "./simple-parser.js";
+// Main parser: Lezer + desugar to CoreAST
+export { parse, desugar } from "./desugar";
 
-// Lezer parser (work in progress - has ambiguity issues)
-// export { parser } from "./parser.js";
-// export { spaceTokens } from "./tokens.js";
-// export { highlighting } from "./highlight.js";
+// Lezer parser (for IDE integration with incremental parsing)
+export { parser as lezerParser } from "./parser";
+export { spaceTokens } from "./tokens";
+export { highlighting } from "./highlight";

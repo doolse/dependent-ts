@@ -13,15 +13,15 @@ import {
   getMetadata,
   unionType,
   primitiveType,
-} from "../types/types.js";
-import { formatType } from "../types/format.js";
-import { isSubtype } from "../types/subtype.js";
-import { CompileError, SourceLocation } from "../ast/core-ast.js";
+} from "../types/types";
+import { formatType } from "../types/format";
+import { isSubtype } from "../types/subtype";
+import { CompileError, SourceLocation } from "../ast/core-ast";
 import {
   ComptimeValue,
   ComptimeBuiltin,
   ComptimeEvaluatorInterface,
-} from "./comptime-env.js";
+} from "./comptime-env";
 
 /**
  * Get a property from a Type value.
@@ -181,6 +181,10 @@ export function getTypeProperty(
     case "indexType":
       if (base.kind !== "record") {
         return undefined;
+      }
+      // Closed records return Never as indexType (per spec)
+      if (base.closed) {
+        return primitiveType("Never");
       }
       return base.indexType;
 

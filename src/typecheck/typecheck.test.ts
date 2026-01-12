@@ -5,10 +5,10 @@
  */
 
 import { describe, test, expect } from "vitest";
-import { parse } from "../parser/simple-parser.js";
-import { typecheck } from "./typecheck.js";
-import { Type, primitiveType, literalType, recordType, arrayType, functionType } from "../types/types.js";
-import { TypedDecl, TypedExpr } from "../ast/core-ast.js";
+import { parse } from "../parser";
+import { typecheck } from "./typecheck";
+import { Type, primitiveType, literalType, recordType, arrayType, functionType } from "../types/types";
+import { TypedDecl, TypedExpr } from "../ast/core-ast";
 
 // Helper to parse and typecheck a single expression in a const declaration
 function checkExpr(code: string): TypedExpr {

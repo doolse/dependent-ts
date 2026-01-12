@@ -11,7 +11,7 @@ import {
   ArrayType,
   FunctionType,
   unwrapMetadata,
-} from "./types.js";
+} from "./types";
 
 /**
  * Check if `sub` is a subtype of `sup`.

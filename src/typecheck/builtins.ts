@@ -18,8 +18,8 @@ import {
   withMetadata,
   FieldInfo,
   TypeMetadata,
-} from "../types/types.js";
-import { CompileError, SourceLocation } from "../ast/core-ast.js";
+} from "../types/types";
+import { CompileError, SourceLocation } from "../ast/core-ast";
 import {
   ComptimeEnv,
   ComptimeValue,
@@ -27,8 +27,8 @@ import {
   ComptimeRecord,
   isTypeValue,
   isRecordValue,
-} from "./comptime-env.js";
-import { TypeEnv } from "./type-env.js";
+} from "./comptime-env";
+import { TypeEnv } from "./type-env";
 
 /**
  * Create the initial comptime environment with all builtins.

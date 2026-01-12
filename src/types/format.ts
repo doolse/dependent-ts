@@ -2,7 +2,7 @@
  * Type formatting for error messages.
  */
 
-import { Type, getMetadata, unwrapMetadata } from "./types.js";
+import { Type, getMetadata, unwrapMetadata } from "./types";
 
 /**
  * Format a type as a human-readable string.

@@ -5,7 +5,7 @@
  * No separate "type expressions" - types are just expressions evaluating to Type values.
  */
 
-import { Type } from "../types/types.js";
+import { Type } from "../types/types";
 
 // ============================================
 // Source Locations
