@@ -15,7 +15,7 @@ DepJS uses [Lezer](https://lezer.codemirror.net/) for lexing and parsing. Lezer 
 - **Input:** Source string
 - **Output:** Lezer `Tree` (our SurfaceAST)
 
-The Lezer tree serves as the SurfaceAST. We traverse it with cursors or convert portions to a more convenient form during desugaring.
+The Lezer tree serves as the SurfaceAST. We traverse it with cursors during desugaring to produce CoreAST directly.
 
 ## Architecture
 
@@ -624,25 +624,18 @@ function processConstDecl(cursor: TreeCursor, source: string) {
 }
 ```
 
-### Converting to Convenient AST
+### Building CoreAST from Cursors
 
-For complex operations, we may want to convert Lezer nodes to our own types:
+Desugaring traverses the Lezer tree and builds CoreAST nodes directly. Here's an example of converting a `ConstDecl` node:
 
 ```typescript
-type ConstDeclNode = {
-  kind: "ConstDecl";
-  name: string;
-  typeAnnotation: TypeExprNode | null;
-  init: ExprNode;
-  comptime: boolean;
-  loc: SourceLocation;
-};
+import { CoreDecl } from "./core-ast";
 
-function toConstDecl(cursor: TreeCursor, source: string): ConstDeclNode {
-  const loc = { from: cursor.from, to: cursor.to };
+function desugarConstDecl(cursor: TreeCursor, source: string): CoreDecl {
+  const loc = toLoc(cursor, source);
   let name = "";
-  let typeAnnotation: TypeExprNode | null = null;
-  let init: ExprNode | null = null;
+  let typeAnnotation: CoreExpr | undefined;
+  let init: CoreExpr | undefined;
   let comptime = false;
 
   if (cursor.firstChild()) {
@@ -655,19 +648,19 @@ function toConstDecl(cursor: TreeCursor, source: string): ConstDeclNode {
           name = source.slice(cursor.from, cursor.to);
           break;
         case "TypeAnnotation":
-          typeAnnotation = toTypeAnnotation(cursor, source);
+          // Desugar the type expression (applies type syntax transforms)
+          typeAnnotation = desugarTypeAnnotation(cursor, source);
           break;
-        // init is the expression after =
         default:
           if (isExpression(cursor.name)) {
-            init = toExpr(cursor, source);
+            init = desugarExpr(cursor, source);
           }
       }
     } while (cursor.nextSibling());
     cursor.parent();
   }
 
-  return { kind: "ConstDecl", name, typeAnnotation, init: init!, comptime, loc };
+  return { kind: "const", name, typeAnnotation, init: init!, comptime, loc };
 }
 ```
 
@@ -784,7 +777,6 @@ function desugarStatement(cursor: TreeCursor, source: string): CoreDecl | null {
 | Question | Options | Notes |
 |----------|---------|-------|
 | Space-sensitive `<` detection | External tokenizer / Post-process / GLR | Post-process most reliable |
-| Lezer tree as SurfaceAST | Direct use / Convert to own types | Hybrid: cursor for simple, convert for complex |
 | Comment preservation | Skip entirely / Preserve for tooling | Preserve - useful for doc generation |
 | Error node handling | Fail on any error / Best-effort continue | Best-effort for better DX |
 

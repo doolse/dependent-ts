@@ -137,50 +137,7 @@ import { Tree, TreeCursor } from "@lezer/common";
 // See lezer.md for node types and traversal patterns
 ```
 
-### Surface AST Types (abbreviated)
-
-These types represent the Lezer tree nodes in a more convenient form for complex operations. See `lezer.md` for full details.
-
-```typescript
-type SurfaceExpr =
-  | { kind: "identifier"; name: string }
-  | { kind: "literal"; value: unknown; literalKind: "int" | "float" | "string" | "boolean" | "null" | "undefined" }
-  | { kind: "binary"; op: string; left: SurfaceExpr; right: SurfaceExpr }
-  | { kind: "call"; fn: SurfaceExpr; args: SurfaceExpr[] }
-  | { kind: "typeCall"; fn: SurfaceExpr; typeArgs: SurfaceTypeExpr[] }  // f<T, U>
-  | { kind: "property"; object: SurfaceExpr; name: string }
-  | { kind: "index"; object: SurfaceExpr; index: SurfaceExpr }
-  | { kind: "lambda"; params: SurfaceParam[]; body: SurfaceExpr; async: boolean }
-  | { kind: "match"; expr: SurfaceExpr; cases: SurfaceCase[] }
-  | { kind: "conditional"; condition: SurfaceExpr; then: SurfaceExpr; else: SurfaceExpr }
-  | { kind: "record"; fields: SurfaceRecordField[] }
-  | { kind: "array"; elements: SurfaceArrayElement[] }
-  | { kind: "await"; expr: SurfaceExpr }
-  | { kind: "throw"; expr: SurfaceExpr }
-  | { kind: "spread"; expr: SurfaceExpr }
-  | { kind: "template"; parts: SurfaceTemplatePart[] }
-  // ... more
-
-type SurfaceTypeExpr =
-  | { kind: "typeRef"; name: string }
-  | { kind: "typeCall"; fn: SurfaceTypeExpr; args: SurfaceTypeExpr[] }  // Array<Int>
-  | { kind: "union"; types: SurfaceTypeExpr[] }                         // A | B
-  | { kind: "intersection"; types: SurfaceTypeExpr[] }                  // A & B
-  | { kind: "recordType"; fields: SurfaceTypeField[]; closed: boolean; indexType?: SurfaceTypeExpr }
-  | { kind: "functionType"; params: SurfaceTypeParam[]; returnType: SurfaceTypeExpr }
-  | { kind: "arrayType"; elementType: SurfaceTypeExpr }                 // T[]
-  | { kind: "tupleType"; elements: SurfaceTupleElement[] }              // [A, B]
-  | { kind: "literal"; value: unknown }                                  // "foo", 42, true
-  // ... more
-
-type SurfaceDecl =
-  | { kind: "const"; name: string; typeAnnotation?: SurfaceTypeExpr; init: SurfaceExpr; comptime: boolean }
-  | { kind: "type"; name: string; typeParams: SurfaceTypeParam[]; body: SurfaceTypeExpr; annotations: SurfaceExpr[] }
-  | { kind: "newtype"; name: string; baseType: SurfaceTypeExpr }
-  | { kind: "import"; ... }
-  | { kind: "export"; ... }
-  // ... more
-```
+Desugaring traverses the Lezer tree directly using cursors and produces CoreAST. There is no intermediate TypeScript representation—the Lezer node types (`ConstDecl`, `TypeCallExpression`, `UnionType`, etc.) already represent the surface syntax.
 
 ### Core AST (abbreviated)
 
