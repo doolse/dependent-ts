@@ -1,0 +1,30 @@
+{
+  "name": "depjs",
+  "version": "0.1.0",
+  "description": "DepJS compiler - a functional JavaScript subset with first-class types",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "depjs": "dist/repl.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "build:parser": "lezer-generator src/parser/depjs.grammar -o src/parser/parser.ts",
+    "test": "vitest",
+    "test:run": "vitest run",
+    "typecheck": "tsc --noEmit",
+    "repl": "node dist/repl.js"
+  },
+  "devDependencies": {
+    "@lezer/generator": "^1.7.0",
+    "@types/node": "^20.10.0",
+    "typescript": "^5.3.0",
+    "vitest": "^2.0.0"
+  },
+  "dependencies": {
+    "@lezer/common": "^1.2.0",
+    "@lezer/highlight": "^1.2.0",
+    "@lezer/lr": "^1.4.0"
+  }
+}

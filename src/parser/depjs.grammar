@@ -1,0 +1,336 @@
+// DepJS Grammar - Minimal version for type checking pipeline
+// Avoids complex ambiguities by restricting some syntax
+
+@top Program { statement* }
+
+@external tokens spaceTokens from "./tokens" {
+  ltType    // < for type arguments (no preceding space)
+  ltCompare // < for comparison (preceding space)
+}
+
+// ============================================
+// Statements
+// ============================================
+
+statement {
+  ConstDecl |
+  TypeDecl |
+  NewtypeDecl |
+  ImportDecl |
+  ExpressionStatement
+}
+
+ConstDecl {
+  kw<"comptime">? kw<"const"> identifier TypeAnnotation? "=" expression ";"
+}
+
+TypeDecl {
+  Annotation* kw<"type"> TypeName TypeParams? "=" typeExpression ";"
+}
+
+NewtypeDecl {
+  kw<"newtype"> TypeName "=" typeExpression ";"
+}
+
+ImportDecl {
+  kw<"import"> ImportClause kw<"from"> String ";"
+}
+
+ImportClause {
+  DefaultImport { identifier } |
+  NamedImports { "{" ListOf<ImportSpecifier>? "}" } |
+  NamespaceImport { "*" kw<"as"> identifier } |
+  DefaultAndNamed { identifier "," "{" ListOf<ImportSpecifier>? "}" }
+}
+
+ImportSpecifier { identifier (kw<"as"> identifier)? }
+
+ExpressionStatement {
+  expression ";"
+}
+
+// ============================================
+// Expressions - simplified precedence
+// ============================================
+
+expression {
+  TernaryExpr |
+  binaryExpr
+}
+
+TernaryExpr { binaryExpr "?" expression ":" expression }
+
+binaryExpr {
+  unaryExpr |
+  BinaryExpr { binaryExpr !or "||" binaryExpr } |
+  BinaryExpr { binaryExpr !and "&&" binaryExpr } |
+  BinaryExpr { binaryExpr !bitor BitOr binaryExpr } |
+  BinaryExpr { binaryExpr !bitxor "^" binaryExpr } |
+  BinaryExpr { binaryExpr !bitand BitAnd binaryExpr } |
+  BinaryExpr { binaryExpr !equality ("==" | "!=") binaryExpr } |
+  BinaryExpr { binaryExpr !compare (ltCompare | ">" | "<=" | ">=") binaryExpr } |
+  BinaryExpr { binaryExpr !add ("+" | "-") binaryExpr } |
+  BinaryExpr { binaryExpr !mult ("*" | "/" | "%") binaryExpr }
+}
+
+unaryExpr {
+  UnaryExpr { !unary ("!" | "-" | "~") unaryExpr } |
+  AwaitExpr { !await kw<"await"> unaryExpr } |
+  postfixExpr
+}
+
+postfixExpr {
+  atomExpr |
+  CallExpr { postfixExpr !call "(" ListOf<Argument>? ")" } |
+  TypeCallExpr { postfixExpr !typeCall ltType ListOf1<typeExpression> ">" ("(" ListOf<Argument>? ")")? } |
+  MemberExpr { postfixExpr !member "." PropertyName } |
+  IndexExpr { postfixExpr !member "[" expression "]" }
+}
+
+Argument { Spread? expression }
+Spread { "..." }
+
+atomExpr {
+  VariableExpr { identifier } |
+  Literal |
+  ArrayExpr { "[" ListOf<ArrayElement>? "]" } |
+  RecordExpr { "{" ListOf<RecordField>? "}" } |
+  ArrowFn |
+  MatchExpr |
+  ThrowExpr { kw<"throw"> unaryExpr } |
+  ParenExpr { "(" expression ")" }
+}
+
+ArrayElement { Spread? expression }
+
+RecordField {
+  SpreadField { Spread expression } |
+  FieldDef { PropertyName (":" expression)? }
+}
+
+// Arrow function - simplified to avoid ambiguity
+// Only parenthesized params can have type annotations
+ArrowFn {
+  kw<"async">? ArrowHead "=>" ArrowBody
+}
+
+ArrowHead {
+  SimpleParam { identifier } |
+  ParamList { "(" ListOf<ArrowParam>? ")" TypeAnnotation? }
+}
+
+ArrowParam {
+  identifier TypeAnnotation? DefaultValue?
+}
+
+DefaultValue { "=" expression }
+
+ArrowBody {
+  expression |
+  Block
+}
+
+// Block always contains statements or ends with expression
+// Distinguished from record by requiring at least one stmt or trailing semicolon
+Block { "{" BlockContent "}" }
+
+BlockContent {
+  statement+ expression? |
+  expression
+}
+
+MatchExpr {
+  kw<"match"> "(" expression ")" "{" MatchCase* "}"
+}
+
+MatchCase {
+  kw<"case"> Pattern Guard? ":" expression ";"
+}
+
+Pattern {
+  WildcardPattern { "_" } |
+  LiteralPattern { Literal } |
+  TypePattern { TypeName } |
+  DestructurePattern { "{" ListOf<PatternField>? "}" } |
+  BindingPattern { identifier }
+}
+
+PatternField { PropertyName (":" Pattern)? }
+
+Guard { kw<"when"> expression }
+
+// ============================================
+// Type Expressions
+// ============================================
+
+typeExpression {
+  unionType
+}
+
+unionType {
+  intersectionType |
+  UnionType { unionType !union BitOr intersectionType }
+}
+
+intersectionType {
+  primaryType |
+  IntersectionType { intersectionType !intersection BitAnd primaryType }
+}
+
+primaryType {
+  NamedType { TypeName TypeArgs? ArraySuffix* } |
+  RecordType { "{" ListOf<TypeField>? "}" } |
+  ClosedRecordType { "{|" ListOf<TypeField>? "|}" } |
+  IndexedRecordType { "{" IndexSignature "}" } |
+  TupleType { "[" ListOf<TupleElement>? "]" } |
+  FunctionType { TypeParams? "(" ListOf<FuncParam>? ")" "=>" typeExpression } |
+  ParenType { "(" typeExpression ")" } |
+  LiteralType { String | Number | kw<"true"> | kw<"false"> }
+}
+
+TypeArgs { ltType ListOf1<typeExpression> ">" }
+ArraySuffix { "[" "]" }
+
+TypeField {
+  Annotation* PropertyName Optional? ":" typeExpression
+}
+
+Optional { "?" }
+
+IndexSignature {
+  "[" identifier ":" typeExpression "]" ":" typeExpression
+}
+
+TupleElement {
+  Spread? LabeledType?
+}
+
+LabeledType {
+  (identifier ":")? typeExpression
+}
+
+FuncParam {
+  Annotation* identifier Optional? ":" typeExpression
+}
+
+// ============================================
+// Type Parameters and Annotations
+// ============================================
+
+TypeParams {
+  ltType ListOf1<TypeParam> ">"
+}
+
+TypeParam {
+  Annotation* TypeName (kw<"extends"> typeExpression)?
+}
+
+TypeAnnotation { ":" typeExpression }
+
+Annotation { "@" atomExpr }
+
+// ============================================
+// Literals
+// ============================================
+
+Literal {
+  String |
+  Number |
+  BooleanLiteral { kw<"true"> | kw<"false"> } |
+  NullLiteral { kw<"null"> } |
+  UndefinedLiteral { kw<"undefined"> }
+}
+
+// ============================================
+// Helper rules
+// ============================================
+
+ListOf<item> { item ("," item)* ","? }
+ListOf1<item> { item ("," item)* }
+
+kw<term> { @specialize[@name={term}]<VariableName, term> }
+
+identifier { VariableName }
+
+// ============================================
+// Tokens
+// ============================================
+
+@tokens {
+  whitespace { $[ \t\n\r]+ }
+
+  LineComment { "//" ![\n]* }
+  BlockComment { "/*" blockCommentContent* "*/" }
+  blockCommentContent { ![*] | "*" ![/] }
+
+  String {
+    '"' (![\\\n"] | "\\" _)* '"' |
+    "'" (![\\\n'] | "\\" _)* "'"
+  }
+
+  Number {
+    @digit+ ("." @digit+)? ($[eE] $[+\-]? @digit+)? |
+    "0x" $[0-9a-fA-F]+ |
+    "0b" $[01]+ |
+    "0o" $[0-7]+
+  }
+
+  TypeName { $[A-Z] $[a-zA-Z0-9_]* }
+  VariableName { $[a-z_] $[a-zA-Z0-9_]* }
+  PropertyName { $[a-zA-Z_] $[a-zA-Z0-9_]* }
+
+  "="
+  ";" "," "." ":" "?"[@name=Question] "@"
+  "(" ")" "[" "]" "{" "}"
+  "{|" "|}"
+  "=>"
+  "..."
+  "_"
+
+  "+" "-" "*" "/" "%"
+
+  "==" "!="
+  "<=" ">=" ">"
+
+  "&&" "||"
+
+  // Distinguish | and & in tokens to help with type syntax
+  BitOr[@name="|"] { "|" }
+  BitAnd[@name="&"] { "&" }
+
+  "^"
+  "!" "~"
+
+  @precedence { BlockComment, LineComment, "/" }
+  @precedence { Number, "." }
+  @precedence { "{|", "{" }
+  @precedence { "|}", BitOr }
+  @precedence { "...", "." }
+  @precedence { TypeName, VariableName, PropertyName }
+}
+
+@skip { whitespace | LineComment | BlockComment }
+
+// Operator precedence (low to high)
+@precedence {
+  or @left,
+  and @left,
+  bitor @left,
+  bitxor @left,
+  bitand @left,
+  equality @left,
+  compare @left,
+  add @left,
+  mult @left,
+  unary @right,
+  await @right,
+  typeCall @left,
+  call @left,
+  member @left,
+  union @left,
+  intersection @left
+}
+
+@external propSource highlighting from "./highlight"
+
+@detectDelim
