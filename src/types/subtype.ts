@@ -296,14 +296,17 @@ function isFunctionSubtype(sub: FunctionType, sup: FunctionType): boolean {
     const subParam = subNonRest[i];
 
     if (!subParam && supParam) {
-      // Sub doesn't have this param
+      // Sub doesn't have this param - that's OK!
+      // In JavaScript/TypeScript, a function with fewer parameters can be used
+      // where one with more parameters is expected (extra args are ignored).
+      // This is standard callback behavior: (x) => x can be passed as (a,b,c) => ...
       if (subRestParam) {
         // Sub has rest param - check rest element type (contravariant)
         const restElemType = getRestElementType(subRestParam);
         if (restElemType && !isSubtype(supParam.type, restElemType)) return false;
-      } else if (!supParam.optional) {
-        return false;
       }
+      // If sub doesn't have this param and has no rest, that's still fine
+      // because the caller will pass the argument and sub will just ignore it.
       continue;
     }
 

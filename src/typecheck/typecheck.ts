@@ -42,6 +42,7 @@ import { ComptimeEnv, ComptimeValue, isTypeValue, isClosureValue, isBuiltinValue
 import { ComptimeEvaluator } from "./comptime-eval";
 import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
 import { isComptimeOnlyProperty, getTypePropertyType } from "./type-properties";
+import { getArrayMethodType, getArrayElementType } from "./array-methods";
 
 /**
  * Type checker configuration.
@@ -528,9 +529,8 @@ class TypeChecker {
    */
   private checkCall(expr: CoreExpr & { kind: "call" }): TypedExpr {
     const fn = this.checkExpr(expr.fn);
-    const args = expr.args.map((a) => this.checkExpr(a));
 
-    // Get the function type
+    // Get the function type first (needed for contextual typing of arguments)
     let fnType = fn.type;
 
     // Unwrap metadata if present
@@ -559,20 +559,38 @@ class TypeChecker {
 
     // Check argument count
     const requiredParams = nonRestParams.filter((p) => !p.optional).length;
-    if (args.length < requiredParams) {
+    if (expr.args.length < requiredParams) {
       throw new CompileError(
-        `Expected at least ${requiredParams} arguments, got ${args.length}`,
+        `Expected at least ${requiredParams} arguments, got ${expr.args.length}`,
         "typecheck",
         expr.loc
       );
     }
     // Only check max args if there's no rest parameter
-    if (!hasRestParam && args.length > fnType.params.length) {
+    if (!hasRestParam && expr.args.length > fnType.params.length) {
       throw new CompileError(
-        `Expected at most ${fnType.params.length} arguments, got ${args.length}`,
+        `Expected at most ${fnType.params.length} arguments, got ${expr.args.length}`,
         "typecheck",
         expr.loc
       );
+    }
+
+    // Check arguments WITH contextual types from parameter types
+    const args: TypedExpr[] = [];
+    for (let i = 0; i < expr.args.length; i++) {
+      // Get the expected parameter type for contextual typing
+      let contextType: Type | undefined;
+      if (i < nonRestParams.length) {
+        contextType = nonRestParams[i].type;
+      } else if (restParam) {
+        // Rest parameter - get element type
+        if (restParam.type.kind === "array" && restParam.type.variadic) {
+          contextType = restParam.type.elementTypes[0];
+        }
+      }
+
+      const arg = this.checkExpr(expr.args[i], contextType);
+      args.push(arg);
     }
 
     // Check argument types for non-rest parameters
@@ -612,13 +630,105 @@ class TypeChecker {
     const comptimeOnly =
       fn.comptimeOnly || args.some((a) => a.comptimeOnly);
 
+    // Handle generic return type inference for array methods
+    let returnType = fnType.returnType;
+    if (expr.fn.kind === "property") {
+      const methodName = expr.fn.name;
+      returnType = this.inferArrayMethodReturnType(
+        fn,
+        methodName,
+        args,
+        fnType.returnType
+      );
+    }
+
     return {
       ...expr,
       fn,
       args,
-      type: fnType.returnType,
+      type: returnType,
       comptimeOnly,
     };
+  }
+
+  /**
+   * Infer the return type for array methods that have generic return types.
+   * For methods like map, the return type depends on the callback's return type.
+   */
+  private inferArrayMethodReturnType(
+    fn: TypedExpr,
+    methodName: string,
+    args: TypedExpr[],
+    defaultReturnType: Type
+  ): Type {
+    // Check if fn is a property access on an array
+    if (fn.kind !== "property") {
+      return defaultReturnType;
+    }
+
+    // Get the object type (unwrap metadata if needed)
+    let objType = fn.object.type;
+    if (objType.kind === "withMetadata") {
+      objType = objType.baseType;
+    }
+
+    // Only handle array methods
+    if (objType.kind !== "array") {
+      return defaultReturnType;
+    }
+
+    const elementType = getArrayElementType(objType);
+
+    // Get the callback argument if present
+    const callback = args[0];
+    if (!callback) {
+      return defaultReturnType;
+    }
+
+    // Get the callback's return type
+    let callbackType = callback.type;
+    if (callbackType.kind === "withMetadata") {
+      callbackType = callbackType.baseType;
+    }
+
+    if (callbackType.kind !== "function") {
+      return defaultReturnType;
+    }
+
+    const callbackReturnType = callbackType.returnType;
+
+    switch (methodName) {
+      case "map":
+        // map returns Array<CallbackReturnType>
+        return arrayType([callbackReturnType], true);
+
+      case "flatMap":
+        // flatMap returns Array<ElementOf(CallbackReturnType)>
+        if (callbackReturnType.kind === "array") {
+          return arrayType([getArrayElementType(callbackReturnType)], true);
+        }
+        // If callback doesn't return array, treat as regular map
+        return arrayType([callbackReturnType], true);
+
+      case "reduce":
+        // reduce: If there's an initial value (args[1]), use its type
+        // Otherwise, use the element type
+        if (args.length > 1) {
+          return args[1].type;
+        }
+        return elementType;
+
+      case "filter":
+        // filter returns Array<ElementType> (preserves element type)
+        return arrayType([elementType], true);
+
+      case "find":
+        // find returns ElementType | Undefined
+        return unionType([elementType, primitiveType("Undefined")]);
+
+      default:
+        return defaultReturnType;
+    }
   }
 
   /**
@@ -657,6 +767,38 @@ class TypeChecker {
     // Unwrap metadata
     if (objType.kind === "withMetadata") {
       objType = objType.baseType;
+    }
+
+    // Handle array property/method access
+    if (objType.kind === "array") {
+      const elementType = getArrayElementType(objType);
+
+      // Handle .length property
+      if (expr.name === "length") {
+        return {
+          ...expr,
+          object,
+          type: primitiveType("Int"),
+          comptimeOnly: object.comptimeOnly,
+        };
+      }
+
+      // Handle array methods
+      const methodType = getArrayMethodType(elementType, expr.name);
+      if (methodType) {
+        return {
+          ...expr,
+          object,
+          type: methodType,
+          comptimeOnly: object.comptimeOnly,
+        };
+      }
+
+      throw new CompileError(
+        `Array has no method '${expr.name}'`,
+        "typecheck",
+        expr.loc
+      );
     }
 
     if (objType.kind !== "record") {

@@ -1287,14 +1287,113 @@ describe("Type Checker", () => {
       expect(result.decls).toHaveLength(3);
     });
 
-    // Note: Partial, Required, Pick, Omit require .fields.map() which
-    // requires the type checker to understand array method chains.
-    // The .fields property now returns Array<FieldInfo>, but Array<T>.map()
-    // isn't yet understood by the static type checker.
-    // These patterns work in comptime evaluation (see comptime-eval.test.ts).
+    // Array method typing is now supported
+    test("array .map method type checking", () => {
+      const result = check(`
+        const arr: Int[] = [1, 2, 3];
+        const doubled = arr.map(x => x * 2);
+      `);
+      expect(result.decls).toHaveLength(2);
+      // doubled should have type Int[] (Array<Int>)
+      const doubledDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(doubledDecl.init.type.kind).toBe("array");
+    });
 
-    test.skip("Partial/Required/Pick/Omit require array method typing", () => {
-      // These require .fields.map() and .fields.filter() to be typed
+    test("array .filter method type checking", () => {
+      const result = check(`
+        const arr: Int[] = [1, 2, 3, 4];
+        const evens = arr.filter(x => (x % 2) == 0);
+      `);
+      expect(result.decls).toHaveLength(2);
+      const evensDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(evensDecl.init.type.kind).toBe("array");
+    });
+
+    test("array .find method type checking", () => {
+      const result = check(`
+        const arr: Int[] = [1, 2, 3];
+        const found = arr.find(x => x > 1);
+      `);
+      expect(result.decls).toHaveLength(2);
+      // found should have type Int | Undefined
+      const foundDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(foundDecl.init.type.kind).toBe("union");
+    });
+
+    test("array method chaining", () => {
+      const result = check(`
+        const arr: Int[] = [1, 2, 3, 4, 5];
+        const result = arr.filter(x => x > 2).map(x => x * 10);
+      `);
+      expect(result.decls).toHaveLength(2);
+      const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(resultDecl.init.type.kind).toBe("array");
+    });
+
+    test("T.fields.map pattern for Partial", () => {
+      // DepJS blocks return the last expression (no explicit return keyword)
+      const result = check(`
+        const Partial = (T: Type): Type => {
+          const newFields = T.fields.map(f => ({
+            name: f.name,
+            type: f.type,
+            optional: true,
+            annotations: f.annotations
+          }));
+          RecordType(newFields)
+        };
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("T.fields.filter pattern for Pick", () => {
+      // DepJS blocks return the last expression (no explicit return keyword)
+      const result = check(`
+        const Pick = (T: Type, keys: String[]): Type => {
+          const newFields = T.fields.filter(f => keys.includes(f.name));
+          RecordType(newFields)
+        };
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("array .reduce method type checking", () => {
+      const result = check(`
+        const arr: Int[] = [1, 2, 3];
+        const sum = arr.reduce((acc, x) => acc + x, 0);
+      `);
+      expect(result.decls).toHaveLength(2);
+    });
+
+    test("array .some and .every type checking", () => {
+      const result = check(`
+        const arr: Int[] = [1, 2, 3];
+        const hasPositive = arr.some(x => x > 0);
+        const allPositive = arr.every(x => x > 0);
+      `);
+      expect(result.decls).toHaveLength(3);
+      const hasPositiveDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(hasPositiveDecl.init.type.kind).toBe("primitive");
+    });
+
+    test("array .includes type checking", () => {
+      const result = check(`
+        const arr: Int[] = [1, 2, 3];
+        const has2 = arr.includes(2);
+      `);
+      expect(result.decls).toHaveLength(2);
+      const has2Decl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(has2Decl.init.type.kind).toBe("primitive");
+    });
+
+    test("array .length property", () => {
+      const result = check(`
+        const arr: Int[] = [1, 2, 3];
+        const len = arr.length;
+      `);
+      expect(result.decls).toHaveLength(2);
+      const lenDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(lenDecl.init.type.kind).toBe("primitive");
     });
   });
 
