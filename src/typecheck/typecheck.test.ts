@@ -784,23 +784,63 @@ describe("Type Checker", () => {
     });
   });
 
-  // Note: Default parameters have implementation issues
-  // - String literal "Hello" not assignable to String annotation
-  // describe("default parameters") - skipped
+  describe("default parameters", () => {
+    test("string literal default is assignable to String annotation", () => {
+      const result = check(`
+        const greet = (message: String = "Hello") => message;
+      `);
+      const fnDecl = result.decls[0] as TypedDecl & { kind: "const" };
+      expect(fnDecl.init.type.kind).toBe("function");
+    });
+
+    test("int literal default is assignable to Int annotation", () => {
+      const result = check(`
+        const addDefault = (x: Int = 10) => x + 1;
+      `);
+      const fnDecl = result.decls[0] as TypedDecl & { kind: "const" };
+      expect(fnDecl.init.type.kind).toBe("function");
+    });
+
+    test("default value must be subtype of parameter type", () => {
+      expect(() => check(`
+        const f = (x: Int = "hello") => x;
+      `)).toThrow(/not assignable/);
+    });
+  })
 
   describe("array index access", () => {
-    test("index access on array returns union of element types", () => {
+    test("literal index on fixed array returns specific element type", () => {
       const result = check(`
         const arr = [1, 2, 3];
         const x = arr[0];
       `);
       const xDecl = result.decls[1] as TypedDecl & { kind: "const" };
-      // Current implementation returns union of all element types
-      expect(xDecl.init.type.kind).toBe("union");
+      // With literal index, returns specific element type (literal 1)
+      expect(xDecl.init.type.kind).toBe("literal");
+      expect((xDecl.init.type as any).value).toBe(1);
     });
 
-    // Note: Literal index doesn't return specific element type - returns union
-    // A more sophisticated implementation could return the specific type for constant indices
+    test("literal index on heterogeneous array returns specific element type", () => {
+      const result = check(`
+        const arr = [1, "hello", true];
+        const x = arr[1];
+      `);
+      const xDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      // arr[1] should be "hello" (string literal)
+      expect(xDecl.init.type.kind).toBe("literal");
+      expect((xDecl.init.type as any).value).toBe("hello");
+    });
+
+    test("dynamic index returns union of element types", () => {
+      const result = check(`
+        const arr = [1, "hello"];
+        const i: Int = 0;
+        const x = arr[i];
+      `);
+      const xDecl = result.decls[2] as TypedDecl & { kind: "const" };
+      // With non-literal index, returns union
+      expect(xDecl.init.type.kind).toBe("union");
+    });
   });
 
   describe("spread in records", () => {
@@ -817,8 +857,32 @@ describe("Type Checker", () => {
       expect(rec.fields.map(f => f.name)).toContain("c");
     });
 
-    // Note: Spread override doesn't correctly replace field type
-    // test("spread with override takes later value type") - skipped
+    test("spread with override takes later value type", () => {
+      const result = check(`
+        const base = { a: 1, b: 2 };
+        const overridden = { ...base, a: "hello" };
+      `);
+      const extDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(extDecl.init.type.kind).toBe("record");
+      const rec = extDecl.init.type as Type & { kind: "record" };
+      // Should have exactly 2 fields, not 3
+      expect(rec.fields.length).toBe(2);
+      // Field 'a' should have the overridden type
+      const fieldA = rec.fields.find(f => f.name === "a");
+      expect(fieldA?.type.kind).toBe("literal");
+      expect((fieldA?.type as any).value).toBe("hello");
+    });
+
+    test("spread override preserves field order", () => {
+      const result = check(`
+        const base = { a: 1, b: 2, c: 3 };
+        const overridden = { ...base, b: "mid" };
+      `);
+      const extDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      const rec = extDecl.init.type as Type & { kind: "record" };
+      expect(rec.fields.length).toBe(3);
+      expect(rec.fields.map(f => f.name)).toEqual(["a", "b", "c"]);
+    });
   });
 
   describe("contextual typing", () => {

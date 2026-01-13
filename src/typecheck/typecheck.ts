@@ -708,7 +708,23 @@ class TypeChecker {
           expr.index.loc
         );
       }
-      elementType = unionType(objType.elementTypes);
+
+      // For fixed-length arrays with literal integer index, return specific element type
+      if (
+        !objType.variadic &&
+        index.type.kind === "literal" &&
+        index.type.baseType === "Int"
+      ) {
+        const indexValue = index.type.value as number;
+        if (indexValue >= 0 && indexValue < objType.elementTypes.length) {
+          elementType = objType.elementTypes[indexValue];
+        } else {
+          // Out of bounds - could error here, but for now return union
+          elementType = unionType(objType.elementTypes);
+        }
+      } else {
+        elementType = unionType(objType.elementTypes);
+      }
     } else if (objType.kind === "record" && objType.indexType) {
       // Indexed record
       if (!isSubtype(index.type, primitiveType("String"))) {
@@ -798,6 +814,28 @@ class TypeChecker {
           "typecheck",
           expr.loc
         );
+      }
+
+      // Check default value type if present
+      if (param.defaultValue) {
+        // Type check the default value (using child env which has previous params)
+        const savedTypeEnvTemp = this.typeEnv;
+        const savedComptimeEnvTemp = this.comptimeEnv;
+        this.typeEnv = childTypeEnv;
+        this.comptimeEnv = childComptimeEnv;
+
+        const defaultTyped = this.checkExpr(param.defaultValue, paramType);
+
+        this.typeEnv = savedTypeEnvTemp;
+        this.comptimeEnv = savedComptimeEnvTemp;
+
+        if (!isSubtype(defaultTyped.type, paramType)) {
+          throw new CompileError(
+            `Default value type '${formatType(defaultTyped.type)}' is not assignable to parameter type '${formatType(paramType)}'`,
+            "typecheck",
+            param.defaultValue.loc
+          );
+        }
       }
 
       paramTypes.push({
@@ -905,7 +943,8 @@ class TypeChecker {
     expr: CoreExpr & { kind: "record" },
     contextType?: Type
   ): TypedExpr {
-    const fields: FieldInfo[] = [];
+    // Use a Map to track fields by name - later definitions override earlier ones
+    const fieldMap = new Map<string, FieldInfo>();
     const typedFields: typeof expr.fields = [];
     let comptimeOnly = false;
 
@@ -914,13 +953,15 @@ class TypeChecker {
         const spreadExpr = this.checkExpr(field.expr);
         comptimeOnly = comptimeOnly || spreadExpr.comptimeOnly;
 
-        // Add spread fields
+        // Add spread fields (may be overridden by later explicit fields)
         let spreadType = spreadExpr.type;
         if (spreadType.kind === "withMetadata") {
           spreadType = spreadType.baseType;
         }
         if (spreadType.kind === "record") {
-          fields.push(...spreadType.fields);
+          for (const f of spreadType.fields) {
+            fieldMap.set(f.name, f);
+          }
         }
 
         typedFields.push({ kind: "spread", expr: spreadExpr });
@@ -939,7 +980,8 @@ class TypeChecker {
         const value = this.checkExpr(field.value, fieldContextType);
         comptimeOnly = comptimeOnly || value.comptimeOnly;
 
-        fields.push({
+        // Override any existing field with same name (from spread)
+        fieldMap.set(field.name, {
           name: field.name,
           type: value.type,
           optional: false,
@@ -950,7 +992,7 @@ class TypeChecker {
       }
     }
 
-    const type = recordType(fields);
+    const type = recordType(Array.from(fieldMap.values()));
 
     return {
       ...expr,
