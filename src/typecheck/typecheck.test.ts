@@ -484,6 +484,53 @@ describe("Type Checker", () => {
     // but the static type checker doesn't yet understand these patterns.
     // These features work when used in comptime contexts that are evaluated,
     // but the type checker can't statically verify them.
+
+    describe("builtin record types", () => {
+      test("FieldInfo type is available", () => {
+        // FieldInfo is a builtin type that can be used in annotations
+        const result = check(`
+          type PersonFields = Array<FieldInfo>;
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("ParamInfo type is available", () => {
+        const result = check(`
+          type FnParams = Array<ParamInfo>;
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("ArrayElementInfo type is available", () => {
+        const result = check(`
+          type Elements = Array<ArrayElementInfo>;
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("TypeMetadata type is available", () => {
+        // TypeMetadata can be created without the 'type' keyword conflict
+        const result = check(`
+          const m: TypeMetadata = { name: "Foo" };
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test(".fields returns Array<FieldInfo>", () => {
+        // The .fields property on record types returns FieldInfo array
+        const result = check(`
+          type Person = { name: String, age: Int };
+          const fields = Person.fields;
+        `);
+        // fields is comptime-only because it contains Type values
+        const fieldsDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(fieldsDecl.init.comptimeOnly).toBe(true);
+      });
+
+      // Note: Static type checker doesn't know .fields returns Array<FieldInfo>,
+      // so Person.fields[0].name doesn't work statically. This pattern only works
+      // in comptime evaluation contexts (see comptime-eval.test.ts).
+    });
   });
 
   describe("rest parameters", () => {

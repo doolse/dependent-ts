@@ -31,6 +31,59 @@ import {
 } from "./comptime-env";
 import { TypeEnv } from "./type-env";
 
+// ============================================
+// Built-in record types
+// ============================================
+
+/**
+ * FieldInfo: { name: String, type: Type, optional: Boolean, annotations: Array<Unknown> }
+ */
+const FieldInfoType: Type = recordType(
+  [
+    { name: "name", type: primitiveType("String"), optional: false, annotations: [] },
+    { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
+    { name: "optional", type: primitiveType("Boolean"), optional: false, annotations: [] },
+    { name: "annotations", type: arrayType([Unknown], true), optional: false, annotations: [] },
+  ],
+  { closed: false }
+);
+
+/**
+ * ParamInfo: { name: String, type: Type, optional: Boolean, rest?: Boolean }
+ */
+const ParamInfoType: Type = recordType(
+  [
+    { name: "name", type: primitiveType("String"), optional: false, annotations: [] },
+    { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
+    { name: "optional", type: primitiveType("Boolean"), optional: false, annotations: [] },
+    { name: "rest", type: primitiveType("Boolean"), optional: true, annotations: [] },
+  ],
+  { closed: false }
+);
+
+/**
+ * ArrayElementInfo: { type: Type, label?: String }
+ */
+const ArrayElementInfoType: Type = recordType(
+  [
+    { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
+    { name: "label", type: unionType([primitiveType("String"), primitiveType("Undefined")]), optional: true, annotations: [] },
+  ],
+  { closed: false }
+);
+
+/**
+ * TypeMetadata: { name?: String, typeArgs?: Array<Type>, annotations?: Array<Unknown> }
+ */
+const TypeMetadataType: Type = recordType(
+  [
+    { name: "name", type: primitiveType("String"), optional: true, annotations: [] },
+    { name: "typeArgs", type: arrayType([primitiveType("Type")], true), optional: true, annotations: [] },
+    { name: "annotations", type: arrayType([Unknown], true), optional: true, annotations: [] },
+  ],
+  { closed: false }
+);
+
 /**
  * Create the initial comptime environment with all builtins.
  */
@@ -55,6 +108,12 @@ export function createInitialComptimeEnv(): ComptimeEnv {
   for (const name of primitives) {
     env.defineEvaluated(name, primitiveType(name));
   }
+
+  // Built-in record types
+  env.defineEvaluated("FieldInfo", FieldInfoType);
+  env.defineEvaluated("ParamInfo", ParamInfoType);
+  env.defineEvaluated("ArrayElementInfo", ArrayElementInfoType);
+  env.defineEvaluated("TypeMetadata", TypeMetadataType);
 
   // Type constructors
   env.defineEvaluated("RecordType", builtinRecordType);
@@ -99,6 +158,16 @@ export function createInitialTypeEnv(): TypeEnv {
   const typeType = primitiveType("Type");
 
   for (const name of primitives) {
+    env.define(name, {
+      type: typeType,
+      comptimeStatus: "comptimeOnly",
+      mutable: false,
+    });
+  }
+
+  // Built-in record types (all are Type values)
+  const builtinRecordTypes = ["FieldInfo", "ParamInfo", "ArrayElementInfo", "TypeMetadata"];
+  for (const name of builtinRecordTypes) {
     env.define(name, {
       type: typeType,
       comptimeStatus: "comptimeOnly",
