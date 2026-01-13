@@ -1054,6 +1054,48 @@ const ReturnType = (T: Type): Type => T.returnType;
 const Parameters = (T: Type): Array<Type> => T.parameterTypes;
 ```
 
+### Rest Parameters in Functions
+
+Functions can have a rest parameter to accept variadic arguments. The rest parameter must be the last parameter and is marked with `...`:
+
+```
+// Rest parameter in arrow function
+const sum = (...nums: Int[]): Int => nums.reduce((a, b) => a + b, 0);
+
+// Rest parameter in function type
+type Variadic = (...args: String[]) => Void;
+
+// Built-in variadic type constructors
+const Union: (...types: Type[]) => Type;
+const Intersection: (...types: Type[]) => Type;
+const Array: (...elementTypes: Type[]) => Type;
+```
+
+**Semantics:**
+- A rest parameter collects all remaining arguments into an array
+- The type annotation must be an array type (e.g., `Int[]`, `Array<String>`)
+- Rest parameters cannot have default values
+- Only one rest parameter is allowed, and it must be last
+
+**Calling variadic functions:**
+
+```
+sum(1, 2, 3)           // Called with 3 args, nums = [1, 2, 3]
+sum()                  // Called with 0 args, nums = []
+
+Union(Int, String)     // Returns Int | String
+Union<Int, String>     // Same, using type syntax
+```
+
+**Spread at call sites:**
+
+The spread operator can be used to expand arrays as arguments:
+
+```
+const nums = [1, 2, 3];
+sum(...nums)           // Equivalent to sum(1, 2, 3)
+```
+
 ### Intersection of Function Types (Overloaded Functions)
 
 When function types are intersected, the result represents an overloaded function. This is used for importing TypeScript overloaded functions from `.d.ts` files.

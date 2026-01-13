@@ -374,6 +374,21 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Top-level await**: Supported at module level
 - **`Try` integration**: `Try` with async thunk returns `Promise<TryResult<T>>`
 
+### Rest Parameters
+
+- **Syntax**: `...param: T[]` marks a rest parameter
+- **Semantics**: Collects remaining arguments into an array
+- **Position**: Rest parameter must be last, only one allowed
+- **Type annotation**: Must be an array type (e.g., `Int[]`, `Array<String>`)
+- **No default value**: Rest parameters cannot have default values
+- **Spread at call sites**: `fn(...arr)` expands array as arguments
+- **Variadic builtins**: `Union`, `Intersection`, `Array` accept rest parameters
+- **Example**:
+  ```
+  const sum = (...nums: Int[]): Int => nums.reduce((a, b) => a + b, 0);
+  sum(1, 2, 3);  // nums = [1, 2, 3]
+  ```
+
 ### Compile-Time Assertions
 
 - **`assert` is a builtin function**: `assert: (condition: Boolean, message?: String) => Void`

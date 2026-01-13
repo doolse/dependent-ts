@@ -57,6 +57,7 @@ type CoreParam = {
   type?: CoreExpr;         // Type annotation (desugared to expression)
   defaultValue?: CoreExpr;
   annotations: CoreExpr[];
+  rest: boolean;           // True if this is a rest parameter (...param)
 };
 
 type CoreCase = {
@@ -161,6 +162,7 @@ type ParamInfo = {
   type: Type;
   optional: boolean;
   defaultValue?: CoreExpr;
+  rest: boolean;           // True if this is a rest parameter
 };
 
 type TypeMetadata = {

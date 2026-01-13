@@ -208,7 +208,7 @@ LambdaExpression {
 }
 
 LambdaParam {
-  VariableName TypeAnnotation? ("=" expression)?
+  Spread? VariableName TypeAnnotation? ("=" expression)?
 }
 
 Block { "{" statement* expression? "}" }
@@ -295,7 +295,7 @@ FunctionTypeExpression {
 }
 
 FunctionTypeParam {
-  Annotation* VariableName "?"? ":" typeExpression
+  Annotation* Spread? VariableName "?"? ":" typeExpression
 }
 
 ParenthesizedTypeExpression { "(" typeExpression ")" }
