@@ -1074,12 +1074,57 @@ describe("Type Checker", () => {
     });
 
     describe("default type parameters", () => {
-      // TODO: Default type parameters are not yet implemented
-      // type Container<T = String> = { value: T };
-      // const c: Container = { value: "hello" };  // T defaults to String
+      test("calling parameterized type without args uses default", () => {
+        // Calling Box() without arguments uses the default T = Int
+        const result = check(`
+          type Box<T = Int> = { value: T };
+          const BoxType = Box();
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
 
-      test.skip("default type parameters not yet implemented", () => {
-        // Placeholder to mark this feature as pending implementation
+      test("explicit type arg overrides default", () => {
+        const result = check(`
+          type Container<T = String> = { value: T };
+          const ContainerInt = Container(Int);
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+
+      test("type annotation uses default when no args provided", () => {
+        // Container<> or just Container should use the default
+        const result = check(`
+          type Container<T = String> = { value: T };
+          const ContainerStr = Container();
+          const c: ContainerStr = { value: "hello" };
+        `);
+        expect(result.decls).toHaveLength(3);
+      });
+
+      test("multiple params - first required, second has default", () => {
+        const result = check(`
+          type KeyValue<K, V = String> = { key: K, value: V };
+          const KVInt = KeyValue(Int);
+          const kv: KVInt = { key: 42, value: "hello" };
+        `);
+        expect(result.decls).toHaveLength(3);
+      });
+
+      test("all params have defaults", () => {
+        const result = check(`
+          type Defaults<A = Int, B = String> = { a: A, b: B };
+          const D1 = Defaults();
+          const d: D1 = { a: 1, b: "hi" };
+        `);
+        expect(result.decls).toHaveLength(3);
+      });
+
+      test("default with complex type expression", () => {
+        const result = check(`
+          type ArrayOf<T = Int | String> = { items: T[] };
+          const ArrType = ArrayOf();
+        `);
+        expect(result.decls).toHaveLength(2);
       });
     });
 

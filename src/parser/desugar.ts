@@ -237,7 +237,7 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
   };
 
   if (allTypeParams.length > 0) {
-    // Wrap in lambda: (T: Type, U: Type) => WithMetadata(...)
+    // Wrap in lambda: (T: Type = Default, U: Type) => WithMetadata(...)
     const params: CoreParam[] = allTypeParams.map((tp) => ({
       name: tp.name,
       type: tp.constraint
@@ -248,6 +248,7 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
             loc: declLoc,
           }
         : { kind: "identifier" as const, name: "Type", loc: declLoc },
+      defaultValue: tp.defaultValue,
       annotations: [],
     }));
 
@@ -523,9 +524,12 @@ function desugarTypeParams(
 function desugarTypeParam(
   cursor: TreeCursor,
   source: string
-): { name: string; constraint?: CoreExpr } {
+): { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr } {
   let name = "";
   let constraint: CoreExpr | undefined;
+  let defaultValue: CoreExpr | undefined;
+  let nextIsConstraint = false;
+  let nextIsDefault = false;
 
   if (cursor.firstChild()) {
     do {
@@ -537,17 +541,27 @@ function desugarTypeParam(
           name = text(cursor, source);
           break;
         case "extends":
+          nextIsConstraint = true;
+          break;
+        case "=":
+          nextIsDefault = true;
           break;
         default:
           if (isTypeExpression(cursor.name)) {
-            constraint = desugarTypeExpr(cursor, source);
+            if (nextIsDefault) {
+              defaultValue = desugarTypeExpr(cursor, source);
+              nextIsDefault = false;
+            } else if (nextIsConstraint) {
+              constraint = desugarTypeExpr(cursor, source);
+              nextIsConstraint = false;
+            }
           }
       }
     } while (cursor.nextSibling());
     cursor.parent();
   }
 
-  return { name, constraint };
+  return { name, constraint, defaultValue };
 }
 
 // ============================================

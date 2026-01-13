@@ -257,7 +257,7 @@ FunctionTypeParams[@name="TypeParams"] {
 }
 
 TypeParam {
-  Annotation* TypeName (kw<"extends"> typeExpression)?
+  Annotation* TypeName (kw<"extends"> typeExpression)? ("=" typeExpression)?
 }
 
 TypeAnnotation { ":" typeExpression }
