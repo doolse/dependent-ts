@@ -200,18 +200,41 @@ const WithMetadata: (baseType: Type, metadata: TypeMetadata) => Type;
 const This: Type;  // Special type, only valid within record type definitions
 ```
 
-#### WithMetadata and TypeMetadata
+#### Built-in Record Types
 
-`WithMetadata` attaches metadata (name, type arguments, annotations) to a type. This is the underlying mechanism that powers parameterized type definitions and annotations.
+These record types are used by type introspection properties:
 
-**TypeMetadata type:**
 ```
+// Field information returned by T.fields
+type FieldInfo = {
+  name: String;
+  type: Type;
+  optional: Boolean;
+  annotations: Array<Unknown>;
+};
+
+// Array element information returned by T.elements
+type ArrayElementInfo = {
+  type: Type;
+  label: String | Undefined;
+};
+
+// Type metadata used by WithMetadata
 type TypeMetadata = {
   name?: String;
   typeArgs?: Array<Type>;
   annotations?: Array<Unknown>;
 };
 ```
+
+These types are available in the initial environment and are the return types for type property access:
+- `T.fields` returns `Array<FieldInfo>`
+- `T.elements` returns `Array<ArrayElementInfo> | Undefined`
+- `WithMetadata` accepts `TypeMetadata` as its second argument
+
+#### WithMetadata and TypeMetadata
+
+`WithMetadata` attaches metadata (name, type arguments, annotations) to a type. This is the underlying mechanism that powers parameterized type definitions and annotations.
 
 **Basic usage:**
 ```
@@ -1407,6 +1430,43 @@ Result.variants      // array of variant types - comptime only
 ```
 
 Discriminant identification is covered in the Pattern Matching section.
+
+### Properties on Intersection Types
+
+Intersection types combine the properties of all constituent types, following TypeScript semantics:
+
+```
+type A = { a: Int };
+type B = { b: String };
+type AB = A & B;
+
+// AB has both properties
+const x: AB = { a: 1, b: "hello" };
+x.a  // Int
+x.b  // String
+```
+
+**Property access rules:**
+- Accessing a property on `A & B` succeeds if the property exists in any constituent type
+- If the property exists in multiple types, the result type is the intersection of those property types
+- If a property exists in one type but not another, the intersection still has that property
+
+```
+type C = { shared: Int, onlyC: String };
+type D = { shared: Number, onlyD: Boolean };
+type CD = C & D;
+
+// shared exists in both - type is Int & Number = Int (Int <: Number)
+// onlyC exists only in C - still accessible
+// onlyD exists only in D - still accessible
+```
+
+**Introspection properties (comptime only):**
+- `.types` - array of constituent types
+
+**Subtyping:**
+- `X <: A & B` if `X <: A` AND `X <: B`
+- `A & B <: X` if `A <: X` OR `B <: X`
 
 ### Anonymous Types
 
