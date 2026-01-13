@@ -241,6 +241,21 @@ describe("Lezer Parser", () => {
       expect(hasNode("const x = { ...a, b: 1 };", "Spread")).toBe(true);
       expect(hasError("const x = { ...a, b: 1 };")).toBe(false);
     });
+
+    test("record with 'type' keyword as property name", () => {
+      expect(hasNode("const x = { type: Int };", "RecordExpr")).toBe(true);
+      expect(hasError("const x = { type: Int };")).toBe(false);
+    });
+
+    test("record with multiple keyword property names", () => {
+      expect(hasNode("const x = { type: Int, const: 1, async: true };", "RecordExpr")).toBe(true);
+      expect(hasError("const x = { type: Int, const: 1, async: true };")).toBe(false);
+    });
+
+    test("property access with keyword property name", () => {
+      expect(hasNode("const x = foo.type;", "MemberExpr")).toBe(true);
+      expect(hasError("const x = foo.type;")).toBe(false);
+    });
   });
 
   describe("match expressions", () => {

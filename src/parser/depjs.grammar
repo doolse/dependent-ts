@@ -289,7 +289,28 @@ identifierOrTypeName { VariableName ~arrow | TypeName ~arrow }
 // Property names can be either lowercase or uppercase identifiers
 // This is a grammar rule, not a token, to avoid tokenizer ambiguity
 // ~record marks GLR split point for { x } ambiguity (expression vs record field)
-PropertyName { VariableName ~record | TypeName ~record }
+// Keywords are also allowed as property names (like JavaScript)
+// Note: Literal keywords (true, false, null, undefined) are excluded to avoid
+// conflicts with literal expressions in block/record ambiguity
+PropertyName {
+  VariableName ~record |
+  TypeName ~record |
+  kw<"type"> ~record |
+  kw<"const"> ~record |
+  kw<"async"> ~record |
+  kw<"await"> ~record |
+  kw<"match"> ~record |
+  kw<"case"> ~record |
+  kw<"when"> ~record |
+  kw<"import"> ~record |
+  kw<"export"> ~record |
+  kw<"from"> ~record |
+  kw<"as"> ~record |
+  kw<"newtype"> ~record |
+  kw<"comptime"> ~record |
+  kw<"throw"> ~record |
+  kw<"extends"> ~record
+}
 
 // ============================================
 // Tokens

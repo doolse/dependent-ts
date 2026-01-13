@@ -509,7 +509,6 @@ describe("Type Checker", () => {
       });
 
       test("TypeMetadata type is available", () => {
-        // TypeMetadata can be created without the 'type' keyword conflict
         const result = check(`
           const m: TypeMetadata = { name: "Foo" };
         `);
@@ -525,6 +524,38 @@ describe("Type Checker", () => {
         // fields is comptime-only because it contains Type values
         const fieldsDecl = result.decls[1] as TypedDecl & { kind: "const" };
         expect(fieldsDecl.init.comptimeOnly).toBe(true);
+      });
+
+      test("FieldInfo literal with type keyword as property name", () => {
+        // 'type' is a keyword but allowed as property name in record literals
+        const result = check(`
+          const f: FieldInfo = { name: "x", type: Int, optional: false, annotations: [] };
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("ParamInfo literal with type keyword as property name", () => {
+        const result = check(`
+          const p: ParamInfo = { name: "x", type: Int, optional: false };
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("ArrayElementInfo literal with type keyword as property name", () => {
+        const result = check(`
+          const e: ArrayElementInfo = { type: Int };
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("Array<FieldInfo> works with type keyword", () => {
+        const result = check(`
+          const fields: Array<FieldInfo> = [
+            { name: "x", type: Int, optional: false, annotations: [] },
+            { name: "y", type: String, optional: true, annotations: [] }
+          ];
+        `);
+        expect(result.decls).toHaveLength(1);
       });
 
       // Note: Static type checker doesn't know .fields returns Array<FieldInfo>,
