@@ -136,11 +136,19 @@ atomExpr {
   VariableExpr { identifier ~arrow ~record } |
   TypeExpr { TypeName ~arrow ~record } |
   Literal |
+  TemplateExpr |
   ArrayExpr { "[" ListOf<ArrayElement>? "]" } |
   RecordExpr { "{" ListOf<RecordField>? "}" } |
   MatchExpr |
   ThrowExpr { kw<"throw"> unaryExpr } |
   ParenExpr { "(" expression ")" }
+}
+
+// Template literals with interpolation
+// `hello` or `hello ${name}, you have ${count} messages`
+TemplateExpr {
+  TemplatePlain |
+  TemplateStart expression (TemplateMiddle expression)* TemplateEnd
 }
 
 ArrayElement { Spread? expressionNoComma }
@@ -297,6 +305,17 @@ PropertyName { VariableName ~record | TypeName ~record }
     "'" (![\\\n'] | "\\" _)* "'"
   }
 
+  // Template literals
+  // TemplatePlain: simple template with no interpolation `hello`
+  // TemplateStart: beginning of interpolated template `hello ${
+  // TemplateMiddle: middle part between interpolations } world ${
+  // TemplateEnd: end of interpolated template } goodbye`
+  templateContent { ![`$\\] | "\\" _ | "$" ![{] }
+  TemplatePlain { "`" templateContent* "`" }
+  TemplateStart { "`" templateContent* "${" }
+  TemplateMiddle { "}" templateContent* "${" }
+  TemplateEnd { "}" templateContent* "`" }
+
   Number {
     @digit+ ("." @digit+)? ($[eE] $[+\-]? @digit+)? |
     "0x" $[0-9a-fA-F]+ |
@@ -335,6 +354,9 @@ PropertyName { VariableName ~record | TypeName ~record }
   @precedence { "|}", BitOr }
   @precedence { "...", "." }
   @precedence { "_", TypeName, VariableName }
+  // Template tokens: prefer interpolated over plain, and template continuations over bare }
+  @precedence { TemplateStart, TemplatePlain }
+  @precedence { TemplateMiddle, TemplateEnd, "}" }
 }
 
 @skip { whitespace | LineComment | BlockComment }

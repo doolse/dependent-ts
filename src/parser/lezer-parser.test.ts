@@ -339,6 +339,78 @@ describe("Lezer Parser", () => {
     });
   });
 
+  describe("template literals", () => {
+    test("plain template (no interpolation)", () => {
+      expect(hasNode("const x = `hello`;", "TemplateExpr")).toBe(true);
+      expect(hasNode("const x = `hello`;", "TemplatePlain")).toBe(true);
+      expect(hasError("const x = `hello`;")).toBe(false);
+    });
+
+    test("template with single interpolation", () => {
+      expect(hasNode("const x = `hello ${name}`;", "TemplateExpr")).toBe(true);
+      expect(hasNode("const x = `hello ${name}`;", "TemplateStart")).toBe(true);
+      expect(hasNode("const x = `hello ${name}`;", "TemplateEnd")).toBe(true);
+      expect(hasError("const x = `hello ${name}`;")).toBe(false);
+    });
+
+    test("template with multiple interpolations", () => {
+      expect(hasNode("const x = `${a} and ${b}`;", "TemplateExpr")).toBe(true);
+      expect(hasNode("const x = `${a} and ${b}`;", "TemplateStart")).toBe(true);
+      expect(hasNode("const x = `${a} and ${b}`;", "TemplateMiddle")).toBe(true);
+      expect(hasNode("const x = `${a} and ${b}`;", "TemplateEnd")).toBe(true);
+      expect(hasError("const x = `${a} and ${b}`;")).toBe(false);
+    });
+
+    test("template with expression in interpolation", () => {
+      expect(hasNode("const x = `sum: ${1 + 2}`;", "TemplateExpr")).toBe(true);
+      expect(hasNode("const x = `sum: ${1 + 2}`;", "BinaryExpr")).toBe(true);
+      expect(hasError("const x = `sum: ${1 + 2}`;")).toBe(false);
+    });
+
+    test("template with nested template", () => {
+      expect(hasNode("const x = `outer ${`inner`}`;", "TemplateExpr")).toBe(true);
+      expect(hasError("const x = `outer ${`inner`}`;")).toBe(false);
+    });
+
+    test("template with function call in interpolation", () => {
+      expect(hasNode("const x = `result: ${f(a)}`;", "TemplateExpr")).toBe(true);
+      expect(hasNode("const x = `result: ${f(a)}`;", "CallExpr")).toBe(true);
+      expect(hasError("const x = `result: ${f(a)}`;")).toBe(false);
+    });
+
+    test("empty template", () => {
+      expect(hasNode("const x = ``;", "TemplateExpr")).toBe(true);
+      expect(hasError("const x = ``;")).toBe(false);
+    });
+
+    test("template with escaped characters", () => {
+      expect(hasNode("const x = `hello\\nworld`;", "TemplateExpr")).toBe(true);
+      expect(hasError("const x = `hello\\nworld`;")).toBe(false);
+    });
+
+    test("template with escaped backtick", () => {
+      expect(hasNode("const x = `back\\`tick`;", "TemplateExpr")).toBe(true);
+      expect(hasError("const x = `back\\`tick`;")).toBe(false);
+    });
+
+    test("template with dollar sign not followed by brace", () => {
+      expect(hasNode("const x = `costs $5`;", "TemplateExpr")).toBe(true);
+      expect(hasError("const x = `costs $5`;")).toBe(false);
+    });
+
+    // Known limitation: Expressions ending with `}` inside template interpolations
+    // (like records or blocks) cause parsing issues because `}` is ambiguous between
+    // closing the expression and starting TemplateMiddle/TemplateEnd.
+    // Workaround: assign to a variable first, or use a function call.
+    // Fixing this properly requires a context-aware external tokenizer.
+
+    test("template with property access in interpolation", () => {
+      expect(hasNode("const x = `name: ${user.name}`;", "TemplateExpr")).toBe(true);
+      expect(hasNode("const x = `name: ${user.name}`;", "MemberExpr")).toBe(true);
+      expect(hasError("const x = `name: ${user.name}`;")).toBe(false);
+    });
+  });
+
   describe("annotations", () => {
     test("annotation on type", () => {
       expect(hasNode("@Deprecated type X = Int;", "Annotation")).toBe(true);
