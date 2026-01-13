@@ -124,6 +124,30 @@ export function isSubtype(sub: Type, sup: Type): boolean {
     return isSubtype(subBase.bound, supBase);
   }
 
+  // Bounded type (Type<Bound>) - used for generic constraints
+  // Type<A> <: Type<B> iff A <: B (covariant in bound)
+  if (supBase.kind === "boundedType") {
+    if (subBase.kind === "boundedType") {
+      // Type<A> <: Type<B> iff A <: B
+      return isSubtype(subBase.bound, supBase.bound);
+    }
+    if (subBase.kind === "primitive" && subBase.name === "Type") {
+      // Unbounded Type is only subtype of Type<Unknown>
+      return supBase.bound.kind === "primitive" && supBase.bound.name === "Unknown";
+    }
+    // A concrete type T is assignable to Type<Bound> if T <: Bound
+    // This allows passing `Int` to a parameter `T: Type<Number>`
+    return isSubtype(subBase, supBase.bound);
+  }
+
+  if (subBase.kind === "boundedType") {
+    // Type<Bound> <: Type (unbounded)
+    if (supBase.kind === "primitive" && supBase.name === "Type") {
+      return true;
+    }
+    return false;
+  }
+
   return false;
 }
 

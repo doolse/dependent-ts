@@ -17,6 +17,7 @@ import {
   brandedType,
   withMetadata,
   literalType,
+  boundedType,
   FieldInfo,
   TypeMetadata,
   Unknown,
@@ -91,7 +92,7 @@ const TypeMetadataType: Type = recordType(
 export function createInitialComptimeEnv(): ComptimeEnv {
   const env = new ComptimeEnv();
 
-  // Primitive types
+  // Primitive types (including Type - the metatype of all types)
   const primitives: PrimitiveName[] = [
     "Int",
     "Float",
@@ -621,5 +622,33 @@ const builtinAssert: ComptimeBuiltin = {
     }
 
     return undefined; // Void
+  },
+};
+
+/**
+ * Type builtin - creates bounded or unbounded Type.
+ * Type() returns the primitive Type (unbounded)
+ * Type(Bound) returns a boundedType that constrains type arguments
+ */
+const builtinType: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "Type",
+  impl: (args, _evaluator, loc) => {
+    if (args.length === 0) {
+      // Type with no args = unbounded Type
+      return primitiveType("Type");
+    }
+
+    const bound = args[0];
+    if (!isTypeValue(bound)) {
+      throw new CompileError(
+        "Type argument must be a Type",
+        "typecheck",
+        loc
+      );
+    }
+
+    // Type(Bound) creates a bounded type constraint
+    return boundedType(bound as Type);
   },
 };

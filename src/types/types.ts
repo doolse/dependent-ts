@@ -65,7 +65,8 @@ export type Type =
   | BrandedType
   | TypeVarType
   | ThisType
-  | WithMetadataType;
+  | WithMetadataType
+  | BoundedTypeType;
 
 export type PrimitiveType = {
   kind: "primitive";
@@ -129,6 +130,15 @@ export type WithMetadataType = {
   kind: "withMetadata";
   baseType: Type;
   metadata: TypeMetadata;
+};
+
+/**
+ * Bounded type - represents Type<Bound>.
+ * A metatype for type parameters that must be subtypes of the bound.
+ */
+export type BoundedTypeType = {
+  kind: "boundedType";
+  bound: Type;
 };
 
 // ============================================
@@ -235,6 +245,10 @@ export function withMetadata(
   metadata: TypeMetadata
 ): WithMetadataType {
   return { kind: "withMetadata", baseType, metadata };
+}
+
+export function boundedType(bound: Type): BoundedTypeType {
+  return { kind: "boundedType", bound };
 }
 
 // ============================================

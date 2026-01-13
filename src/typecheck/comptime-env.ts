@@ -34,7 +34,7 @@ export type ComptimeRecord = { [key: string]: ComptimeValue } & { __comptimeReco
  */
 export type ComptimeClosure = {
   kind: "closure";
-  params: { name: string; defaultValue?: CoreExpr }[];
+  params: { name: string; type?: Type; defaultValue?: CoreExpr }[];
   body: CoreExpr;
   env: ComptimeEnv;
   typeEnv: TypeEnv;
@@ -250,6 +250,7 @@ export function isTypeValue(value: unknown): value is Type {
       "typeVar",
       "this",
       "withMetadata",
+      "boundedType",
     ].includes(value.kind)
   );
 }

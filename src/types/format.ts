@@ -98,6 +98,9 @@ export function formatType(t: Type): string {
     case "withMetadata":
       // Should be handled above, but fallback
       return formatType(base.baseType);
+
+    case "boundedType":
+      return `Type<${formatType(base.bound)}>`;
   }
 }
 

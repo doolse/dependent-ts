@@ -6,6 +6,8 @@
  */
 
 import { Type } from "../types/types";
+import { isSubtype } from "../types/subtype";
+import { formatType } from "../types/format";
 import {
   CoreExpr,
   CoreDecl,
@@ -259,6 +261,29 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
       return fn.impl(evaluatedArgs, this, loc);
     }
 
+    // Special case: Type(Bound) creates a bounded type constraint
+    // Type is the primitive type, but can be "called" to create Type<Bound>
+    if (
+      isTypeValue(fn) &&
+      fn.kind === "primitive" &&
+      fn.name === "Type"
+    ) {
+      if (args.length === 0) {
+        // Type() with no args returns unbounded Type
+        return fn;
+      }
+      const bound = this.evaluate(args[0], env, typeEnv);
+      if (!isTypeValue(bound)) {
+        throw new CompileError(
+          "Type argument must be a Type",
+          "typecheck",
+          loc
+        );
+      }
+      // Return a boundedType
+      return { kind: "boundedType", bound: bound as Type };
+    }
+
     throw new CompileError(
       `Cannot call non-function at compile time`,
       "typecheck",
@@ -290,6 +315,19 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
           "typecheck",
           loc
         );
+      }
+
+      // Check bounded type constraints (generic constraints)
+      // If param has type Type<Bound> and argValue is a Type, check constraint
+      if (param.type?.kind === "boundedType" && isTypeValue(argValue)) {
+        const argType = argValue as Type;
+        if (!isSubtype(argType, param.type.bound)) {
+          throw new CompileError(
+            `Type '${formatType(argType)}' does not satisfy constraint '${formatType(param.type.bound)}'`,
+            "typecheck",
+            loc
+          );
+        }
       }
 
       newEnv.defineEvaluated(param.name, argValue);
@@ -324,6 +362,18 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
           "typecheck",
           loc
         );
+      }
+
+      // Check bounded type constraints (generic constraints)
+      if (param.type?.kind === "boundedType" && isTypeValue(argValue)) {
+        const argType = argValue as Type;
+        if (!isSubtype(argType, param.type.bound)) {
+          throw new CompileError(
+            `Type '${formatType(argType)}' does not satisfy constraint '${formatType(param.type.bound)}'`,
+            "typecheck",
+            loc
+          );
+        }
       }
 
       newEnv.defineEvaluated(param.name, argValue);
@@ -439,6 +489,8 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
       kind: "closure",
       params: expr.params.map((p) => ({
         name: p.name,
+        // Evaluate type annotation if present to get the Type value (for constraint checking)
+        type: p.type ? (this.evaluate(p.type, env, typeEnv) as Type) : undefined,
         defaultValue: p.defaultValue,
       })),
       body: expr.body,

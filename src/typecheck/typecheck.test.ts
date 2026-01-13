@@ -1001,40 +1001,31 @@ describe("Type Checker", () => {
     });
 
     describe("generic constraints", () => {
-      // TODO: Generic constraints are parsed but not yet properly handled.
-      // The desugar transforms `<T extends Foo>` to `(T: Type(Foo))` but
-      // Type() as a constrained type constructor isn't implemented yet.
-      // These tests are commented out until constraint handling is implemented.
+      test("type parameter with extends constraint", () => {
+        const result = check(`
+          type Lengthwise = { length: Int };
+          type WithLength<T extends Lengthwise> = { item: T };
+        `);
+        const decl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(decl.init.type.kind).toBe("function");
+      });
 
-      // test("type parameter with extends constraint", () => {
-      //   const result = check(`
-      //     type Lengthwise = { length: Int };
-      //     type WithLength<T extends Lengthwise> = { item: T };
-      //   `);
-      //   const decl = result.decls[1] as TypedDecl & { kind: "const" };
-      //   expect(decl.init.type.kind).toBe("function");
-      // });
+      test("constrained type accepts valid type argument", () => {
+        const result = check(`
+          type Lengthwise = { length: Int };
+          type WithLength<T extends Lengthwise> = { item: T };
+          type HasLength = { length: Int, name: String };
+          const w: WithLength<HasLength> = { item: { length: 5, name: "test" } };
+        `);
+        expect(result.decls).toHaveLength(4);
+      });
 
-      // test("constrained type accepts valid type argument", () => {
-      //   const result = check(`
-      //     type Lengthwise = { length: Int };
-      //     type WithLength<T extends Lengthwise> = { item: T };
-      //     type HasLength = { length: Int, name: String };
-      //     const w: WithLength<HasLength> = { item: { length: 5, name: "test" } };
-      //   `);
-      //   expect(result.decls).toHaveLength(4);
-      // });
-
-      // test("constrained type rejects invalid type argument", () => {
-      //   expect(() => check(`
-      //     type Lengthwise = { length: Int };
-      //     type WithLength<T extends Lengthwise> = { item: T };
-      //     const w: WithLength<Int> = { item: 42 };  // Int doesn't have length
-      //   `)).toThrow();
-      // });
-
-      test.skip("generic constraints not yet implemented", () => {
-        // Placeholder to mark this feature as pending implementation
+      test("constrained type rejects invalid type argument", () => {
+        expect(() => check(`
+          type Lengthwise = { length: Int };
+          type WithLength<T extends Lengthwise> = { item: T };
+          const w: WithLength<Int> = { item: 42 };  // Int doesn't have length
+        `)).toThrow();
       });
     });
 
