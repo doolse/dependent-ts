@@ -239,45 +239,99 @@ function isArraySubtype(sub: ArrayType, sup: ArrayType): boolean {
  *
  * Contravariant in parameters (sup's params must be subtypes of sub's),
  * covariant in return type (sub's return must be subtype of sup's).
+ *
+ * Rest parameter handling:
+ * - A function with rest param can accept any number of args of that element type
+ * - A function with rest can be subtype of one with more fixed params if types match
  */
 function isFunctionSubtype(sub: FunctionType, sup: FunctionType): boolean {
-  // Must have compatible arity
-  // Sub can have more optional params, but must handle all of sup's required params
-  const supRequired = sup.params.filter((p) => !p.optional).length;
-  const subRequired = sub.params.filter((p) => !p.optional).length;
+  // Check for rest parameters
+  const subHasRest =
+    sub.params.length > 0 && sub.params[sub.params.length - 1].rest === true;
+  const supHasRest =
+    sup.params.length > 0 && sup.params[sup.params.length - 1].rest === true;
+
+  const subNonRest = subHasRest ? sub.params.slice(0, -1) : sub.params;
+  const supNonRest = supHasRest ? sup.params.slice(0, -1) : sup.params;
+  const subRestParam = subHasRest ? sub.params[sub.params.length - 1] : undefined;
+  const supRestParam = supHasRest ? sup.params[sup.params.length - 1] : undefined;
+
+  // Count required params (excluding rest)
+  const supRequired = supNonRest.filter((p) => !p.optional).length;
+  const subRequired = subNonRest.filter((p) => !p.optional).length;
 
   if (subRequired > supRequired) {
     // Sub requires more params than sup provides
     return false;
   }
 
-  // Contravariant parameters
-  for (let i = 0; i < sup.params.length; i++) {
-    const supParam = sup.params[i];
-    const subParam = sub.params[i];
+  // Check non-rest parameters (contravariant)
+  const maxNonRest = Math.max(subNonRest.length, supNonRest.length);
+  for (let i = 0; i < maxNonRest; i++) {
+    const supParam = supNonRest[i];
+    const subParam = subNonRest[i];
 
-    if (!subParam) {
-      // Sub doesn't have this param - only OK if sup's param is optional
-      if (!supParam.optional) return false;
+    if (!subParam && supParam) {
+      // Sub doesn't have this param
+      if (subRestParam) {
+        // Sub has rest param - check rest element type (contravariant)
+        const restElemType = getRestElementType(subRestParam);
+        if (restElemType && !isSubtype(supParam.type, restElemType)) return false;
+      } else if (!supParam.optional) {
+        return false;
+      }
       continue;
     }
 
-    // Contravariance: sup's param type must be subtype of sub's param type
-    if (!isSubtype(supParam.type, subParam.type)) return false;
+    if (subParam && !supParam) {
+      // Sub has extra param that sup doesn't
+      // This is ok if sub's param is optional or if sup has rest
+      if (!subParam.optional && !supRestParam) {
+        return false;
+      }
+      continue;
+    }
+
+    if (supParam && subParam) {
+      // Both have param at this position - contravariance
+      if (!isSubtype(supParam.type, subParam.type)) return false;
+    }
   }
+
+  // Check rest parameter compatibility
+  if (supRestParam && subRestParam) {
+    // Both have rest - contravariant
+    const supRestElem = getRestElementType(supRestParam);
+    const subRestElem = getRestElementType(subRestParam);
+    if (supRestElem && subRestElem && !isSubtype(supRestElem, subRestElem)) {
+      return false;
+    }
+  } else if (supRestParam && !subRestParam) {
+    // Sup expects rest but sub doesn't have it
+    // Sub can't handle arbitrary extra args that sup might pass
+    return false;
+  }
+  // If sub has rest but sup doesn't, that's fine - sub can accept more
 
   // Covariant return type
   if (!isSubtype(sub.returnType, sup.returnType)) return false;
 
-  // Async compatibility: async function can be used where sync is expected? No.
-  // A sync function cannot be used where async is expected.
+  // Async compatibility
   if (sup.async && !sub.async) {
-    // sup expects async, sub is sync - could work if we wrap in Promise
-    // For simplicity, require exact match for now
     return false;
   }
 
   return true;
+}
+
+/**
+ * Extract the element type from a rest parameter's array type.
+ */
+function getRestElementType(param: { type: Type; rest?: boolean }): Type | undefined {
+  if (param.type.kind === "array" && param.type.variadic) {
+    return param.type.elementTypes[0];
+  }
+  return param.type;
 }
 
 /**
@@ -330,6 +384,7 @@ export function typesEqual(a: Type, b: Type): boolean {
 
       for (let i = 0; i < aBase.params.length; i++) {
         if (aBase.params[i].optional !== bFunc.params[i].optional) return false;
+        if (Boolean(aBase.params[i].rest) !== Boolean(bFunc.params[i].rest)) return false;
         if (!typesEqual(aBase.params[i].type, bFunc.params[i].type))
           return false;
       }

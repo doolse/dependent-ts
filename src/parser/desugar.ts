@@ -713,10 +713,14 @@ function desugarArrowParam(cursor: TreeCursor, source: string): CoreParam {
   let name = "";
   let type: CoreExpr | undefined;
   let defaultValue: CoreExpr | undefined;
+  let rest = false;
 
   if (cursor.firstChild()) {
     do {
       switch (cursor.name) {
+        case "Spread":
+          rest = true;
+          break;
         case "VariableName":
         case "TypeName":
           name = text(cursor, source);
@@ -736,7 +740,7 @@ function desugarArrowParam(cursor: TreeCursor, source: string): CoreParam {
     cursor.parent();
   }
 
-  return { name, type, defaultValue, annotations: [] };
+  return { name, type, defaultValue, annotations: [], rest: rest || undefined };
 }
 
 function desugarTernaryExpr(cursor: TreeCursor, source: string): CoreExpr {
@@ -1835,12 +1839,32 @@ function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
 }
 
 function desugarFuncParam(cursor: TreeCursor, source: string): CoreExpr {
+  const paramLoc = loc(cursor);
+  let name = "";
   let type: CoreExpr | undefined;
+  let optional = false;
+  let rest = false;
+  const annotations: CoreExpr[] = [];
 
   if (cursor.firstChild()) {
     do {
-      if (isTypeExpression(cursor.name)) {
-        type = desugarTypeExpr(cursor, source);
+      switch (cursor.name) {
+        case "Annotation":
+          annotations.push(desugarAnnotation(cursor, source));
+          break;
+        case "Spread":
+          rest = true;
+          break;
+        case "VariableName":
+          name = text(cursor, source);
+          break;
+        case "Optional":
+          optional = true;
+          break;
+        default:
+          if (isTypeExpression(cursor.name)) {
+            type = desugarTypeExpr(cursor, source);
+          }
       }
     } while (cursor.nextSibling());
     cursor.parent();
@@ -1850,7 +1874,36 @@ function desugarFuncParam(cursor: TreeCursor, source: string): CoreExpr {
     error("function param missing type", cursor);
   }
 
-  return type;
+  // Build ParamInfo record: { name, type, optional, rest, annotations }
+  const fields: CoreRecordField[] = [
+    {
+      kind: "field",
+      name: "name",
+      value: { kind: "literal", value: name, literalKind: "string", loc: paramLoc },
+    },
+    { kind: "field", name: "type", value: type },
+    {
+      kind: "field",
+      name: "optional",
+      value: { kind: "literal", value: optional, literalKind: "boolean", loc: paramLoc },
+    },
+    {
+      kind: "field",
+      name: "rest",
+      value: { kind: "literal", value: rest, literalKind: "boolean", loc: paramLoc },
+    },
+    {
+      kind: "field",
+      name: "annotations",
+      value: {
+        kind: "array",
+        elements: annotations.map((a) => ({ kind: "element" as const, value: a })),
+        loc: paramLoc,
+      },
+    },
+  ];
+
+  return { kind: "record", fields, loc: paramLoc };
 }
 
 function desugarParenType(cursor: TreeCursor, source: string): CoreExpr {

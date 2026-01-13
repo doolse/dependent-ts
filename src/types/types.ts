@@ -39,6 +39,7 @@ export type ParamInfo = {
   name: string;
   type: Type;
   optional: boolean;
+  rest?: boolean; // True if this is a rest parameter
 };
 
 /**

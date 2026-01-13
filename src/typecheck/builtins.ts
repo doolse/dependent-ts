@@ -18,6 +18,7 @@ import {
   withMetadata,
   FieldInfo,
   TypeMetadata,
+  Unknown,
 } from "../types/types";
 import { CompileError, SourceLocation } from "../ast/core-ast";
 import {
@@ -119,30 +120,32 @@ export function createInitialTypeEnv(): TypeEnv {
     mutable: false,
   });
 
-  // Union: (...types: Type[]) => Type
+  // Union: (...types: Type[]) => Type - variadic
   env.define("Union", {
     type: functionType(
-      [{ name: "types", type: arrayType([typeType], true), optional: false }],
+      [{ name: "types", type: arrayType([typeType], true), optional: false, rest: true }],
       typeType
     ),
     comptimeStatus: "comptimeOnly",
     mutable: false,
   });
 
-  // Similar for other builtins...
+  // Intersection: (...types: Type[]) => Type - variadic
   env.define("Intersection", {
     type: functionType(
-      [{ name: "types", type: arrayType([typeType], true), optional: false }],
+      [{ name: "types", type: arrayType([typeType], true), optional: false, rest: true }],
       typeType
     ),
     comptimeStatus: "comptimeOnly",
     mutable: false,
   });
 
+  // FunctionType accepts ParamInfo records or Types for params
+  // Validation happens in the builtin implementation
   env.define("FunctionType", {
     type: functionType(
       [
-        { name: "params", type: arrayType([typeType], true), optional: false },
+        { name: "params", type: arrayType([Unknown], true), optional: false },
         { name: "returnType", type: typeType, optional: false },
       ],
       typeType
@@ -151,9 +154,10 @@ export function createInitialTypeEnv(): TypeEnv {
     mutable: false,
   });
 
+  // Array is variadic - accepts rest parameters
   env.define("Array", {
     type: functionType(
-      [{ name: "elementTypes", type: arrayType([typeType], true), optional: false }],
+      [{ name: "elementTypes", type: arrayType([typeType], true), optional: false, rest: true }],
       typeType
     ),
     comptimeStatus: "comptimeOnly",
@@ -314,16 +318,16 @@ const builtinFunctionType: ComptimeBuiltin = {
   impl: (args, _evaluator, loc) => {
     if (args.length < 2) {
       throw new CompileError(
-        "FunctionType requires 2 arguments (paramTypes, returnType)",
+        "FunctionType requires 2 arguments (params, returnType)",
         "typecheck",
         loc
       );
     }
 
-    const paramTypes = args[0];
-    if (!Array.isArray(paramTypes)) {
+    const paramInfos = args[0];
+    if (!Array.isArray(paramInfos)) {
       throw new CompileError(
-        "FunctionType first argument must be an array of Types",
+        "FunctionType first argument must be an array of ParamInfo",
         "typecheck",
         loc
       );
@@ -338,19 +342,35 @@ const builtinFunctionType: ComptimeBuiltin = {
       );
     }
 
-    return functionType(
-      paramTypes.map((t, i) => {
-        if (!isTypeValue(t)) {
-          throw new CompileError(
-            `FunctionType param ${i} must be a Type`,
-            "typecheck",
-            loc
-          );
-        }
-        return { name: `arg${i}`, type: t, optional: false };
-      }),
-      returnType
-    );
+    // Convert ParamInfo records or Types to ParamInfo
+    const params = paramInfos.map((p, i) => {
+      // If it's a Type directly (legacy format), wrap it
+      if (isTypeValue(p)) {
+        return { name: `arg${i}`, type: p, optional: false };
+      }
+      // If it's a ParamInfo record with name, type, optional, rest
+      if (
+        typeof p === "object" &&
+        p !== null &&
+        "name" in p &&
+        "type" in p &&
+        isTypeValue(p.type as unknown)
+      ) {
+        return {
+          name: String(p.name),
+          type: p.type as Type,
+          optional: Boolean(p.optional),
+          rest: Boolean(p.rest),
+        };
+      }
+      throw new CompileError(
+        `FunctionType param ${i} must be a Type or ParamInfo record`,
+        "typecheck",
+        loc
+      );
+    });
+
+    return functionType(params, returnType);
   },
 };
 

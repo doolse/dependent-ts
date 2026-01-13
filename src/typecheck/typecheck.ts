@@ -546,8 +546,19 @@ class TypeChecker {
       );
     }
 
+    // Check for rest parameter (last param with rest: true)
+    const hasRestParam =
+      fnType.params.length > 0 &&
+      fnType.params[fnType.params.length - 1].rest === true;
+    const nonRestParams = hasRestParam
+      ? fnType.params.slice(0, -1)
+      : fnType.params;
+    const restParam = hasRestParam
+      ? fnType.params[fnType.params.length - 1]
+      : undefined;
+
     // Check argument count
-    const requiredParams = fnType.params.filter((p) => !p.optional).length;
+    const requiredParams = nonRestParams.filter((p) => !p.optional).length;
     if (args.length < requiredParams) {
       throw new CompileError(
         `Expected at least ${requiredParams} arguments, got ${args.length}`,
@@ -555,7 +566,8 @@ class TypeChecker {
         expr.loc
       );
     }
-    if (args.length > fnType.params.length) {
+    // Only check max args if there's no rest parameter
+    if (!hasRestParam && args.length > fnType.params.length) {
       throw new CompileError(
         `Expected at most ${fnType.params.length} arguments, got ${args.length}`,
         "typecheck",
@@ -563,15 +575,37 @@ class TypeChecker {
       );
     }
 
-    // Check argument types
-    for (let i = 0; i < args.length; i++) {
-      const paramType = fnType.params[i].type;
+    // Check argument types for non-rest parameters
+    for (let i = 0; i < Math.min(args.length, nonRestParams.length); i++) {
+      const paramType = nonRestParams[i].type;
       if (!isSubtype(args[i].type, paramType)) {
         throw new CompileError(
           `Argument type '${formatType(args[i].type)}' is not assignable to parameter type '${formatType(paramType)}'`,
           "typecheck",
           expr.args[i].loc
         );
+      }
+    }
+
+    // Check rest arguments against the rest parameter's element type
+    if (restParam && args.length > nonRestParams.length) {
+      // Rest param type should be an array type - extract element type
+      let restElementType: Type;
+      if (restParam.type.kind === "array" && restParam.type.variadic) {
+        restElementType = restParam.type.elementTypes[0] ?? primitiveType("Unknown");
+      } else {
+        // If not an array type, use the type directly (shouldn't happen normally)
+        restElementType = restParam.type;
+      }
+
+      for (let i = nonRestParams.length; i < args.length; i++) {
+        if (!isSubtype(args[i].type, restElementType)) {
+          throw new CompileError(
+            `Rest argument type '${formatType(args[i].type)}' is not assignable to rest parameter element type '${formatType(restElementType)}'`,
+            "typecheck",
+            expr.args[i].loc
+          );
+        }
       }
     }
 
@@ -770,8 +804,11 @@ class TypeChecker {
         name: param.name,
         type: paramType,
         optional: param.defaultValue !== undefined,
+        rest: param.rest,
       });
 
+      // For rest parameters, the variable binding gets the array type
+      // For non-rest parameters, it gets the param type directly
       childTypeEnv.define(param.name, {
         type: paramType,
         comptimeStatus: "runtime",

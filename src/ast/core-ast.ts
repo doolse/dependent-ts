@@ -88,6 +88,7 @@ export type CoreParam = {
   type?: CoreExpr; // Type annotation (desugared to expression)
   defaultValue?: CoreExpr;
   annotations: CoreExpr[];
+  rest?: boolean; // True if this is a rest parameter (...param)
 };
 
 export type CoreCase = {

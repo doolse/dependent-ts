@@ -80,8 +80,9 @@ ArrowParams {
 }
 
 // Arrow params can be lowercase or uppercase (for type params like T)
+// Rest parameter uses Spread prefix: ...param
 ArrowParam {
-  identifierOrTypeName ~arrow TypeAnnotation? DefaultValue?
+  Spread? identifierOrTypeName ~arrow TypeAnnotation? DefaultValue?
 }
 
 DefaultValue { "=" expressionNoComma }
@@ -236,8 +237,9 @@ TupleElement {
   (identifier ":")? typeExpression
 }
 
+// Function type params: name?: type or ...name: type (rest)
 FuncParam {
-  Annotation* identifier Optional? ":" typeExpression
+  Annotation* Spread? identifier Optional? ":" typeExpression
 }
 
 // ============================================

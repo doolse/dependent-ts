@@ -627,6 +627,477 @@ describe("type properties", () => {
   });
 });
 
+describe("function type properties", () => {
+  describe(".returnType", () => {
+    test("returns the return type of a function", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // FunctionType([Int], String).returnType
+      const fnType = call(id("FunctionType"), [array(id("Int")), id("String")]);
+      const returnType = prop(fnType, "returnType");
+
+      const result = evaluator.evaluate(returnType, env, typeEnv);
+      expect(isTypeValue(result)).toBe(true);
+      expect((result as Type).kind).toBe("primitive");
+      expect((result as Type & { kind: "primitive" }).name).toBe("String");
+    });
+
+    test("throws for non-function types", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      expect(() =>
+        evaluator.evaluate(prop(id("Int"), "returnType"), env, typeEnv)
+      ).toThrow(/function/i);
+    });
+  });
+
+  describe(".parameterTypes", () => {
+    test("returns array of parameter types", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // FunctionType([Int, String], Boolean).parameterTypes
+      const fnType = call(id("FunctionType"), [
+        array(id("Int"), id("String")),
+        id("Boolean"),
+      ]);
+      const paramTypes = prop(fnType, "parameterTypes");
+
+      const result = evaluator.evaluate(paramTypes, env, typeEnv) as Type[];
+      expect(Array.isArray(result)).toBe(true);
+      expect(result).toHaveLength(2);
+      expect((result[0] as Type & { kind: "primitive" }).name).toBe("Int");
+      expect((result[1] as Type & { kind: "primitive" }).name).toBe("String");
+    });
+
+    test("returns empty array for no-param function", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // FunctionType([], Int).parameterTypes
+      const fnType = call(id("FunctionType"), [array(), id("Int")]);
+      const paramTypes = prop(fnType, "parameterTypes");
+
+      const result = evaluator.evaluate(paramTypes, env, typeEnv) as Type[];
+      expect(Array.isArray(result)).toBe(true);
+      expect(result).toHaveLength(0);
+    });
+  });
+
+  describe("ReturnType utility pattern", () => {
+    test("extracts return type from function type", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Define ReturnType = (T) => T.returnType
+      const returnTypeFn = lambda(["T"], prop(id("T"), "returnType"));
+      env.defineEvaluated("ReturnType", evaluator.evaluate(returnTypeFn, env, typeEnv));
+
+      // Create a function type: (Int) => String
+      const fnType = call(id("FunctionType"), [array(id("Int")), id("String")]);
+      env.defineEvaluated("MyFn", evaluator.evaluate(fnType, env, typeEnv));
+
+      // ReturnType(MyFn) should be String
+      const result = evaluator.evaluate(call(id("ReturnType"), [id("MyFn")]), env, typeEnv);
+      expect(isTypeValue(result)).toBe(true);
+      expect((result as Type & { kind: "primitive" }).name).toBe("String");
+    });
+  });
+});
+
+describe("Intersection types", () => {
+  test("creates intersection of types", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Intersection(Int, String)
+    const intersectExpr = call(id("Intersection"), [id("Int"), id("String")]);
+    const result = evaluator.evaluate(intersectExpr, env, typeEnv);
+
+    expect(isTypeValue(result)).toBe(true);
+    expect((result as Type).kind).toBe("intersection");
+    expect((result as { kind: "intersection"; types: Type[] }).types).toHaveLength(2);
+  });
+
+  test("intersection of record types", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Create { a: Int }
+    const fieldA = record({
+      name: literal("a"),
+      type: id("Int"),
+      optional: literal(false),
+      annotations: array(),
+    });
+    const recA = call(id("RecordType"), [array(fieldA)]);
+
+    // Create { b: String }
+    const fieldB = record({
+      name: literal("b"),
+      type: id("String"),
+      optional: literal(false),
+      annotations: array(),
+    });
+    const recB = call(id("RecordType"), [array(fieldB)]);
+
+    // Intersection of both
+    const intersectExpr = call(id("Intersection"), [recA, recB]);
+    const result = evaluator.evaluate(intersectExpr, env, typeEnv);
+
+    expect(isTypeValue(result)).toBe(true);
+    expect((result as Type).kind).toBe("intersection");
+  });
+});
+
+describe("Branded types", () => {
+  describe("Branded constructor", () => {
+    test("creates branded type", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Branded(String, "UserId")
+      const brandedExpr = call(id("Branded"), [id("String"), literal("UserId")]);
+      const result = evaluator.evaluate(brandedExpr, env, typeEnv);
+
+      expect(isTypeValue(result)).toBe(true);
+      expect((result as Type).kind).toBe("branded");
+    });
+
+    test(".baseType returns underlying type", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Branded(String, "UserId").baseType
+      const brandedExpr = call(id("Branded"), [id("String"), literal("UserId")]);
+      env.defineEvaluated("UserId", evaluator.evaluate(brandedExpr, env, typeEnv));
+
+      const baseType = evaluator.evaluate(prop(id("UserId"), "baseType"), env, typeEnv);
+      expect(isTypeValue(baseType)).toBe(true);
+      expect((baseType as Type & { kind: "primitive" }).name).toBe("String");
+    });
+
+    test(".brand returns brand name", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Branded(Int, "OrderId").brand
+      const brandedExpr = call(id("Branded"), [id("Int"), literal("OrderId")]);
+      env.defineEvaluated("OrderId", evaluator.evaluate(brandedExpr, env, typeEnv));
+
+      const brand = evaluator.evaluate(prop(id("OrderId"), "brand"), env, typeEnv);
+      expect(brand).toBe("OrderId");
+    });
+  });
+
+  describe("branded type distinctness", () => {
+    test("different brands create different types", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      const userId = call(id("Branded"), [id("String"), literal("UserId")]);
+      const orderId = call(id("Branded"), [id("String"), literal("OrderId")]);
+
+      env.defineEvaluated("UserId", evaluator.evaluate(userId, env, typeEnv));
+      env.defineEvaluated("OrderId", evaluator.evaluate(orderId, env, typeEnv));
+
+      // UserId.extends(OrderId) should be false
+      const extendsCall = call(prop(id("UserId"), "extends"), [id("OrderId")]);
+      expect(evaluator.evaluate(extendsCall, env, typeEnv)).toBe(false);
+
+      // UserId.extends(UserId) should be true
+      const selfExtends = call(prop(id("UserId"), "extends"), [id("UserId")]);
+      expect(evaluator.evaluate(selfExtends, env, typeEnv)).toBe(true);
+    });
+  });
+});
+
+describe(".keysType property", () => {
+  test("returns union of literal field names", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Create { name: String, age: Int }
+    const fieldInfo1 = record({
+      name: literal("name"),
+      type: id("String"),
+      optional: literal(false),
+      annotations: array(),
+    });
+    const fieldInfo2 = record({
+      name: literal("age"),
+      type: id("Int"),
+      optional: literal(false),
+      annotations: array(),
+    });
+    const recTypeExpr = call(id("RecordType"), [array(fieldInfo1, fieldInfo2)]);
+    env.defineEvaluated("Person", evaluator.evaluate(recTypeExpr, env, typeEnv));
+
+    // Person.keysType should be "name" | "age"
+    const keysType = evaluator.evaluate(prop(id("Person"), "keysType"), env, typeEnv);
+    expect(isTypeValue(keysType)).toBe(true);
+    expect((keysType as Type).kind).toBe("union");
+    const unionTypes = (keysType as { kind: "union"; types: Type[] }).types;
+    expect(unionTypes).toHaveLength(2);
+    expect(unionTypes.every((t) => t.kind === "literal")).toBe(true);
+    const values = unionTypes.map((t) => (t as { kind: "literal"; value: string }).value);
+    expect(values).toContain("name");
+    expect(values).toContain("age");
+  });
+
+  test("returns Never for empty record", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Create empty record {}
+    const emptyRecExpr = call(id("RecordType"), [array()]);
+    env.defineEvaluated("Empty", evaluator.evaluate(emptyRecExpr, env, typeEnv));
+
+    // Empty.keysType should be Never
+    const keysType = evaluator.evaluate(prop(id("Empty"), "keysType"), env, typeEnv);
+    expect(isTypeValue(keysType)).toBe(true);
+    expect((keysType as Type).kind).toBe("primitive");
+    expect((keysType as Type & { kind: "primitive" }).name).toBe("Never");
+  });
+
+  test("throws for non-record types", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    expect(() =>
+      evaluator.evaluate(prop(id("Int"), "keysType"), env, typeEnv)
+    ).toThrow(/record/i);
+  });
+});
+
+describe("WithMetadata", () => {
+  test("attaches name to type", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // WithMetadata(Int, { name: "MyInt" })
+    const withMeta = call(id("WithMetadata"), [
+      id("Int"),
+      record({ name: literal("MyInt") }),
+    ]);
+    const result = evaluator.evaluate(withMeta, env, typeEnv);
+
+    expect(isTypeValue(result)).toBe(true);
+    // .name should return "MyInt"
+    env.defineEvaluated("MyInt", result);
+    const name = evaluator.evaluate(prop(id("MyInt"), "name"), env, typeEnv);
+    expect(name).toBe("MyInt");
+  });
+
+  test("attaches typeArgs to type", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // WithMetadata(Array(Int), { name: "IntArray", typeArgs: [Int] })
+    const arrayInt = call(id("Array"), [id("Int")]);
+    const withMeta = call(id("WithMetadata"), [
+      arrayInt,
+      record({
+        name: literal("IntArray"),
+        typeArgs: array(id("Int")),
+      }),
+    ]);
+    env.defineEvaluated("IntArray", evaluator.evaluate(withMeta, env, typeEnv));
+
+    // .typeArgs should return [Int]
+    const typeArgs = evaluator.evaluate(prop(id("IntArray"), "typeArgs"), env, typeEnv) as Type[];
+    expect(Array.isArray(typeArgs)).toBe(true);
+    expect(typeArgs).toHaveLength(1);
+    expect((typeArgs[0] as Type & { kind: "primitive" }).name).toBe("Int");
+  });
+
+  test(".baseName returns name without type args", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Create Array<Int> with metadata
+    const arrayInt = call(id("Array"), [id("Int")]);
+    const withMeta = call(id("WithMetadata"), [
+      arrayInt,
+      record({
+        name: literal("Container"),
+        typeArgs: array(id("Int")),
+      }),
+    ]);
+    env.defineEvaluated("Container", evaluator.evaluate(withMeta, env, typeEnv));
+
+    const baseName = evaluator.evaluate(prop(id("Container"), "baseName"), env, typeEnv);
+    expect(baseName).toBe("Container");
+  });
+
+  test("attaches annotations to type", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // WithMetadata(String, { name: "Email", annotations: ["validated"] })
+    const withMeta = call(id("WithMetadata"), [
+      id("String"),
+      record({
+        name: literal("Email"),
+        annotations: array(literal("validated")),
+      }),
+    ]);
+    env.defineEvaluated("Email", evaluator.evaluate(withMeta, env, typeEnv));
+
+    // .annotations should return ["validated"]
+    const annotations = evaluator.evaluate(
+      prop(id("Email"), "annotations"),
+      env,
+      typeEnv
+    ) as string[];
+    expect(Array.isArray(annotations)).toBe(true);
+    expect(annotations).toContain("validated");
+  });
+});
+
+describe("conditional type patterns", () => {
+  test("T.extends(U) ? X : Y pattern", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // IsNumber = (T) => T.extends(Number) ? true : false
+    const isNumberFn = lambda(
+      ["T"],
+      cond(
+        call(prop(id("T"), "extends"), [id("Number")]),
+        literal(true),
+        literal(false)
+      )
+    );
+    env.defineEvaluated("IsNumber", evaluator.evaluate(isNumberFn, env, typeEnv));
+
+    // IsNumber(Int) should be true (Int extends Number)
+    expect(evaluator.evaluate(call(id("IsNumber"), [id("Int")]), env, typeEnv)).toBe(true);
+
+    // IsNumber(String) should be false
+    expect(evaluator.evaluate(call(id("IsNumber"), [id("String")]), env, typeEnv)).toBe(false);
+  });
+
+  test("NonNullable pattern", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // NonNullable = (T) => T.extends(Union(Null, Undefined)) ? Never : T
+    const nullishUnion = call(id("Union"), [id("Null"), id("Undefined")]);
+    const nonNullableFn = lambda(
+      ["T"],
+      cond(
+        call(prop(id("T"), "extends"), [nullishUnion]),
+        id("Never"),
+        id("T")
+      )
+    );
+    env.defineEvaluated("NonNullable", evaluator.evaluate(nonNullableFn, env, typeEnv));
+
+    // NonNullable(String) should return String
+    const result1 = evaluator.evaluate(call(id("NonNullable"), [id("String")]), env, typeEnv);
+    expect(isTypeValue(result1)).toBe(true);
+    expect((result1 as Type & { kind: "primitive" }).name).toBe("String");
+
+    // NonNullable(Null) should return Never
+    const result2 = evaluator.evaluate(call(id("NonNullable"), [id("Null")]), env, typeEnv);
+    expect(isTypeValue(result2)).toBe(true);
+    expect((result2 as Type & { kind: "primitive" }).name).toBe("Never");
+  });
+
+  test("Extract pattern - returns type if matches, Never otherwise", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Extract = (T, U) => T.extends(U) ? T : Never
+    const extractFn = lambda(
+      ["T", "U"],
+      cond(
+        call(prop(id("T"), "extends"), [id("U")]),
+        id("T"),
+        id("Never")
+      )
+    );
+    env.defineEvaluated("Extract", evaluator.evaluate(extractFn, env, typeEnv));
+
+    // Extract(Int, Number) should return Int
+    const result1 = evaluator.evaluate(
+      call(id("Extract"), [id("Int"), id("Number")]),
+      env,
+      typeEnv
+    );
+    expect(isTypeValue(result1)).toBe(true);
+    expect((result1 as Type & { kind: "primitive" }).name).toBe("Int");
+
+    // Extract(String, Number) should return Never
+    const result2 = evaluator.evaluate(
+      call(id("Extract"), [id("String"), id("Number")]),
+      env,
+      typeEnv
+    );
+    expect(isTypeValue(result2)).toBe(true);
+    expect((result2 as Type & { kind: "primitive" }).name).toBe("Never");
+  });
+
+  test("Exclude pattern - returns Never if matches, type otherwise", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Exclude = (T, U) => T.extends(U) ? Never : T
+    const excludeFn = lambda(
+      ["T", "U"],
+      cond(
+        call(prop(id("T"), "extends"), [id("U")]),
+        id("Never"),
+        id("T")
+      )
+    );
+    env.defineEvaluated("Exclude", evaluator.evaluate(excludeFn, env, typeEnv));
+
+    // Exclude(Int, Number) should return Never (Int extends Number)
+    const result1 = evaluator.evaluate(
+      call(id("Exclude"), [id("Int"), id("Number")]),
+      env,
+      typeEnv
+    );
+    expect(isTypeValue(result1)).toBe(true);
+    expect((result1 as Type & { kind: "primitive" }).name).toBe("Never");
+
+    // Exclude(String, Number) should return String
+    const result2 = evaluator.evaluate(
+      call(id("Exclude"), [id("String"), id("Number")]),
+      env,
+      typeEnv
+    );
+    expect(isTypeValue(result2)).toBe(true);
+    expect((result2 as Type & { kind: "primitive" }).name).toBe("String");
+  });
+});
+
 describe("comptimeEquals", () => {
   test("primitives", () => {
     expect(comptimeEquals(1, 1)).toBe(true);

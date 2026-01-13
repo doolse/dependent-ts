@@ -422,4 +422,43 @@ describe("Lezer Parser", () => {
       expect(hasError("type X = { @JsonName(\"x\") name: String };")).toBe(false);
     });
   });
+
+  describe("rest parameters", () => {
+    test("rest parameter in arrow function", () => {
+      expect(hasNode("const sum = (...nums) => nums;", "ArrowFn")).toBe(true);
+      expect(hasNode("const sum = (...nums) => nums;", "Spread")).toBe(true);
+      expect(hasError("const sum = (...nums) => nums;")).toBe(false);
+    });
+
+    test("rest parameter with type annotation", () => {
+      expect(hasNode("const sum = (...nums: Int[]) => nums;", "ArrowFn")).toBe(true);
+      expect(hasNode("const sum = (...nums: Int[]) => nums;", "Spread")).toBe(true);
+      expect(hasNode("const sum = (...nums: Int[]) => nums;", "TypeAnnotation")).toBe(true);
+      expect(hasError("const sum = (...nums: Int[]) => nums;")).toBe(false);
+    });
+
+    test("rest parameter after regular parameters", () => {
+      expect(hasNode("const f = (a, b, ...rest) => rest;", "ArrowFn")).toBe(true);
+      expect(hasNode("const f = (a, b, ...rest) => rest;", "Spread")).toBe(true);
+      expect(hasError("const f = (a, b, ...rest) => rest;")).toBe(false);
+    });
+
+    test("rest parameter in function type", () => {
+      expect(hasNode("type Fn = (...args: Int[]) => Int;", "FunctionType")).toBe(true);
+      expect(hasNode("type Fn = (...args: Int[]) => Int;", "Spread")).toBe(true);
+      expect(hasError("type Fn = (...args: Int[]) => Int;")).toBe(false);
+    });
+
+    test("rest parameter in function type after regular params", () => {
+      expect(hasNode("type Fn = (a: Int, ...rest: String[]) => Int;", "FunctionType")).toBe(true);
+      expect(hasNode("type Fn = (a: Int, ...rest: String[]) => Int;", "Spread")).toBe(true);
+      expect(hasError("type Fn = (a: Int, ...rest: String[]) => Int;")).toBe(false);
+    });
+
+    test("uppercase type param with rest", () => {
+      expect(hasNode("const f = (...T) => T;", "ArrowFn")).toBe(true);
+      expect(hasNode("const f = (...T) => T;", "Spread")).toBe(true);
+      expect(hasError("const f = (...T) => T;")).toBe(false);
+    });
+  });
 });

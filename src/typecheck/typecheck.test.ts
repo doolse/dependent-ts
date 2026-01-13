@@ -361,4 +361,201 @@ describe("Type Checker", () => {
       expect(userIdDecl.name).toBe("UserId");
     });
   });
+
+  describe("TypeScript compatibility features", () => {
+    describe("union types", () => {
+      test("union type annotation", () => {
+        const result = check("const x: Int | String = 42;");
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("multi-way union", () => {
+        const result = check("const x: Int | String | Boolean = true;");
+        expect(result.decls).toHaveLength(1);
+      });
+    });
+
+    describe("function type properties", () => {
+      test(".returnType access", () => {
+        const result = check(`
+          type Fn = (x: Int) => String;
+          const ret = Fn.returnType;
+        `);
+        const retDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(retDecl.init.comptimeOnly).toBe(true);
+      });
+
+      test(".parameterTypes access", () => {
+        const result = check(`
+          type Fn = (x: Int, y: String) => Boolean;
+          const params = Fn.parameterTypes;
+        `);
+        const paramsDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(paramsDecl.init.comptimeOnly).toBe(true);
+      });
+    });
+
+    describe("record type properties", () => {
+      test(".fields access", () => {
+        const result = check(`
+          type Person = { name: String, age: Int };
+          const fields = Person.fields;
+        `);
+        const fieldsDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(fieldsDecl.init.comptimeOnly).toBe(true);
+      });
+
+      test(".fieldNames access (runtime usable)", () => {
+        const result = check(`
+          type Person = { name: String, age: Int };
+          const names = Person.fieldNames;
+        `);
+        const namesDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // fieldNames returns Array<String>, which is runtime usable
+        expect(namesDecl.init.comptimeOnly).toBe(false);
+      });
+
+      test(".keysType access", () => {
+        const result = check(`
+          type Person = { name: String, age: Int };
+          const keys = Person.keysType;
+        `);
+        const keysDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(keysDecl.init.comptimeOnly).toBe(true);
+      });
+    });
+
+    describe("branded types", () => {
+      test("newtype syntax creates branded type", () => {
+        const result = check(`
+          newtype UserId = String;
+          newtype OrderId = String;
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+
+      test("branded type .baseType", () => {
+        const result = check(`
+          newtype UserId = String;
+          const base = UserId.baseType;
+        `);
+        const baseDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(baseDecl.init.comptimeOnly).toBe(true);
+      });
+
+      test("branded type .brand", () => {
+        const result = check(`
+          newtype UserId = String;
+          const brand = UserId.brand;
+        `);
+        const brandDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // .brand returns a string, which is runtime usable
+        expect(brandDecl.init.comptimeOnly).toBe(false);
+      });
+    });
+
+    describe("WithMetadata", () => {
+      test("attaches metadata to type", () => {
+        const result = check(`
+          const MyInt = WithMetadata(Int, { name: "MyInt" });
+          const name = MyInt.name;
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+
+      test("type declaration desugars to WithMetadata", () => {
+        // type X = T desugars to const X = WithMetadata(T, { name: "X" })
+        const result = check(`
+          type MyInt = Int;
+          const name = MyInt.name;
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+    });
+
+    // Note: The following tests are commented out because they require
+    // more advanced type checking features that aren't fully implemented yet:
+    // - intersection types (A & B syntax desugaring)
+    // - .extends() method calls on types
+    // - T.fields.map() chains (type checker doesn't know .fields returns array)
+    // - Array type syntax (Int[] vs Array<Int>)
+    //
+    // The underlying comptime evaluation works (see comptime-eval.test.ts),
+    // but the static type checker doesn't yet understand these patterns.
+    // These features work when used in comptime contexts that are evaluated,
+    // but the type checker can't statically verify them.
+  });
+
+  describe("rest parameters", () => {
+    test("rest parameter in arrow function", () => {
+      const fnType = getConstType(
+        `const sum = (...nums: Int[]): Int => 0;`,
+        "sum"
+      );
+      expect(fnType.kind).toBe("function");
+      const fn = fnType as Type & { kind: "function" };
+      expect(fn.params).toHaveLength(1);
+      expect(fn.params[0].rest).toBe(true);
+    });
+
+    test("rest parameter accepts multiple arguments", () => {
+      // Should not throw - variadic call
+      check(`
+        const sum = (...nums: Int[]): Int => 0;
+        const result = sum(1, 2, 3, 4, 5);
+      `);
+    });
+
+    test("rest parameter accepts zero arguments", () => {
+      // Should not throw - empty rest
+      check(`
+        const sum = (...nums: Int[]): Int => 0;
+        const result = sum();
+      `);
+    });
+
+    test("rest parameter with preceding fixed params", () => {
+      check(`
+        const concat = (prefix: String, ...parts: String[]): String => prefix;
+        const result = concat("hello", "world", "!");
+      `);
+    });
+
+    test("rest parameter type checking", () => {
+      // Should throw - wrong type
+      expect(() =>
+        check(`
+          const sum = (...nums: Int[]): Int => 0;
+          const result = sum(1, "hello", 3);
+        `)
+      ).toThrow(/not assignable/);
+    });
+
+    test("function type with rest parameter", () => {
+      check(`
+        type Variadic = (...args: Int[]) => Int;
+        const fn: Variadic = (...nums) => 0;
+      `);
+    });
+
+    test("required params still checked with rest", () => {
+      // Should throw - missing required param
+      expect(() =>
+        check(`
+          const f = (required: String, ...rest: Int[]): Int => 0;
+          const result = f();
+        `)
+      ).toThrow(/Expected at least 1 arguments/);
+    });
+
+    test("non-rest function rejects extra arguments", () => {
+      // Should throw - too many args
+      expect(() =>
+        check(`
+          const add = (a: Int, b: Int): Int => a;
+          const result = add(1, 2, 3);
+        `)
+      ).toThrow(/Expected at most 2 arguments/);
+    });
+  });
 });
