@@ -1907,17 +1907,37 @@ function desugarFuncParam(cursor: TreeCursor, source: string): CoreExpr {
 }
 
 function desugarParenType(cursor: TreeCursor, source: string): CoreExpr {
+  const typeLoc = loc(cursor);
+  let innerType: CoreExpr | undefined;
+  let arraySuffixCount = 0;
+
   if (cursor.firstChild()) {
     do {
       if (isTypeExpression(cursor.name)) {
-        const result = desugarTypeExpr(cursor, source);
-        cursor.parent();
-        return result;
+        innerType = desugarTypeExpr(cursor, source);
+      } else if (cursor.name === "ArraySuffix") {
+        arraySuffixCount++;
       }
     } while (cursor.nextSibling());
     cursor.parent();
   }
-  error("empty parenthesized type", cursor);
+
+  if (!innerType) {
+    error("empty parenthesized type", cursor);
+  }
+
+  // Apply array suffixes: (T)[][] → Array(Array(T))
+  let result = innerType;
+  for (let i = 0; i < arraySuffixCount; i++) {
+    result = {
+      kind: "call",
+      fn: { kind: "identifier", name: "Array", loc: typeLoc },
+      args: [result],
+      loc: typeLoc,
+    };
+  }
+
+  return result;
 }
 
 function desugarLiteralType(cursor: TreeCursor, source: string): CoreExpr {

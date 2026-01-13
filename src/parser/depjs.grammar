@@ -213,7 +213,7 @@ primaryType {
   IndexedRecordType { "{" IndexSignature "}" } |
   TupleType { "[" ListOf<TupleElement>? "]" } |
   FunctionType { TypeParams? "(" ListOf<FuncParam>? ")" "=>" typeExpression } |
-  ParenType { "(" typeExpression ")" } |
+  ParenType { "(" typeExpression ")" ArraySuffix* } |
   LiteralType { String | Number | kw<"true"> | kw<"false"> }
 }
 

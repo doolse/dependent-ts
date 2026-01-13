@@ -1033,7 +1033,7 @@ class TypeChecker {
     this.typeEnv = childTypeEnv;
     this.comptimeEnv = childComptimeEnv;
 
-    const typedStatements: CoreDecl[] = [];
+    const typedStatements: TypedDecl[] = [];
     let comptimeOnly = false;
 
     for (const stmt of expr.statements) {
@@ -1049,6 +1049,13 @@ class TypeChecker {
       typedResult = this.checkExpr(expr.result);
       resultType = typedResult.type;
       comptimeOnly = comptimeOnly || typedResult.comptimeOnly;
+    } else if (typedStatements.length > 0) {
+      // If no trailing expression, use the last statement's type if it's an expression statement
+      // This handles cases like { throw "error"; } where the block has type Never
+      const lastStmt = typedStatements[typedStatements.length - 1];
+      if (lastStmt.kind === "expr") {
+        resultType = lastStmt.expr.type;
+      }
     }
 
     this.typeEnv = savedTypeEnv;

@@ -12,7 +12,9 @@ import {
   functionType,
   arrayType,
   unionType,
+  intersectionType,
   brandedType,
+  withMetadata,
 } from "./types";
 import { isSubtype, typesEqual } from "./subtype";
 
@@ -268,6 +270,91 @@ describe("isSubtype", () => {
       expect(isSubtype(userId, email)).toBe(false);
     });
   });
+
+  describe("intersection types", () => {
+    it("intersection is subtype of each part", () => {
+      const inter = intersectionType([Int, Num]);
+      expect(isSubtype(inter, Int)).toBe(true);
+      expect(isSubtype(inter, Num)).toBe(true);
+    });
+
+    it("type is subtype of intersection if subtype of all parts", () => {
+      // Int <: Int & Number (since Int <: Int and Int <: Number)
+      const inter = intersectionType([Int, Num]);
+      expect(isSubtype(Int, inter)).toBe(true);
+    });
+
+    it("type is not subtype of intersection if not subtype of all parts", () => {
+      // Str is not <: Int, so Str is not <: (Int & Str)
+      const inter = intersectionType([Int, Str]);
+      expect(isSubtype(Str, inter)).toBe(false);
+    });
+
+    it("intersection of records combines fields", () => {
+      const r1 = recordType([{ name: "a", type: Int, optional: false, annotations: [] }]);
+      const r2 = recordType([{ name: "b", type: Str, optional: false, annotations: [] }]);
+      const inter = intersectionType([r1, r2]);
+      // A record with both fields should be subtype
+      const combined = recordType([
+        { name: "a", type: Int, optional: false, annotations: [] },
+        { name: "b", type: Str, optional: false, annotations: [] },
+      ]);
+      expect(isSubtype(combined, inter)).toBe(true);
+    });
+  });
+
+  describe("WithMetadata", () => {
+    it("WithMetadata is subtype of base type", () => {
+      const withMeta = withMetadata(Int, { name: "MyInt" });
+      expect(isSubtype(withMeta, Int)).toBe(true);
+    });
+
+    it("base type is subtype of WithMetadata", () => {
+      const withMeta = withMetadata(Int, { name: "MyInt" });
+      expect(isSubtype(Int, withMeta)).toBe(true);
+    });
+
+    it("different WithMetadata with same base are subtypes", () => {
+      const meta1 = withMetadata(Int, { name: "A" });
+      const meta2 = withMetadata(Int, { name: "B" });
+      expect(isSubtype(meta1, meta2)).toBe(true);
+      expect(isSubtype(meta2, meta1)).toBe(true);
+    });
+
+    it("WithMetadata with different base types are not subtypes", () => {
+      const meta1 = withMetadata(Int, { name: "A" });
+      const meta2 = withMetadata(Str, { name: "A" });
+      expect(isSubtype(meta1, meta2)).toBe(false);
+    });
+
+    it("nested WithMetadata is unwrapped", () => {
+      const nested = withMetadata(withMetadata(Int, { name: "Inner" }), { name: "Outer" });
+      expect(isSubtype(nested, Int)).toBe(true);
+      expect(isSubtype(Int, nested)).toBe(true);
+    });
+  });
+
+  describe("optional field subtyping", () => {
+    it("required field satisfies optional field", () => {
+      const required = recordType([
+        { name: "a", type: Int, optional: false, annotations: [] },
+      ]);
+      const optional = recordType([
+        { name: "a", type: Int, optional: true, annotations: [] },
+      ]);
+      expect(isSubtype(required, optional)).toBe(true);
+    });
+
+    it("optional field does not satisfy required field", () => {
+      const optional = recordType([
+        { name: "a", type: Int, optional: true, annotations: [] },
+      ]);
+      const required = recordType([
+        { name: "a", type: Int, optional: false, annotations: [] },
+      ]);
+      expect(isSubtype(optional, required)).toBe(false);
+    });
+  });
 });
 
 describe("typesEqual", () => {
@@ -290,5 +377,10 @@ describe("typesEqual", () => {
     expect(typesEqual(literalType(42, "Int"), literalType(43, "Int"))).toBe(
       false
     );
+  });
+
+  it("WithMetadata is unwrapped for equality", () => {
+    const withMeta = withMetadata(Int, { name: "MyInt" });
+    expect(typesEqual(withMeta, Int)).toBe(true);
   });
 });

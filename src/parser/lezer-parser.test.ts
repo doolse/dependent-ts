@@ -296,6 +296,14 @@ describe("Lezer Parser", () => {
       expect(hasError("const x: Int[] = [1];")).toBe(false);
     });
 
+    test("parenthesized type with array suffix", () => {
+      // (Int | String)[] should parse as ParenType with ArraySuffix
+      expect(hasNode("const x: (Int | String)[] = [];", "ParenType")).toBe(true);
+      expect(hasNode("const x: (Int | String)[] = [];", "ArraySuffix")).toBe(true);
+      expect(hasNode("const x: (Int | String)[] = [];", "UnionType")).toBe(true);
+      expect(hasError("const x: (Int | String)[] = [];")).toBe(false);
+    });
+
     test("function type", () => {
       expect(hasNode("const x: (a: Int) => String = f;", "FunctionType")).toBe(true);
       expect(hasError("const x: (a: Int) => String = f;")).toBe(false);

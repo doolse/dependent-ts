@@ -232,7 +232,7 @@ export class ComptimeEnv {
 /**
  * Check if a value is a Type.
  */
-export function isTypeValue(value: ComptimeValue): value is Type {
+export function isTypeValue(value: unknown): value is Type {
   return (
     typeof value === "object" &&
     value !== null &&
