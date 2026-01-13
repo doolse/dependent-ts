@@ -1944,9 +1944,16 @@ function desugarLiteralType(cursor: TreeCursor, source: string): CoreExpr {
   const typeLoc = loc(cursor);
 
   if (cursor.firstChild()) {
-    const result = desugarLiteralInner(cursor, source, typeLoc);
+    const literalExpr = desugarLiteralInner(cursor, source, typeLoc);
     cursor.parent();
-    return result;
+
+    // Wrap the literal in a call to LiteralType() to convert value to type
+    return {
+      kind: "call",
+      fn: { kind: "identifier", name: "LiteralType", loc: typeLoc },
+      args: [literalExpr],
+      loc: typeLoc,
+    };
   }
 
   error("empty literal type", cursor);

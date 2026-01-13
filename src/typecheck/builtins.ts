@@ -16,6 +16,7 @@ import {
   intersectionType,
   brandedType,
   withMetadata,
+  literalType,
   FieldInfo,
   TypeMetadata,
   Unknown,
@@ -123,6 +124,7 @@ export function createInitialComptimeEnv(): ComptimeEnv {
   env.defineEvaluated("Array", builtinArray);
   env.defineEvaluated("WithMetadata", builtinWithMetadata);
   env.defineEvaluated("Branded", builtinBranded);
+  env.defineEvaluated("LiteralType", builtinLiteralType);
 
   // Special builtins
   env.defineEvaluated("typeOf", builtinTypeOf);
@@ -251,6 +253,16 @@ export function createInitialTypeEnv(): TypeEnv {
         { name: "baseType", type: typeType, optional: false },
         { name: "brand", type: primitiveType("String"), optional: false },
       ],
+      typeType
+    ),
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
+  // LiteralType: (value: String | Int | Float | Boolean) => Type
+  env.define("LiteralType", {
+    type: functionType(
+      [{ name: "value", type: primitiveType("Unknown"), optional: false }],
       typeType
     ),
     comptimeStatus: "comptimeOnly",
@@ -539,6 +551,39 @@ const builtinBranded: ComptimeBuiltin = {
     }
 
     return brandedType(baseType, brand, brand);
+  },
+};
+
+const builtinLiteralType: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "LiteralType",
+  impl: (args, _evaluator, loc) => {
+    if (args.length < 1) {
+      throw new CompileError(
+        "LiteralType requires 1 argument (value)",
+        "typecheck",
+        loc
+      );
+    }
+
+    const value = args[0];
+
+    // Determine the base type from the value
+    if (typeof value === "string") {
+      return literalType(value, "String");
+    } else if (typeof value === "number") {
+      // Check if it's an integer or float
+      const isInt = Number.isInteger(value);
+      return literalType(value, isInt ? "Int" : "Float");
+    } else if (typeof value === "boolean") {
+      return literalType(value, "Boolean");
+    } else {
+      throw new CompileError(
+        `LiteralType argument must be a string, number, or boolean, got ${typeof value}`,
+        "typecheck",
+        loc
+      );
+    }
   },
 };
 

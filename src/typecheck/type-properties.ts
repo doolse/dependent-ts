@@ -356,3 +356,98 @@ export function isRuntimeUsableProperty(prop: string): boolean {
   ]);
   return runtimeProps.has(prop);
 }
+
+/**
+ * Get the static type of a Type property.
+ * This allows the type checker to know the return types of property accesses
+ * like T.fields, T.returnType, etc.
+ */
+export function getTypePropertyType(prop: string): Type | undefined {
+  // FieldInfo type: { name: String, type: Type, optional: Boolean, annotations: Array<Unknown> }
+  const FieldInfoType: Type = {
+    kind: "record",
+    fields: [
+      { name: "name", type: primitiveType("String"), optional: false, annotations: [] },
+      { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
+      { name: "optional", type: primitiveType("Boolean"), optional: false, annotations: [] },
+      { name: "annotations", type: { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true }, optional: false, annotations: [] },
+    ],
+  };
+
+  // ArrayElementInfo type: { type: Type, label: String | Undefined }
+  const ArrayElementInfoType: Type = {
+    kind: "record",
+    fields: [
+      { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
+      { name: "label", type: unionType([primitiveType("String"), primitiveType("Undefined")]), optional: false, annotations: [] },
+    ],
+  };
+
+  switch (prop) {
+    // Runtime-usable properties
+    case "name":
+      return unionType([primitiveType("String"), primitiveType("Undefined")]);
+    case "baseName":
+      return unionType([primitiveType("String"), primitiveType("Undefined")]);
+    case "fieldNames":
+      return { kind: "array", elementTypes: [primitiveType("String")], variadic: true };
+    case "length":
+      return unionType([primitiveType("Int"), primitiveType("Undefined")]);
+    case "isFixed":
+      return primitiveType("Boolean");
+    case "brand":
+      return unionType([primitiveType("String"), primitiveType("Undefined")]);
+    case "closed":
+      return primitiveType("Boolean");
+    case "async":
+      return primitiveType("Boolean");
+
+    // Comptime-only properties returning Type
+    case "elementType":
+      return primitiveType("Type");
+    case "returnType":
+      return primitiveType("Type");
+    case "baseType":
+      return unionType([primitiveType("Type"), primitiveType("Undefined")]);
+    case "keysType":
+      return primitiveType("Type");
+    case "indexType":
+      return unionType([primitiveType("Type"), primitiveType("Undefined")]);
+
+    // Comptime-only properties returning arrays
+    case "fields":
+      return { kind: "array", elementTypes: [FieldInfoType], variadic: true };
+    case "variants":
+      return { kind: "array", elementTypes: [primitiveType("Type")], variadic: true };
+    case "typeArgs":
+      return { kind: "array", elementTypes: [primitiveType("Type")], variadic: true };
+    case "parameterTypes":
+      return { kind: "array", elementTypes: [primitiveType("Type")], variadic: true };
+    case "elements":
+      return unionType([
+        { kind: "array", elementTypes: [ArrayElementInfoType], variadic: true },
+        primitiveType("Undefined"),
+      ]);
+    case "annotations":
+      return { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true };
+
+    // Methods
+    case "extends":
+      // (Type) => Boolean
+      return {
+        kind: "function",
+        params: [{ name: "other", type: primitiveType("Type"), optional: false }],
+        returnType: primitiveType("Boolean"),
+      };
+    case "annotation":
+      // (Type) => Unknown (simplified - actually generic)
+      return {
+        kind: "function",
+        params: [{ name: "annotationType", type: primitiveType("Type"), optional: false }],
+        returnType: primitiveType("Unknown"),
+      };
+
+    default:
+      return undefined;
+  }
+}

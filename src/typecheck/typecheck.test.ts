@@ -908,4 +908,498 @@ describe("Type Checker", () => {
       expect(rec.fields[0].type.kind).toBe("primitive");
     });
   });
+
+  describe("generics", () => {
+    describe("parameterized type declarations", () => {
+      test("simple parameterized type", () => {
+        // type Box<T> = { value: T } desugars to a function
+        const result = check(`
+          type Box<T> = { value: T };
+        `);
+        const boxDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(boxDecl.name).toBe("Box");
+        // Box should be a function: (T: Type) => Type
+        expect(boxDecl.init.type.kind).toBe("function");
+      });
+
+      test("parameterized type with multiple parameters", () => {
+        const result = check(`
+          type Pair<A, B> = { first: A, second: B };
+        `);
+        const pairDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(pairDecl.name).toBe("Pair");
+        expect(pairDecl.init.type.kind).toBe("function");
+        const fnType = pairDecl.init.type as Type & { kind: "function" };
+        expect(fnType.params).toHaveLength(2);
+      });
+
+      test("parameterized type instantiation", () => {
+        // Using a parameterized type with explicit type arguments
+        const result = check(`
+          type Box<T> = { value: T };
+          const intBox: Box<Int> = { value: 42 };
+        `);
+        expect(result.decls).toHaveLength(2);
+        const boxDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(boxDecl.declType.kind).toBe("withMetadata");
+      });
+
+      test("parameterized type preserves metadata", () => {
+        const result = check(`
+          type Container<T> = { item: T };
+          const c: Container<String> = { item: "hello" };
+        `);
+        const cDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // The declared type should be Container<String> wrapped in metadata
+        expect(cDecl.declType.kind).toBe("withMetadata");
+        const meta = cDecl.declType as Type & { kind: "withMetadata" };
+        expect(meta.metadata?.name).toBe("Container");
+      });
+
+      test("nested parameterized types", () => {
+        const result = check(`
+          type Box<T> = { value: T };
+          type DoubleBox<T> = { outer: Box<T> };
+          const db: DoubleBox<Int> = { outer: { value: 42 } };
+        `);
+        expect(result.decls).toHaveLength(3);
+      });
+    });
+
+    describe("using parameterized types", () => {
+      test("Array<T> instantiation", () => {
+        const result = check(`
+          const arr: Array<Int> = [1, 2, 3];
+        `);
+        const decl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(decl.declType.kind).toBe("array");
+      });
+
+      test("type argument inference from value context", () => {
+        // When using a parameterized type, the value must match
+        const result = check(`
+          type Box<T> = { value: T };
+          const b: Box<Int> = { value: 42 };
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+
+      test("type argument mismatch throws error", () => {
+        expect(() => check(`
+          type Box<T> = { value: T };
+          const b: Box<Int> = { value: "hello" };
+        `)).toThrow(/not assignable/);
+      });
+
+      test("multiple type arguments", () => {
+        const result = check(`
+          type Either<L, R> = { left: L, right: R };
+          const e: Either<Int, String> = { left: 1, right: "hello" };
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+    });
+
+    describe("generic constraints", () => {
+      // TODO: Generic constraints are parsed but not yet properly handled.
+      // The desugar transforms `<T extends Foo>` to `(T: Type(Foo))` but
+      // Type() as a constrained type constructor isn't implemented yet.
+      // These tests are commented out until constraint handling is implemented.
+
+      // test("type parameter with extends constraint", () => {
+      //   const result = check(`
+      //     type Lengthwise = { length: Int };
+      //     type WithLength<T extends Lengthwise> = { item: T };
+      //   `);
+      //   const decl = result.decls[1] as TypedDecl & { kind: "const" };
+      //   expect(decl.init.type.kind).toBe("function");
+      // });
+
+      // test("constrained type accepts valid type argument", () => {
+      //   const result = check(`
+      //     type Lengthwise = { length: Int };
+      //     type WithLength<T extends Lengthwise> = { item: T };
+      //     type HasLength = { length: Int, name: String };
+      //     const w: WithLength<HasLength> = { item: { length: 5, name: "test" } };
+      //   `);
+      //   expect(result.decls).toHaveLength(4);
+      // });
+
+      // test("constrained type rejects invalid type argument", () => {
+      //   expect(() => check(`
+      //     type Lengthwise = { length: Int };
+      //     type WithLength<T extends Lengthwise> = { item: T };
+      //     const w: WithLength<Int> = { item: 42 };  // Int doesn't have length
+      //   `)).toThrow();
+      // });
+
+      test.skip("generic constraints not yet implemented", () => {
+        // Placeholder to mark this feature as pending implementation
+      });
+    });
+
+    describe("generic function types", () => {
+      // TODO: Generic function types like `<T>(x: T) => T` are parsed but the
+      // TypeParams in FunctionType are not yet handled in desugar.ts.
+      // The type parameters need to be added to the scope before processing
+      // the parameter types and return type.
+      //
+      // test("function type with type parameter in annotation", () => {
+      //   const result = check(`
+      //     type Identity = <T>(x: T) => T;
+      //   `);
+      //   const decl = result.decls[0] as TypedDecl & { kind: "const" };
+      //   expect(decl.name).toBe("Identity");
+      // });
+
+      // test("function type with multiple type parameters", () => {
+      //   const result = check(`
+      //     type MapFn = <A, B>(arr: Array<A>, f: (a: A) => B) => Array<B>;
+      //   `);
+      //   expect(result.decls).toHaveLength(1);
+      // });
+
+      // Note: Generic arrow function syntax (<T>(x: T) => x) is not yet supported
+      // in expression position. Only type declarations and annotations support
+      // the generic syntax (and those aren't fully working either yet).
+
+      test.skip("generic function types not yet implemented", () => {
+        // Placeholder to mark this feature as pending implementation
+      });
+    });
+
+    describe("default type parameters", () => {
+      // TODO: Default type parameters are not yet implemented
+      // type Container<T = String> = { value: T };
+      // const c: Container = { value: "hello" };  // T defaults to String
+
+      test.skip("default type parameters not yet implemented", () => {
+        // Placeholder to mark this feature as pending implementation
+      });
+    });
+
+    describe("type properties on parameterized types", () => {
+      test(".typeArgs returns type arguments", () => {
+        const result = check(`
+          type Box<T> = { value: T };
+          const IntBox = Box(Int);
+          const args = IntBox.typeArgs;
+        `);
+        const argsDecl = result.decls[2] as TypedDecl & { kind: "const" };
+        expect(argsDecl.init.comptimeOnly).toBe(true);
+      });
+
+      test(".baseName returns base type name", () => {
+        const result = check(`
+          type Container<T> = { item: T };
+          const IntContainer = Container(Int);
+          const baseName = IntContainer.baseName;
+        `);
+        const baseNameDecl = result.decls[2] as TypedDecl & { kind: "const" };
+        // baseName should be runtime-usable (returns String)
+        expect(baseNameDecl.init.comptimeOnly).toBe(false);
+      });
+    });
+  });
+
+  describe("intersection types", () => {
+    test("intersection type annotation", () => {
+      const result = check(`
+        type Named = { name: String };
+        type Aged = { age: Int };
+        const p: Named & Aged = { name: "Alice", age: 30 };
+      `);
+      expect(result.decls).toHaveLength(3);
+    });
+
+    test("intersection combines record fields", () => {
+      // A value of type Named & Aged must have both name and age
+      const result = check(`
+        type Named = { name: String };
+        type Aged = { age: Int };
+        const p: Named & Aged = { name: "Bob", age: 25 };
+      `);
+      const pDecl = result.decls[2] as TypedDecl & { kind: "const" };
+      expect(pDecl.declType.kind).toBe("intersection");
+    });
+
+    test("intersection requires all fields present", () => {
+      expect(() => check(`
+        type Named = { name: String };
+        type Aged = { age: Int };
+        const p: Named & Aged = { name: "Charlie" };
+      `)).toThrow(/not assignable/);
+    });
+
+    test("multi-way intersection", () => {
+      const result = check(`
+        type A = { a: Int };
+        type B = { b: String };
+        type C = { c: Boolean };
+        const x: A & B & C = { a: 1, b: "hi", c: true };
+      `);
+      expect(result.decls).toHaveLength(4);
+    });
+
+    test("intersection with primitive types via Intersection()", () => {
+      // Using Intersection builtin in expression context
+      const result = check(`
+        const IntAndNonZero = Intersection(Int, Int);
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+  });
+
+  describe("array type properties", () => {
+    test(".elementType on variable array", () => {
+      const result = check(`
+        type Ints = Int[];
+        const elem = Ints.elementType;
+      `);
+      const elemDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(elemDecl.init.comptimeOnly).toBe(true);
+    });
+
+    test(".elementType on fixed array", () => {
+      const result = check(`
+        type Point = [Int, Int];
+        const elem = Point.elementType;
+      `);
+      const elemDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(elemDecl.init.comptimeOnly).toBe(true);
+    });
+
+    test(".isFixed on variable array", () => {
+      const result = check(`
+        type Ints = Int[];
+        const fixed = Ints.isFixed;
+      `);
+      const fixedDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      // isFixed should be runtime-usable (returns Boolean)
+      expect(fixedDecl.init.comptimeOnly).toBe(false);
+    });
+
+    test(".isFixed on fixed array", () => {
+      const result = check(`
+        type Point = [Int, Int];
+        const fixed = Point.isFixed;
+      `);
+      const fixedDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(fixedDecl.init.comptimeOnly).toBe(false);
+    });
+
+    test(".length on fixed array", () => {
+      const result = check(`
+        type Triple = [Int, Int, Int];
+        const len = Triple.length;
+      `);
+      const lenDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      // length is runtime-usable for fixed arrays
+      expect(lenDecl.init.comptimeOnly).toBe(false);
+    });
+  });
+
+  describe("index signatures", () => {
+    test("indexed record type annotation", () => {
+      const result = check(`
+        const map: { [key: String]: Int } = {};
+      `);
+      expect(result.decls).toHaveLength(1);
+      const decl = result.decls[0] as TypedDecl & { kind: "const" };
+      expect(decl.declType.kind).toBe("record");
+    });
+
+    test("indexed record accepts any string key", () => {
+      // This tests that index signatures allow dynamic string access
+      const result = check(`
+        type StringIntMap = { [key: String]: Int };
+        const getValue = (m: StringIntMap, k: String): Int | Undefined => m[k];
+      `);
+      expect(result.decls).toHaveLength(2);
+    });
+  });
+
+  describe("TypeScript utility type patterns", () => {
+    // These tests verify that utility type patterns from TypeScript
+    // can be implemented in DepJS using first-class type manipulation.
+
+    test("Nullable - add null to any type", () => {
+      const result = check(`
+        const Nullable = (T: Type): Type => Union(T, Null);
+
+        const NullableInt = Nullable(Int);
+      `);
+      expect(result.decls).toHaveLength(2);
+    });
+
+    test("NonNullable - remove null/undefined from union", () => {
+      // .extends() now returns Boolean
+      const result = check(`
+        const NonNullable = (T: Type): Type =>
+          T.extends(Union(Null, Undefined)) ? Never : T;
+
+        const NNString = NonNullable(String);
+        const NNNull = NonNullable(Null);
+      `);
+      expect(result.decls).toHaveLength(3);
+    });
+
+    test("Extract - extract union members matching constraint", () => {
+      const result = check(`
+        const Extract = (T: Type, U: Type): Type =>
+          T.extends(U) ? T : Never;
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("Exclude - remove union members matching constraint", () => {
+      const result = check(`
+        const Exclude = (T: Type, U: Type): Type =>
+          T.extends(U) ? Never : T;
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("ReturnType - extract function return type", () => {
+      // T.returnType now returns Type
+      const result = check(`
+        const ReturnType = (T: Type): Type => T.returnType;
+
+        type Fn = (x: Int) => String;
+        const Result = ReturnType(Fn);
+      `);
+      expect(result.decls).toHaveLength(3);
+    });
+
+    test("Parameters - extract function parameter types", () => {
+      // T.parameterTypes now returns Array<Type>
+      const result = check(`
+        const Parameters = (T: Type): Array<Type> => T.parameterTypes;
+
+        type Fn = (x: Int, y: String) => Boolean;
+        const Params = Parameters(Fn);
+      `);
+      expect(result.decls).toHaveLength(3);
+    });
+
+    // Note: Partial, Required, Pick, Omit require .fields.map() which
+    // requires the type checker to understand array method chains.
+    // The .fields property now returns Array<FieldInfo>, but Array<T>.map()
+    // isn't yet understood by the static type checker.
+    // These patterns work in comptime evaluation (see comptime-eval.test.ts).
+
+    test.skip("Partial/Required/Pick/Omit require array method typing", () => {
+      // These require .fields.map() and .fields.filter() to be typed
+    });
+  });
+
+  describe("discriminated unions", () => {
+    test("discriminated union type - ok variant", () => {
+      const result = check(`
+        type Result =
+          | { kind: "ok", value: Int }
+          | { kind: "error", message: String };
+        const ok: Result = { kind: "ok", value: 42 };
+      `);
+      expect(result.decls).toHaveLength(2);
+    });
+
+    test("discriminated union type - error variant", () => {
+      const result = check(`
+        type Result =
+          | { kind: "ok", value: Int }
+          | { kind: "error", message: String };
+        const err: Result = { kind: "error", message: "oops" };
+      `);
+      expect(result.decls).toHaveLength(2);
+    });
+
+    test("discriminated union rejects wrong variant shape", () => {
+      expect(() => check(`
+        type Result =
+          | { kind: "ok", value: Int }
+          | { kind: "error", message: String };
+        const bad: Result = { kind: "ok", message: "wrong field" };
+      `)).toThrow(/not assignable/);
+    });
+
+    test("discriminated union with number discriminant", () => {
+      const result = check(`
+        type Status =
+          | { code: 200, data: String }
+          | { code: 404, message: String };
+        const success: Status = { code: 200, data: "hello" };
+        const notFound: Status = { code: 404, message: "not found" };
+      `);
+      expect(result.decls).toHaveLength(3);
+    });
+  });
+
+  describe("literal types in unions", () => {
+    test("string literal union", () => {
+      const result = check(`
+        type Direction = "north" | "south" | "east" | "west";
+        const d: Direction = "north";
+      `);
+      expect(result.decls).toHaveLength(2);
+    });
+
+    test("string literal union accepts any valid value", () => {
+      const result = check(`
+        type Direction = "north" | "south" | "east" | "west";
+        const n: Direction = "north";
+        const s: Direction = "south";
+        const e: Direction = "east";
+        const w: Direction = "west";
+      `);
+      expect(result.decls).toHaveLength(5);
+    });
+
+    test("string literal union rejects invalid value", () => {
+      expect(() => check(`
+        type Direction = "north" | "south" | "east" | "west";
+        const d: Direction = "up";
+      `)).toThrow(/not assignable/);
+    });
+
+    test("number literal union", () => {
+      const result = check(`
+        type DiceRoll = 1 | 2 | 3 | 4 | 5 | 6;
+        const roll: DiceRoll = 4;
+      `);
+      expect(result.decls).toHaveLength(2);
+    });
+
+    test("number literal union rejects out of range", () => {
+      expect(() => check(`
+        type DiceRoll = 1 | 2 | 3 | 4 | 5 | 6;
+        const roll: DiceRoll = 7;
+      `)).toThrow(/not assignable/);
+    });
+
+    test("boolean literal type", () => {
+      const result = check(`
+        type Yes = true;
+        const y: Yes = true;
+      `);
+      expect(result.decls).toHaveLength(2);
+    });
+
+    test("boolean literal type rejects wrong value", () => {
+      expect(() => check(`
+        type Yes = true;
+        const n: Yes = false;
+      `)).toThrow(/not assignable/);
+    });
+
+    test("mixed literal union", () => {
+      const result = check(`
+        type MixedLiteral = "a" | 1 | true;
+        const s: MixedLiteral = "a";
+        const n: MixedLiteral = 1;
+        const b: MixedLiteral = true;
+      `);
+      expect(result.decls).toHaveLength(4);
+    });
+  });
 });

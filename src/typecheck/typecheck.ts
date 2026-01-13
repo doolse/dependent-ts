@@ -41,7 +41,7 @@ import { TypeEnv, TypeBinding, ComptimeStatus } from "./type-env";
 import { ComptimeEnv, ComptimeValue, isTypeValue, isClosureValue, isBuiltinValue } from "./comptime-env";
 import { ComptimeEvaluator } from "./comptime-eval";
 import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
-import { isComptimeOnlyProperty } from "./type-properties";
+import { isComptimeOnlyProperty, getTypePropertyType } from "./type-properties";
 
 /**
  * Type checker configuration.
@@ -633,10 +633,20 @@ class TypeChecker {
       // Some type properties (like .name) are runtime-usable
       const isComptimeOnly = isComptimeOnlyProperty(expr.name);
 
+      // Get the static type for this property
+      const propType = getTypePropertyType(expr.name);
+      if (!propType) {
+        throw new CompileError(
+          `Type has no property '${expr.name}'`,
+          "typecheck",
+          expr.loc
+        );
+      }
+
       return {
         ...expr,
         object,
-        type: primitiveType("Unknown"), // Will be refined by comptime eval
+        type: propType,
         comptimeOnly: isComptimeOnly,
       };
     }
