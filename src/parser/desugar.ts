@@ -183,7 +183,28 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
 
   // Desugar: type Foo = T → const Foo = WithMetadata(T, { name: "Foo" })
   // For parameterized types: type Foo<T> = ... → const Foo = (T: Type) => WithMetadata(..., { name: "Foo", typeArgs: [T] })
+  // For generic function types: type Foo = <T>(...) => R → const Foo = (T: Type) => WithMetadata(FunctionType(...), { name: "Foo", typeArgs: [T] })
   let init: CoreExpr;
+
+  // Check if typeExpr is a lambda (from generic function type desugaring)
+  // If so, extract the type params and merge with the type declaration handling
+  let effectiveTypeExpr: CoreExpr = typeExpr;
+  let functionTypeParams: CoreParam[] = [];
+
+  if (typeExpr.kind === "lambda" && typeParams.length === 0) {
+    // This is a generic function type like <T>(x: T) => T
+    // The lambda params are the type params, the body is the FunctionType call
+    functionTypeParams = typeExpr.params;
+    effectiveTypeExpr = typeExpr.body;
+  }
+
+  // Combine type params from type declaration and from generic function type
+  const allTypeParams = [...typeParams, ...functionTypeParams.map(p => ({
+    name: p.name,
+    constraint: p.type?.kind === "call" && p.type.fn.kind === "identifier" && p.type.fn.name === "Type"
+      ? p.type.args[0]
+      : undefined
+  }))];
 
   const metadata: CoreRecordField[] = [
     {
@@ -209,15 +230,15 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
     kind: "call",
     fn: { kind: "identifier", name: "WithMetadata", loc: declLoc },
     args: [
-      typeExpr,
+      effectiveTypeExpr,
       { kind: "record", fields: metadata, loc: declLoc },
     ],
     loc: declLoc,
   };
 
-  if (typeParams.length > 0) {
+  if (allTypeParams.length > 0) {
     // Wrap in lambda: (T: Type, U: Type) => WithMetadata(...)
-    const params: CoreParam[] = typeParams.map((tp) => ({
+    const params: CoreParam[] = allTypeParams.map((tp) => ({
       name: tp.name,
       type: tp.constraint
         ? {
@@ -236,7 +257,7 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
       name: "typeArgs",
       value: {
         kind: "array",
-        elements: typeParams.map((tp) => ({
+        elements: allTypeParams.map((tp) => ({
           kind: "element" as const,
           value: { kind: "identifier", name: tp.name, loc: declLoc } as CoreExpr,
         })),
@@ -1794,12 +1815,13 @@ function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
   const typeLoc = loc(cursor);
   const params: CoreExpr[] = [];
   let returnType: CoreExpr | undefined;
+  let typeParams: { name: string; constraint?: CoreExpr }[] = [];
 
   if (cursor.firstChild()) {
     do {
       switch (nodeName(cursor)) {
         case "TypeParams":
-          // TODO: Handle type params in function types
+          typeParams = desugarTypeParams(cursor, source);
           break;
         case "ListOf":
           if (cursor.firstChild()) {
@@ -1827,7 +1849,7 @@ function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
   }
 
   // (A, B) => C → FunctionType([A, B], C)
-  return {
+  const functionTypeCall: CoreExpr = {
     kind: "call",
     fn: { kind: "identifier", name: "FunctionType", loc: typeLoc },
     args: [
@@ -1836,6 +1858,32 @@ function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
     ],
     loc: typeLoc,
   };
+
+  // If there are type params, wrap in lambda: <T>(x: T) => R → (T: Type) => FunctionType([...], R)
+  if (typeParams.length > 0) {
+    const lambdaParams: CoreParam[] = typeParams.map((tp) => ({
+      name: tp.name,
+      type: tp.constraint
+        ? {
+            kind: "call" as const,
+            fn: { kind: "identifier" as const, name: "Type", loc: typeLoc },
+            args: [tp.constraint],
+            loc: typeLoc,
+          }
+        : { kind: "identifier" as const, name: "Type", loc: typeLoc },
+      annotations: [],
+    }));
+
+    return {
+      kind: "lambda",
+      params: lambdaParams,
+      body: functionTypeCall,
+      async: false,
+      loc: typeLoc,
+    };
+  }
+
+  return functionTypeCall;
 }
 
 function desugarFuncParam(cursor: TreeCursor, source: string): CoreExpr {

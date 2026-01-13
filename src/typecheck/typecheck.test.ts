@@ -1030,33 +1030,47 @@ describe("Type Checker", () => {
     });
 
     describe("generic function types", () => {
-      // TODO: Generic function types like `<T>(x: T) => T` are parsed but the
-      // TypeParams in FunctionType are not yet handled in desugar.ts.
-      // The type parameters need to be added to the scope before processing
-      // the parameter types and return type.
-      //
-      // test("function type with type parameter in annotation", () => {
-      //   const result = check(`
-      //     type Identity = <T>(x: T) => T;
-      //   `);
-      //   const decl = result.decls[0] as TypedDecl & { kind: "const" };
-      //   expect(decl.name).toBe("Identity");
-      // });
+      // Generic function types like `<T>(x: T) => T` desugar to:
+      // (T: Type) => FunctionType([{ name: "x", type: T }], T)
+      // This makes them parameterized types (functions from Type to FunctionType).
 
-      // test("function type with multiple type parameters", () => {
-      //   const result = check(`
-      //     type MapFn = <A, B>(arr: Array<A>, f: (a: A) => B) => Array<B>;
-      //   `);
-      //   expect(result.decls).toHaveLength(1);
-      // });
+      test("function type with type parameter in annotation", () => {
+        const result = check(`
+          type Identity = <T>(x: T) => T;
+        `);
+        const decl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(decl.name).toBe("Identity");
+        // Identity is now a function from Type to FunctionType
+      });
+
+      test("function type with multiple type parameters", () => {
+        const result = check(`
+          type MapFn = <A, B>(arr: Array<A>, f: (a: A) => B) => Array<B>;
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("generic function type with constraint", () => {
+        const result = check(`
+          type Lengthwise = { length: Number };
+          type LoggingFn = <T extends Lengthwise>(x: T) => T;
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+
+      test("instantiate generic function type", () => {
+        const result = check(`
+          type Identity = <T>(x: T) => T;
+          type StringIdentity = Identity<String>;
+        `);
+        expect(result.decls).toHaveLength(2);
+        const stringIdDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(stringIdDecl.name).toBe("StringIdentity");
+      });
 
       // Note: Generic arrow function syntax (<T>(x: T) => x) is not yet supported
       // in expression position. Only type declarations and annotations support
-      // the generic syntax (and those aren't fully working either yet).
-
-      test.skip("generic function types not yet implemented", () => {
-        // Placeholder to mark this feature as pending implementation
-      });
+      // the generic syntax.
     });
 
     describe("default type parameters", () => {

@@ -212,7 +212,7 @@ primaryType {
   ClosedRecordType { "{|" ListOf<TypeField>? "|}" } |
   IndexedRecordType { "{" IndexSignature "}" } |
   TupleType { "[" ListOf<TupleElement>? "]" } |
-  FunctionType { TypeParams? "(" ListOf<FuncParam>? ")" "=>" typeExpression } |
+  FunctionType { FunctionTypeParams? "(" ListOf<FuncParam>? ")" "=>" typeExpression } |
   ParenType { "(" typeExpression ")" ArraySuffix* } |
   LiteralType { String | Number | kw<"true"> | kw<"false"> }
 }
@@ -248,6 +248,12 @@ FuncParam {
 
 TypeParams {
   ltType ListOf1<TypeParam> ">"
+}
+
+// FunctionTypeParams allows < with or without preceding space
+// This handles cases like `type Identity = <T>(x: T) => T` where space precedes <
+FunctionTypeParams[@name="TypeParams"] {
+  (ltType | ltCompare) ListOf1<TypeParam> ">"
 }
 
 TypeParam {
