@@ -309,6 +309,8 @@ export function containsTypeType(t: Type): boolean {
       return false;
     case "withMetadata":
       return containsTypeType(t.baseType);
+    case "boundedType":
+      return true; // Type<Bound> contains Type
   }
 }
 

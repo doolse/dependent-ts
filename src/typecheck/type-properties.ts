@@ -372,6 +372,7 @@ export function getTypePropertyType(prop: string): Type | undefined {
       { name: "optional", type: primitiveType("Boolean"), optional: false, annotations: [] },
       { name: "annotations", type: { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true }, optional: false, annotations: [] },
     ],
+    closed: false,
   };
 
   // ArrayElementInfo type: { type: Type, label: String | Undefined }
@@ -381,6 +382,7 @@ export function getTypePropertyType(prop: string): Type | undefined {
       { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
       { name: "label", type: unionType([primitiveType("String"), primitiveType("Undefined")]), optional: false, annotations: [] },
     ],
+    closed: false,
   };
 
   switch (prop) {
@@ -438,6 +440,7 @@ export function getTypePropertyType(prop: string): Type | undefined {
         kind: "function",
         params: [{ name: "other", type: primitiveType("Type"), optional: false }],
         returnType: primitiveType("Boolean"),
+        async: false,
       };
     case "annotation":
       // (Type) => Unknown (simplified - actually generic)
@@ -445,6 +448,7 @@ export function getTypePropertyType(prop: string): Type | undefined {
         kind: "function",
         params: [{ name: "annotationType", type: primitiveType("Type"), optional: false }],
         returnType: primitiveType("Unknown"),
+        async: false,
       };
 
     default:

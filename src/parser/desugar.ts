@@ -150,7 +150,7 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
   let name = "";
   let typeExpr: CoreExpr | undefined;
   const annotations: CoreExpr[] = [];
-  let typeParams: { name: string; constraint?: CoreExpr }[] = [];
+  let typeParams: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr }[] = [];
 
   if (cursor.firstChild()) {
     do {
@@ -203,7 +203,8 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
     name: p.name,
     constraint: p.type?.kind === "call" && p.type.fn.kind === "identifier" && p.type.fn.name === "Type"
       ? p.type.args[0]
-      : undefined
+      : undefined,
+    defaultValue: p.defaultValue
   }))];
 
   const metadata: CoreRecordField[] = [
@@ -499,8 +500,8 @@ function desugarExprStatement(cursor: TreeCursor, source: string): CoreDecl {
 function desugarTypeParams(
   cursor: TreeCursor,
   source: string
-): { name: string; constraint?: CoreExpr }[] {
-  const params: { name: string; constraint?: CoreExpr }[] = [];
+): { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr }[] {
+  const params: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr }[] = [];
 
   if (cursor.firstChild()) {
     do {
@@ -1829,7 +1830,7 @@ function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
   const typeLoc = loc(cursor);
   const params: CoreExpr[] = [];
   let returnType: CoreExpr | undefined;
-  let typeParams: { name: string; constraint?: CoreExpr }[] = [];
+  let typeParams: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr }[] = [];
 
   if (cursor.firstChild()) {
     do {

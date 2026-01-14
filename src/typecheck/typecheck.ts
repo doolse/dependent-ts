@@ -667,7 +667,7 @@ class TypeChecker {
     }
 
     // Get the object type (unwrap metadata if needed)
-    let objType = fn.object.type;
+    let objType = (fn.object as TypedExpr).type;
     if (objType.kind === "withMetadata") {
       objType = objType.baseType;
     }

@@ -461,5 +461,10 @@ export function typesEqual(a: Type, b: Type): boolean {
     case "withMetadata":
       // Already unwrapped above
       return false;
+
+    case "boundedType": {
+      const bBounded = bBase as typeof aBase;
+      return typesEqual(aBase.bound, bBounded.bound);
+    }
   }
 }
