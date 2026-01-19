@@ -2410,7 +2410,7 @@ describe("await expression evaluation", () => {
     const typeEnv = new TypeEnv();
 
     // await x - should throw because await cannot be evaluated at compile time
-    const awaitExpr = loc({ kind: "await", expr: literal(42) });
+    const awaitExpr = loc({ kind: "await" as const, expr: literal(42) });
 
     expect(() => evaluator.evaluate(awaitExpr, env, typeEnv)).toThrow(
       /Cannot use 'await' in compile-time evaluation/
