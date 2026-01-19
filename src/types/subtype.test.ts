@@ -303,6 +303,121 @@ describe("isSubtype", () => {
     });
   });
 
+  describe("overloaded functions (function intersections)", () => {
+    // Overloaded functions are represented as intersections of function types:
+    // ((String) => Number) & ((Number) => String)
+
+    it("overloaded function is subtype of first signature", () => {
+      // ((String) => Number) & ((Number) => String) <: (String) => Number
+      const sig1 = functionType([{ name: "x", type: Str, optional: false }], Num);
+      const sig2 = functionType([{ name: "x", type: Num, optional: false }], Str);
+      const overloaded = intersectionType([sig1, sig2]);
+
+      expect(isSubtype(overloaded, sig1)).toBe(true);
+    });
+
+    it("overloaded function is subtype of second signature", () => {
+      // ((String) => Number) & ((Number) => String) <: (Number) => String
+      const sig1 = functionType([{ name: "x", type: Str, optional: false }], Num);
+      const sig2 = functionType([{ name: "x", type: Num, optional: false }], Str);
+      const overloaded = intersectionType([sig1, sig2]);
+
+      expect(isSubtype(overloaded, sig2)).toBe(true);
+    });
+
+    it("overloaded function is NOT structurally subtype of union-based function", () => {
+      // ((String) => Number) & ((Number) => String) is NOT <: (String | Number) => (Number | String)
+      // Due to contravariance in function params:
+      // For (String) => Number <: (String|Number) => (Number|String):
+      //   - Params: String|Number <: String? NO (contravariant)
+      // The spec's "Overloaded <: Union" refers to call semantics, not structural subtyping
+      const sig1 = functionType([{ name: "x", type: Str, optional: false }], Num);
+      const sig2 = functionType([{ name: "x", type: Num, optional: false }], Str);
+      const overloaded = intersectionType([sig1, sig2]);
+
+      const unionBased = functionType(
+        [{ name: "x", type: unionType([Str, Num]), optional: false }],
+        unionType([Num, Str])
+      );
+
+      // Function subtyping is contravariant in params, so neither sig1 nor sig2
+      // can be a subtype of unionBased (their params are narrower, not wider)
+      expect(isSubtype(overloaded, unionBased)).toBe(false);
+    });
+
+    it("union-based function IS subtype of overloaded with same return types", () => {
+      // If the overloaded signatures have the same return type, a union-based
+      // function can be a subtype due to contravariance
+      // (String | Number) => String <: ((String) => String) & ((Number) => String)
+      const sig1 = functionType([{ name: "x", type: Str, optional: false }], Str);
+      const sig2 = functionType([{ name: "x", type: Num, optional: false }], Str);
+      const overloaded = intersectionType([sig1, sig2]);
+
+      const unionBased = functionType(
+        [{ name: "x", type: unionType([Str, Num]), optional: false }],
+        Str
+      );
+
+      // unionBased <: sig1? param: Str <: Str|Num ✓, ret: Str <: Str ✓
+      // unionBased <: sig2? param: Num <: Str|Num ✓, ret: Str <: Str ✓
+      // Both pass due to contravariance!
+      expect(isSubtype(unionBased, overloaded)).toBe(true);
+    });
+
+    it("union-based function is NOT subtype of overloaded function", () => {
+      // (String | Number) => (Number | String) is NOT <: ((String) => Number) & ((Number) => String)
+      // Because union-based can't guarantee precise return types
+      const sig1 = functionType([{ name: "x", type: Str, optional: false }], Num);
+      const sig2 = functionType([{ name: "x", type: Num, optional: false }], Str);
+      const overloaded = intersectionType([sig1, sig2]);
+
+      const unionBased = functionType(
+        [{ name: "x", type: unionType([Str, Num]), optional: false }],
+        unionType([Num, Str])
+      );
+
+      // unionBased must be subtype of ALL parts of intersection
+      // unionBased <: sig1? param: Str <: Str|Num ✓, ret: Num|Str <: Num ✗
+      expect(isSubtype(unionBased, overloaded)).toBe(false);
+    });
+
+    it("single function is not subtype of overloaded requiring both signatures", () => {
+      // (String) => Number is NOT <: ((String) => Number) & ((Number) => String)
+      const sig1 = functionType([{ name: "x", type: Str, optional: false }], Num);
+      const sig2 = functionType([{ name: "x", type: Num, optional: false }], Str);
+      const overloaded = intersectionType([sig1, sig2]);
+
+      // sig1 <: sig1 ✓, but sig1 <: sig2? param: Num <: Str ✗
+      expect(isSubtype(sig1, overloaded)).toBe(false);
+    });
+
+    it("overloaded function with compatible signatures", () => {
+      // ((Int) => String) & ((Number) => String)
+      // The first is more specific, second is more general
+      const sig1 = functionType([{ name: "x", type: Int, optional: false }], Str);
+      const sig2 = functionType([{ name: "x", type: Num, optional: false }], Str);
+      const overloaded = intersectionType([sig1, sig2]);
+
+      // Should be subtype of the more general signature
+      expect(isSubtype(overloaded, sig2)).toBe(true);
+
+      // And of course the more specific one
+      expect(isSubtype(overloaded, sig1)).toBe(true);
+    });
+
+    it("three-way overloaded function", () => {
+      // ((String) => Number) & ((Number) => String) & ((Boolean) => Boolean)
+      const sig1 = functionType([{ name: "x", type: Str, optional: false }], Num);
+      const sig2 = functionType([{ name: "x", type: Num, optional: false }], Str);
+      const sig3 = functionType([{ name: "x", type: Bool, optional: false }], Bool);
+      const overloaded = intersectionType([sig1, sig2, sig3]);
+
+      expect(isSubtype(overloaded, sig1)).toBe(true);
+      expect(isSubtype(overloaded, sig2)).toBe(true);
+      expect(isSubtype(overloaded, sig3)).toBe(true);
+    });
+  });
+
   describe("WithMetadata", () => {
     it("WithMetadata is subtype of base type", () => {
       const withMeta = withMetadata(Int, { name: "MyInt" });

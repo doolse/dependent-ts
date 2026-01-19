@@ -176,7 +176,12 @@ class TypeChecker {
         );
         this.comptimeEnv.defineEvaluated(decl.name, value);
       } catch (e) {
-        // If evaluation fails, mark as unavailable
+        // Re-throw actual compile errors (like type property errors)
+        // but not "unavailable at compile time" errors which are expected
+        if (e instanceof CompileError && !e.message.includes("not available at compile time")) {
+          throw e;
+        }
+        // If evaluation fails due to unavailable values, mark as unavailable
         this.comptimeEnv.defineUnavailable(decl.name);
       }
     } else {
@@ -539,6 +544,11 @@ class TypeChecker {
       fnType = fnType.baseType;
     }
 
+    // Handle overloaded functions (intersection of function types)
+    if (fnType.kind === "intersection") {
+      return this.checkOverloadedCall(expr, fn, fnType, expr.args);
+    }
+
     if (fnType.kind !== "function") {
       throw new CompileError(
         `Cannot call non-function type '${formatType(fn.type)}'`,
@@ -650,6 +660,206 @@ class TypeChecker {
       type: returnType,
       comptimeOnly,
     };
+  }
+
+  /**
+   * Check a call to an overloaded function (intersection of function types).
+   * Tries each signature in order and returns the first matching one.
+   * For union arguments, returns union of all matching return types.
+   */
+  private checkOverloadedCall(
+    expr: CoreExpr & { kind: "call" },
+    fn: TypedExpr,
+    fnType: Type & { kind: "intersection" },
+    argExprs: CoreExpr[]
+  ): TypedExpr {
+    // Extract function signatures from the intersection
+    const signatures = fnType.types.filter(
+      (t): t is Type & { kind: "function" } => t.kind === "function"
+    );
+
+    if (signatures.length === 0) {
+      throw new CompileError(
+        `Intersection type contains no function signatures`,
+        "typecheck",
+        expr.fn.loc
+      );
+    }
+
+    // Type check the arguments without contextual typing first
+    // (we'll need their types to match against signatures)
+    const args = argExprs.map((arg) => this.checkExpr(arg));
+
+    // Check if any argument is a union type
+    const hasUnionArg = args.some((a) => a.type.kind === "union");
+
+    if (hasUnionArg) {
+      // For union arguments, collect all matching return types
+      return this.checkOverloadedCallWithUnion(expr, fn, signatures, args);
+    }
+
+    // Try each signature in order (first match wins)
+    for (const sig of signatures) {
+      const matchResult = this.tryMatchSignature(sig, args, argExprs);
+      if (matchResult.matches) {
+        const comptimeOnly =
+          fn.comptimeOnly || args.some((a) => a.comptimeOnly);
+
+        return {
+          ...expr,
+          fn,
+          args,
+          type: sig.returnType,
+          comptimeOnly,
+        };
+      }
+    }
+
+    // No signature matched - report error
+    const argTypes = args.map((a) => formatType(a.type)).join(", ");
+    const sigDescriptions = signatures
+      .map((s) => `  (${s.params.map((p) => formatType(p.type)).join(", ")}) => ${formatType(s.returnType)}`)
+      .join("\n");
+
+    throw new CompileError(
+      `No overload matches call with arguments (${argTypes}).\nAvailable signatures:\n${sigDescriptions}`,
+      "typecheck",
+      expr.loc
+    );
+  }
+
+  /**
+   * Handle overloaded call when arguments include union types.
+   * Returns union of all matching return types.
+   */
+  private checkOverloadedCallWithUnion(
+    expr: CoreExpr & { kind: "call" },
+    fn: TypedExpr,
+    signatures: (Type & { kind: "function" })[],
+    args: TypedExpr[]
+  ): TypedExpr {
+    const matchingReturnTypes: Type[] = [];
+
+    // For each signature, check if it could match any combination of union variants
+    for (const sig of signatures) {
+      if (this.signatureCouldMatchUnion(sig, args)) {
+        matchingReturnTypes.push(sig.returnType);
+      }
+    }
+
+    if (matchingReturnTypes.length === 0) {
+      const argTypes = args.map((a) => formatType(a.type)).join(", ");
+      const sigDescriptions = signatures
+        .map((s) => `  (${s.params.map((p) => formatType(p.type)).join(", ")}) => ${formatType(s.returnType)}`)
+        .join("\n");
+
+      throw new CompileError(
+        `No overload matches call with arguments (${argTypes}).\nAvailable signatures:\n${sigDescriptions}`,
+        "typecheck",
+        expr.loc
+      );
+    }
+
+    const comptimeOnly = fn.comptimeOnly || args.some((a) => a.comptimeOnly);
+
+    return {
+      ...expr,
+      fn,
+      args,
+      type: unionType(matchingReturnTypes),
+      comptimeOnly,
+    };
+  }
+
+  /**
+   * Check if a signature could match given arguments that may include union types.
+   */
+  private signatureCouldMatchUnion(
+    sig: Type & { kind: "function" },
+    args: TypedExpr[]
+  ): boolean {
+    // Check argument count
+    const requiredParams = sig.params.filter((p) => !p.optional).length;
+    const hasRest = sig.params.length > 0 && sig.params[sig.params.length - 1].rest;
+    const maxParams = hasRest ? Infinity : sig.params.length;
+
+    if (args.length < requiredParams || args.length > maxParams) {
+      return false;
+    }
+
+    // Check each argument - for union args, check if any variant could match
+    for (let i = 0; i < args.length; i++) {
+      const paramType = i < sig.params.length ? sig.params[i].type : undefined;
+      if (!paramType) continue;
+
+      const argType = args[i].type;
+
+      // For union arguments, check if any variant is assignable to the param
+      if (argType.kind === "union") {
+        const anyVariantMatches = argType.types.some((variant) =>
+          isSubtype(variant, paramType)
+        );
+        if (!anyVariantMatches) {
+          return false;
+        }
+      } else {
+        if (!isSubtype(argType, paramType)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
+  }
+
+  /**
+   * Try to match arguments against a single function signature.
+   */
+  private tryMatchSignature(
+    sig: Type & { kind: "function" },
+    args: TypedExpr[],
+    _argExprs: CoreExpr[]
+  ): { matches: boolean } {
+    // Check argument count
+    const hasRestParam = sig.params.length > 0 && sig.params[sig.params.length - 1].rest;
+    const nonRestParams = hasRestParam ? sig.params.slice(0, -1) : sig.params;
+    const requiredParams = nonRestParams.filter((p) => !p.optional).length;
+
+    if (args.length < requiredParams) {
+      return { matches: false };
+    }
+
+    if (!hasRestParam && args.length > sig.params.length) {
+      return { matches: false };
+    }
+
+    // Check argument types for non-rest parameters
+    for (let i = 0; i < Math.min(args.length, nonRestParams.length); i++) {
+      const paramType = nonRestParams[i].type;
+      if (!isSubtype(args[i].type, paramType)) {
+        return { matches: false };
+      }
+    }
+
+    // Check rest arguments if present
+    if (hasRestParam && args.length > nonRestParams.length) {
+      const restParam = sig.params[sig.params.length - 1];
+      let restElementType: Type;
+
+      if (restParam.type.kind === "array" && restParam.type.variadic) {
+        restElementType = restParam.type.elementTypes[0] ?? primitiveType("Unknown");
+      } else {
+        restElementType = restParam.type;
+      }
+
+      for (let i = nonRestParams.length; i < args.length; i++) {
+        if (!isSubtype(args[i].type, restElementType)) {
+          return { matches: false };
+        }
+      }
+    }
+
+    return { matches: true };
   }
 
   /**

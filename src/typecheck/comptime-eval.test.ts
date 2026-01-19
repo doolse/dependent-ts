@@ -757,6 +757,73 @@ describe("Intersection types", () => {
     expect(isTypeValue(result)).toBe(true);
     expect((result as Type).kind).toBe("intersection");
   });
+
+  test(".signatures returns function types from intersection", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Create intersection of two function types
+    const fnType1 = call(id("FunctionType"), [
+      array(record({ name: literal("x"), type: id("String"), optional: literal(false) })),
+      id("Int"),
+    ]);
+    const fnType2 = call(id("FunctionType"), [
+      array(record({ name: literal("x"), type: id("Int"), optional: literal(false) })),
+      id("String"),
+    ]);
+
+    const intersectExpr = call(id("Intersection"), [fnType1, fnType2]);
+    const signatures = prop(intersectExpr, "signatures");
+
+    const result = evaluator.evaluate(signatures, env, typeEnv) as Type[];
+    expect(Array.isArray(result)).toBe(true);
+    expect(result).toHaveLength(2);
+    expect(result[0].kind).toBe("function");
+    expect(result[1].kind).toBe("function");
+  });
+
+  test(".returnType throws for intersection types", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Create intersection of two function types
+    const fnType1 = call(id("FunctionType"), [
+      array(record({ name: literal("x"), type: id("String"), optional: literal(false) })),
+      id("Int"),
+    ]);
+    const fnType2 = call(id("FunctionType"), [
+      array(record({ name: literal("x"), type: id("Int"), optional: literal(false) })),
+      id("String"),
+    ]);
+
+    const intersectExpr = call(id("Intersection"), [fnType1, fnType2]);
+    const returnType = prop(intersectExpr, "returnType");
+
+    expect(() => evaluator.evaluate(returnType, env, typeEnv)).toThrow(/ambiguous/);
+  });
+
+  test(".parameterTypes throws for intersection types", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = createInitialComptimeEnv();
+    const typeEnv = createInitialTypeEnv();
+
+    // Create intersection of two function types
+    const fnType1 = call(id("FunctionType"), [
+      array(record({ name: literal("x"), type: id("String"), optional: literal(false) })),
+      id("Int"),
+    ]);
+    const fnType2 = call(id("FunctionType"), [
+      array(record({ name: literal("x"), type: id("Int"), optional: literal(false) })),
+      id("String"),
+    ]);
+
+    const intersectExpr = call(id("Intersection"), [fnType1, fnType2]);
+    const paramTypes = prop(intersectExpr, "parameterTypes");
+
+    expect(() => evaluator.evaluate(paramTypes, env, typeEnv)).toThrow(/ambiguous/);
+  });
 });
 
 describe("Branded types", () => {

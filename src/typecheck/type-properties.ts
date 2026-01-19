@@ -130,6 +130,13 @@ export function getTypeProperty(
       }));
 
     case "returnType":
+      if (base.kind === "intersection") {
+        throw new CompileError(
+          `'returnType' is ambiguous for overloaded functions. Use '.signatures' instead.`,
+          "typecheck",
+          loc
+        );
+      }
       if (base.kind !== "function") {
         throw new CompileError(
           `'returnType' is only valid on function types, got ${formatType(type)}`,
@@ -140,6 +147,13 @@ export function getTypeProperty(
       return base.returnType;
 
     case "parameterTypes":
+      if (base.kind === "intersection") {
+        throw new CompileError(
+          `'parameterTypes' is ambiguous for overloaded functions. Use '.signatures' instead.`,
+          "typecheck",
+          loc
+        );
+      }
       if (base.kind !== "function") {
         throw new CompileError(
           `'parameterTypes' is only valid on function types, got ${formatType(type)}`,
@@ -202,6 +216,17 @@ export function getTypeProperty(
         return false;
       }
       return base.async;
+
+    case "signatures":
+      if (base.kind !== "intersection") {
+        throw new CompileError(
+          `'signatures' is only valid on intersection types (overloaded functions), got ${formatType(type)}`,
+          "typecheck",
+          loc
+        );
+      }
+      // Return only the function types from the intersection
+      return base.types.filter((t) => t.kind === "function");
 
     // ============================================
     // Methods (return functions)
@@ -336,6 +361,7 @@ export function isComptimeOnlyProperty(prop: string): boolean {
     "annotations",
     "extends",
     "annotation",
+    "signatures",
   ]);
   return comptimeOnlyProps.has(prop);
 }
@@ -432,6 +458,9 @@ export function getTypePropertyType(prop: string): Type | undefined {
       ]);
     case "annotations":
       return { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true };
+    case "signatures":
+      // Returns Array<FunctionType> - array of function types
+      return { kind: "array", elementTypes: [primitiveType("Type")], variadic: true };
 
     // Methods
     case "extends":

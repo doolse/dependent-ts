@@ -1200,6 +1200,172 @@ describe("Type Checker", () => {
     });
   });
 
+  describe("overloaded functions (function intersections)", () => {
+    // Overloaded functions from .d.ts are represented as intersections of function types:
+    // const parse: ((String) => Number) & ((Number) => String)
+
+    test("intersection of function types via & syntax", () => {
+      const result = check(`
+        type Parse = ((x: String) => Number) & ((x: Number) => String);
+      `);
+      expect(result.decls).toHaveLength(1);
+      const parseDecl = result.decls[0] as TypedDecl & { kind: "const" };
+      expect(parseDecl.name).toBe("Parse");
+    });
+
+    test("intersection of function types via Intersection()", () => {
+      const result = check(`
+        const Parse = Intersection(
+          FunctionType([{ name: "x", type: String, optional: false }], Number),
+          FunctionType([{ name: "x", type: Number, optional: false }], String)
+        );
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("overloaded function type subtyping verified in subtype.test.ts", () => {
+      // Subtyping of overloaded functions is tested in subtype.test.ts
+      // Here we just verify the intersection type is created correctly
+      const result = check(`
+        type Overloaded = ((x: String) => Number) & ((x: Number) => String);
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    // Calling overloaded functions
+    // We test the call behavior by wrapping the overloaded function in a higher-order function
+    // that accepts it as a parameter (thus the parameter gets the intersection type).
+    test("call overloaded function - first signature matches", () => {
+      const result = check(`
+        type Parse = ((x: String) => Int) & ((x: Int) => String);
+        const callWithString = (p: Parse): Int => p("hello");
+      `);
+      const callDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      // The return type should be Int (first signature matches)
+      const fnType = callDecl.init.type as Type & { kind: "function" };
+      expect(fnType.returnType).toEqual(primitiveType("Int"));
+    });
+
+    test("call overloaded function - second signature matches", () => {
+      const result = check(`
+        type Parse = ((x: String) => Int) & ((x: Int) => String);
+        const callWithInt = (p: Parse): String => p(42);
+      `);
+      const callDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      // The return type should be String (second signature matches)
+      const fnType = callDecl.init.type as Type & { kind: "function" };
+      expect(fnType.returnType).toEqual(primitiveType("String"));
+    });
+
+    test("call overloaded function - union argument returns union", () => {
+      const result = check(`
+        type Parse = ((x: String) => Int) & ((x: Int) => String);
+        const callWithUnion = (p: Parse, input: String | Int) => p(input);
+      `);
+      const callDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      // The return type should be Int | String
+      const fnType = callDecl.init.type as Type & { kind: "function" };
+      expect(fnType.returnType.kind).toBe("union");
+    });
+
+    test("call overloaded function - no matching signature", () => {
+      expect(() =>
+        check(`
+          type Parse = ((x: String) => Int) & ((x: Int) => String);
+          const callWithBool = (p: Parse) => p(true);
+        `)
+      ).toThrow(/No overload matches/);
+    });
+
+    test("call overloaded function - three-way overload", () => {
+      const result = check(`
+        type Triple = ((x: String) => Int) & ((x: Int) => String) & ((x: Boolean) => Float);
+        const callString = (t: Triple): Int => t("a");
+        const callInt = (t: Triple): String => t(1);
+        const callBool = (t: Triple): Float => t(true);
+      `);
+      // Verify each call returns the correct type
+      const callStringDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      const callIntDecl = result.decls[2] as TypedDecl & { kind: "const" };
+      const callBoolDecl = result.decls[3] as TypedDecl & { kind: "const" };
+
+      const callStringFn = callStringDecl.init.type as Type & { kind: "function" };
+      const callIntFn = callIntDecl.init.type as Type & { kind: "function" };
+      const callBoolFn = callBoolDecl.init.type as Type & { kind: "function" };
+
+      expect(callStringFn.returnType).toEqual(primitiveType("Int"));
+      expect(callIntFn.returnType).toEqual(primitiveType("String"));
+      expect(callBoolFn.returnType).toEqual(primitiveType("Float"));
+    });
+
+    // .signatures property
+    test(".signatures returns array of function types", () => {
+      const result = check(`
+        type Parse = ((x: String) => Int) & ((x: Int) => String);
+        const sigs = Parse.signatures;
+      `);
+      const sigsDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(sigsDecl.init.comptimeOnly).toBe(true);
+      // Type should be Array<Type>
+      expect(sigsDecl.init.type.kind).toBe("array");
+    });
+
+    test(".signatures throws for non-intersection types", () => {
+      expect(() =>
+        check(`
+          const sigs = Int.signatures;
+        `)
+      ).toThrow(/only valid on intersection types/);
+    });
+
+    test(".signatures throws for single function type", () => {
+      expect(() =>
+        check(`
+          type Fn = (x: String) => Int;
+          const sigs = Fn.signatures;
+        `)
+      ).toThrow(/only valid on intersection types/);
+    });
+
+    // Ambiguity errors for .returnType and .parameterTypes
+    test(".returnType throws for overloaded functions", () => {
+      expect(() =>
+        check(`
+          type Parse = ((x: String) => Int) & ((x: Int) => String);
+          const ret = Parse.returnType;
+        `)
+      ).toThrow(/ambiguous/);
+    });
+
+    test(".parameterTypes throws for overloaded functions", () => {
+      expect(() =>
+        check(`
+          type Parse = ((x: String) => Int) & ((x: Int) => String);
+          const params = Parse.parameterTypes;
+        `)
+      ).toThrow(/ambiguous/);
+    });
+
+    // .returnType and .parameterTypes still work for single function types
+    test(".returnType works for single function type", () => {
+      const result = check(`
+        type Fn = (x: String) => Int;
+        const ret = Fn.returnType;
+      `);
+      const retDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(retDecl.init.comptimeOnly).toBe(true);
+    });
+
+    test(".parameterTypes works for single function type", () => {
+      const result = check(`
+        type Fn = (x: String) => Int;
+        const params = Fn.parameterTypes;
+      `);
+      const paramsDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(paramsDecl.init.comptimeOnly).toBe(true);
+    });
+  });
+
   describe("array type properties", () => {
     test(".elementType on variable array", () => {
       const result = check(`
@@ -1585,9 +1751,6 @@ describe("Type Checker", () => {
       expect(result.decls).toHaveLength(1);
     });
 
-    // TODO: This substitution is not yet implemented.
-    // When accessing a property that returns This, the This type should be
-    // substituted with the receiver's type.
     test("This is substituted with receiver type on method access", () => {
       // When accessing a method that returns This, the return type
       // should be substituted with the receiver's type
