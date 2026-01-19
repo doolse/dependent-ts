@@ -57,7 +57,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Type annotations**: TypeScript-style (colon after name)
 - **Bindings**: `const` only (immutable)
 - **Generics**: Angle brackets `<T>`
-- **Comparison operators**: Space-sensitive disambiguation with `<` and `>`
+- **Comparison operators**: Space-sensitive disambiguation with `<` and `>`; `==` is strict equality (no loose equality)
 - **Data types**: `type` keyword only (no `interface` - record types use `type`)
 - **Sum types**: TypeScript-style discriminated unions
 - **Pattern matching**: `match` expression with `case` clauses, semicolon separated (see Pattern Matching section)
@@ -93,6 +93,19 @@ Create additional spec files as topics are discussed and decided. Don't create p
   a < b && c > d  // two comparisons (spaces required)
   ```
 
+### Equality Operators
+
+- **`==` is strict equality**: Equivalent to JavaScript's `===` (type and value must match)
+- **`!=` is strict inequality**: Equivalent to JavaScript's `!==`
+- **No loose equality**: There is no equivalent to JavaScript's `==` or `!=` (loose equality)
+- **Rationale**: Loose equality is universally considered a JavaScript design mistake. With DepJS's type system, you know types at compile time, so the "convenience" of loose equality is unnecessary. All major style guides enforce strict equality anyway.
+- **Example**:
+  ```
+  5 == 5        // true
+  5 == "5"      // false (and likely a type error)
+  null == undefined  // false (strict comparison)
+  ```
+
 ### First-Class Types
 
 - **Types are opaque values**: Can be passed around but only inspected via properties
@@ -102,7 +115,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Instantiated generic types**: Have `.name` (full name like `"Array<String>"`), `.baseName` (base name like `"Array"`), and `.typeArgs` (array of type arguments, comptime-only). Non-generic types have empty `.typeArgs`. Type-specific convenience properties like `.elementType` provide semantic access to type args.
 - **Structural subtyping**: Record types are subtypes based on structure
 - **`typeOf` uses declared type**: When a value has an explicit type annotation, `typeOf` returns the declared type, not the structural type of the initializer
-- **No automatic type narrowing from type inspection**: Checking `typeOf(x).name === "Int"` does not narrow `x`'s type. Use pattern matching for type-based dispatch.
+- **No automatic type narrowing from type inspection**: Checking `typeOf(x).name == "Int"` does not narrow `x`'s type. Use pattern matching for type-based dispatch.
 
 ### Type Syntax as Sugar
 
@@ -125,8 +138,9 @@ Create additional spec files as topics are discussed and decided. Don't create p
   - `(x: A) => B` → `FunctionType<[A], B>`
   - `type Foo = expr` → `const Foo: Type = expr`
   - `x is T` → `typeOf(x).extends(T)` (type predicate)
+  - `"hello"` (literal in type context) → `LiteralType("hello")`
 - **`<>` works on any function**: Not just type constructors. Allows passing inline record types to any function expecting `Type`
-- **Built-in type constructors**: `RecordType`, `Union`, `Intersection`, `FunctionType`
+- **Built-in type constructors**: `RecordType`, `Union`, `Intersection`, `FunctionType`, `LiteralType`
 - **Parameterized types are functions**: `Array`, `Map`, etc. are functions from Type to Type
 - **`|` and `&` operators**:
   - In type syntax: `A | B` → `Union<A, B>`, `A & B` → `Intersection<A, B>`

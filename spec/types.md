@@ -151,6 +151,33 @@ const B: Type = true;
 B.value        // true (Boolean)
 ```
 
+#### LiteralType Builtin
+
+Literal type syntax desugars to calls to the `LiteralType` builtin:
+
+```
+// These are equivalent:
+type Greeting = "hello";
+const Greeting = LiteralType("hello");
+
+// In type syntax, literals automatically desugar:
+type Status = "ok" | "error";
+// Desugars to:
+const Status = Union(LiteralType("ok"), LiteralType("error"));
+```
+
+`LiteralType` can also be used programmatically to create literal types from comptime values:
+
+```
+const makeEnumType = (values: Array<String>): Type => {
+  const literalTypes = values.map(v => LiteralType(v));
+  return Union(...literalTypes);
+};
+
+const Status = makeEnumType(["pending", "active", "done"]);
+// Status is: "pending" | "active" | "done"
+```
+
 This is useful for constructing types dynamically:
 
 ```
@@ -192,6 +219,9 @@ const Array: (...elementTypes: Array<Type>) => Type;
 
 // Branded/nominal types
 const Branded: (baseType: Type, brand: String) => Type;
+
+// Literal type constructor - converts a value to its literal type
+const LiteralType: (value: String | Int | Float | Boolean) => Type;
 
 // Type metadata wrapper
 const WithMetadata: (baseType: Type, metadata: TypeMetadata) => Type;
@@ -701,10 +731,10 @@ const greet = (name: String): String => `Hi ${name}`;
 
 ```
 // ERROR: Cannot infer return type of recursive function
-const factorial = (n: Int) => n === 0 ? 1 : n * factorial(n - 1);
+const factorial = (n: Int) => n == 0 ? 1 : n * factorial(n - 1);
 
 // OK: Return type explicitly annotated
-const factorial = (n: Int): Int => n === 0 ? 1 : n * factorial(n - 1);
+const factorial = (n: Int): Int => n == 0 ? 1 : n * factorial(n - 1);
 ```
 
 This is because flow-based inference analyzes the function body left-to-right. When it encounters the recursive call `factorial(n - 1)`, it doesn't yet know `factorial`'s return type—that's what we're trying to determine. With an explicit annotation, the type checker knows the return type before analyzing the body.
@@ -713,8 +743,8 @@ This is because flow-based inference analyzes the function body left-to-right. W
 
 ```
 // Both need annotations
-const isEven = (n: Int): Boolean => n === 0 ? true : isOdd(n - 1);
-const isOdd = (n: Int): Boolean => n === 0 ? false : isEven(n - 1);
+const isEven = (n: Int): Boolean => n == 0 ? true : isOdd(n - 1);
+const isOdd = (n: Int): Boolean => n == 0 ? false : isEven(n - 1);
 ```
 
 **Why flow-based inference (not Hindley-Milner)?**
@@ -1571,7 +1601,7 @@ Checking type properties does **not** narrow the original value's type:
 ```
 const func = (x) => {
   const T = typeOf(x);
-  if (T.name === "Int") {
+  if (T.name == "Int") {
     return x + 1;  // ERROR: x is still unknown type, not narrowed to Int
   }
   return x;
@@ -1825,7 +1855,7 @@ const withValidation = <F extends Function>(f: F): F => {
     match (true) {
       case _ when nonEmpty != undefined:
         (value: Unknown) => {
-          if ((value as String).length === 0) {
+          if ((value as String).length == 0) {
             throw Error(`${p.name} cannot be empty`);
           };
         };

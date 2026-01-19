@@ -189,7 +189,7 @@ Method chaining (no explicit loops):
 ```
 const doubled = nums.map((x) => x * 2);
 const sum = nums.reduce((acc, x) => acc + x, 0);
-const evens = nums.filter((x) => x % 2 === 0);
+const evens = nums.filter((x) => x % 2 == 0);
 ```
 
 ## First-Class Types
@@ -249,8 +249,9 @@ someFunc((x: Int) => x + 1)  // arrow function
 
 **Arithmetic:** `+`, `-`, `*`, `/`, `%`
 
-**Comparison:** `<`, `>`, `<=`, `>=`, `===`, `!==`
+**Comparison:** `<`, `>`, `<=`, `>=`, `==`, `!=`
 - Note: `<` and `>` require space before them (see Space Sensitivity section)
+- Note: `==` is **strict equality** (equivalent to JavaScript's `===`). There is no loose equality operator.
 
 **Logical:** `&&`, `||`, `!`
 
@@ -328,7 +329,7 @@ assert: (condition: Boolean, message?: String) => Void
 **Basic usage:**
 ```
 assert(T.fields.length > 0);
-assert(config.version === 2, "Config must be version 2");
+assert(config.version == 2, "Config must be version 2");
 ```
 
 **Type checking with `is` sugar:**
