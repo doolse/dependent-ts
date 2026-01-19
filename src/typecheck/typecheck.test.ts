@@ -7,7 +7,7 @@
 import { describe, test, expect } from "vitest";
 import { parse } from "../parser";
 import { typecheck } from "./typecheck";
-import { Type, primitiveType, literalType, recordType, arrayType, functionType, unwrapMetadata } from "../types/types";
+import { Type, primitiveType, literalType, recordType, arrayType, functionType, unwrapMetadata, withMetadata, FunctionType } from "../types/types";
 import { TypedDecl, TypedExpr } from "../ast/core-ast";
 
 // Helper to parse and typecheck a single expression in a const declaration
@@ -1851,6 +1851,505 @@ describe("Type Checker", () => {
       expect(() => check(`
         const x: This = 42;
       `)).toThrow(/not assignable/);
+    });
+  });
+
+  describe("match expressions", () => {
+    describe("literal patterns", () => {
+      test("matches integer literal", () => {
+        const result = check(`
+          const x = 42;
+          const result = match (x) {
+            case 42: "matched";
+            case _: "default";
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // Return type is union of branch types
+        expect(resultDecl.init.type.kind).toBe("union");
+      });
+
+      test("matches string literal", () => {
+        const result = check(`
+          const x = "hello";
+          const result = match (x) {
+            case "hello": 1;
+            case "world": 2;
+            case _: 0;
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("union");
+      });
+
+      test("matches boolean literal", () => {
+        const result = check(`
+          const flag = true;
+          const result = match (flag) {
+            case true: "yes";
+            case false: "no";
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("union");
+      });
+    });
+
+    describe("wildcard pattern", () => {
+      test("wildcard matches anything", () => {
+        const result = check(`
+          const x = 42;
+          const result = match (x) {
+            case _: "default";
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("literal");
+      });
+
+      test("wildcard as catch-all", () => {
+        const result = check(`
+          const x: Int = 42;
+          const result = match (x) {
+            case 1: "one";
+            case 2: "two";
+            case _: "other";
+          };
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+    });
+
+    describe("binding patterns", () => {
+      test("binding captures matched value", () => {
+        const result = check(`
+          const x = 42;
+          const result = match (x) {
+            case n: n + 1;
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // n is bound to Int (or literal 42), n + 1 should be Int
+        expect(resultDecl.init.type.kind).toBe("primitive");
+      });
+
+      test("binding available in body", () => {
+        const result = check(`
+          const x: String = "hello";
+          const result = match (x) {
+            case s: s;
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type).toEqual(primitiveType("String"));
+      });
+    });
+
+    describe("destructure patterns", () => {
+      test("destructures record fields", () => {
+        const result = check(`
+          const point = { x: 1, y: 2 };
+          const result = match (point) {
+            case { x, y }: x + y;
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("primitive");
+      });
+
+      test("destructure with renamed binding", () => {
+        const result = check(`
+          const person = { name: "Alice", age: 30 };
+          const result = match (person) {
+            case { name: n }: n;
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("literal");
+      });
+
+      test("nested destructure", () => {
+        const result = check(`
+          const data = { outer: { inner: 42 } };
+          const result = match (data) {
+            case { outer: { inner } }: inner;
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("literal");
+      });
+    });
+
+    describe("guards (when clause)", () => {
+      test("guard with comparison", () => {
+        const result = check(`
+          const x: Int = 42;
+          const result = match (x) {
+            case n when n > 0: "positive";
+            case n when n < 0: "negative";
+            case _: "zero";
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("union");
+      });
+
+      test("guard must be boolean", () => {
+        expect(() => check(`
+          const x = 42;
+          const result = match (x) {
+            case n when n: "truthy";
+          };
+        `)).toThrow(/Boolean/);
+      });
+
+      test("guard can access bound variables", () => {
+        const result = check(`
+          const pair = { a: 1, b: 2 };
+          const result = match (pair) {
+            case { a, b } when a < b: "a is smaller";
+            case _: "otherwise";
+          };
+        `);
+        expect(result.decls).toHaveLength(2);
+      });
+    });
+
+    describe("return type", () => {
+      test("return type is union of all branch types", () => {
+        const result = check(`
+          const x: Int = 1;
+          const result = match (x) {
+            case 1: "one";
+            case 2: 2;
+            case _: true;
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("union");
+        const union = resultDecl.init.type as Type & { kind: "union"; types: Type[] };
+        expect(union.types.length).toBe(3);
+      });
+
+      test("same return type in all branches", () => {
+        const result = check(`
+          const x: Int = 1;
+          const result = match (x) {
+            case 1: 10;
+            case 2: 20;
+            case _: 0;
+          };
+        `);
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // All branches return int literals, should be union
+        expect(resultDecl.init.type.kind).toBe("union");
+      });
+    });
+
+    describe("complex cases", () => {
+      test("match with record destructuring", () => {
+        // Note: full discriminated union matching with literal checks in destructure
+        // would require type patterns. This tests basic record destructuring.
+        const result = check(`
+          const data = { x: 1, y: 2 };
+          const result = match (data) {
+            case { x, y }: x + y;
+          };
+        `);
+        const resultDecl = result.decls.find(d => d.kind === "const" && d.name === "result") as TypedDecl & { kind: "const" };
+        expect(resultDecl).toBeDefined();
+        expect(resultDecl.init.type.kind).toBe("primitive");
+      });
+
+      test("match expression as function argument", () => {
+        const result = check(`
+          const double = (x: Int) => x * 2;
+          const x: Int = 1;
+          const result = double(match (x) {
+            case 1: 10;
+            case _: 0;
+          });
+        `);
+        const resultDecl = result.decls[2] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("primitive");
+      });
+
+      test("nested match expressions", () => {
+        const result = check(`
+          const x: Int = 1;
+          const y: Int = 2;
+          const result = match (x) {
+            case 1: match (y) {
+              case 2: "x=1,y=2";
+              case _: "x=1,y!=2";
+            };
+            case _: "x!=1";
+          };
+        `);
+        const resultDecl = result.decls[2] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type.kind).toBe("union");
+      });
+    });
+  });
+
+  describe("async/await", () => {
+    describe("async functions", () => {
+      test("async arrow function parses and typechecks", () => {
+        const result = check(`
+          const f = async (x: Int) => x + 1;
+        `);
+        const fDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(fDecl.init.type.kind).toBe("function");
+        const fnType = fDecl.init.type as FunctionType;
+        expect(fnType.async).toBe(true);
+      });
+
+      test("async function has async flag in type", () => {
+        const typed = checkExpr("async (x: Int) => x");
+        expect(typed.type.kind).toBe("function");
+        const fnType = typed.type as FunctionType;
+        expect(fnType.async).toBe(true);
+        expect(fnType.returnType).toEqual(primitiveType("Int"));
+      });
+
+      test("non-async function has async=false", () => {
+        const typed = checkExpr("(x: Int) => x");
+        expect(typed.type.kind).toBe("function");
+        const fnType = typed.type as FunctionType;
+        expect(fnType.async).toBe(false);
+      });
+
+      test("async function with multiple params", () => {
+        const result = check(`
+          const f = async (a: Int, b: String) => a;
+        `);
+        const fDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        const fnType = fDecl.init.type as FunctionType;
+        expect(fnType.async).toBe(true);
+        expect(fnType.params).toHaveLength(2);
+      });
+
+      test("async function with explicit return type", () => {
+        const result = check(`
+          const f = async (x: Int): Int => x + 1;
+        `);
+        const fDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        const fnType = fDecl.init.type as FunctionType;
+        expect(fnType.async).toBe(true);
+        expect(fnType.returnType).toEqual(primitiveType("Int"));
+      });
+    });
+
+    describe("await expressions", () => {
+      test("await on Promise unwraps to inner type", () => {
+        // Create a Promise<Int> type using withMetadata
+        const result = check(`
+          type Promise<T> = { __promiseValue: T };
+          const p: Promise<Int> = { __promiseValue: 42 };
+          const x = await p;
+        `);
+        const xDecl = result.decls.find(d => d.kind === "const" && d.name === "x") as TypedDecl & { kind: "const" };
+        // The await should unwrap Promise<Int> to Int
+        expect(xDecl.init.type).toEqual(primitiveType("Int"));
+      });
+
+      test("await on non-Promise returns same type", () => {
+        // When awaiting a non-Promise, the type passes through
+        const result = check(`
+          const x = 42;
+          const y = await x;
+        `);
+        const yDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // Awaiting a non-Promise just returns the same type
+        expect(yDecl.init.type.kind).toBe("literal");
+      });
+
+      test("await expression is not comptimeOnly", () => {
+        const result = check(`
+          const x = 42;
+          const y = await x;
+        `);
+        const yDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(yDecl.init.comptimeOnly).toBe(false);
+      });
+
+      test("await in async function body", () => {
+        const result = check(`
+          type Promise<T> = { __promiseValue: T };
+          const fetchData: () => Promise<String> = () => ({ __promiseValue: "data" });
+          const processData = async () => {
+            const data = await fetchData();
+            data;
+          };
+        `);
+        expect(result.decls).toHaveLength(3);
+      });
+
+      test("multiple await expressions", () => {
+        const result = check(`
+          type Promise<T> = { __promiseValue: T };
+          const p1: Promise<Int> = { __promiseValue: 1 };
+          const p2: Promise<String> = { __promiseValue: "hello" };
+          const x = await p1;
+          const y = await p2;
+        `);
+        const xDecl = result.decls.find(d => d.kind === "const" && d.name === "x") as TypedDecl & { kind: "const" };
+        const yDecl = result.decls.find(d => d.kind === "const" && d.name === "y") as TypedDecl & { kind: "const" };
+        expect(xDecl.init.type).toEqual(primitiveType("Int"));
+        expect(yDecl.init.type).toEqual(primitiveType("String"));
+      });
+    });
+
+    describe("async function inference", () => {
+      test("async function infers correct type without annotation", () => {
+        const result = check(`
+          const f = async (x: Int) => x + 1;
+        `);
+        const fDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        const fnType = fDecl.init.type as FunctionType;
+        expect(fnType.async).toBe(true);
+        expect(fnType.returnType).toEqual(primitiveType("Int"));
+      });
+
+      test("async function can be assigned to variable", () => {
+        const result = check(`
+          const asyncAdd = async (a: Int, b: Int) => a + b;
+          const result = asyncAdd(1, 2);
+        `);
+        // asyncAdd returns Int (the unwrapped type)
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type).toEqual(primitiveType("Int"));
+      });
+    });
+
+    describe("top-level await", () => {
+      test("top-level await is supported", () => {
+        const result = check(`
+          const x = await 42;
+        `);
+        expect(result.decls).toHaveLength(1);
+      });
+
+      test("top-level await with expression", () => {
+        const result = check(`
+          type Promise<T> = { __promiseValue: T };
+          const getNum: () => Promise<Int> = () => ({ __promiseValue: 10 });
+          const x = await getNum();
+        `);
+        const xDecl = result.decls.find(d => d.kind === "const" && d.name === "x") as TypedDecl & { kind: "const" };
+        expect(xDecl.init.type).toEqual(primitiveType("Int"));
+      });
+    });
+  });
+
+  describe("template literals", () => {
+    describe("basic templates", () => {
+      test("plain template returns String type", () => {
+        const result = check("const x = `hello world`;");
+        const xDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(xDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("empty template returns String type", () => {
+        const result = check("const x = ``;");
+        const xDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(xDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("template with escaped characters", () => {
+        const result = check("const x = `hello\\nworld`;");
+        const xDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(xDecl.init.type).toEqual(primitiveType("String"));
+      });
+    });
+
+    describe("interpolation", () => {
+      test("template with single interpolation returns String", () => {
+        const result = check('const name = "Alice"; const greeting = `Hello, ${name}!`;');
+        const greetingDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(greetingDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("template with number interpolation returns String", () => {
+        const result = check("const x = 42; const msg = `The answer is ${x}`;");
+        const msgDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(msgDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("template with multiple interpolations returns String", () => {
+        const result = check("const a = 1; const b = 2; const msg = `${a} + ${b} = ${a + b}`;");
+        const msgDecl = result.decls[2] as TypedDecl & { kind: "const" };
+        expect(msgDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("template with boolean interpolation", () => {
+        const result = check("const flag = true; const msg = `Flag is ${flag}`;");
+        const msgDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(msgDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("template with expression interpolation", () => {
+        const result = check("const x = 5; const msg = `Double: ${x * 2}`;");
+        const msgDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(msgDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("template with function call interpolation", () => {
+        const result = check("const double = (n: Int) => n * 2; const msg = `Result: ${double(5)}`;");
+        const msgDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(msgDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("template with property access interpolation", () => {
+        // Note: Using separate declarations to avoid Lezer parser issue with } in record literals
+        // conflicting with template TemplateMiddle/TemplateEnd tokens
+        const result = check("const arr = [1, 2, 3]; const msg = `Length: ${arr.length}`;");
+        const msgDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(msgDecl.init.type).toEqual(primitiveType("String"));
+      });
+    });
+
+    describe("comptimeOnly propagation", () => {
+      test("template with runtime values is not comptimeOnly", () => {
+        const result = check("const x = 42; const msg = `Value: ${x}`;");
+        const msgDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(msgDecl.init.comptimeOnly).toBe(false);
+      });
+
+      test("template with comptime-only interpolation", () => {
+        const result = check("const T = Int; const msg = `Type name: ${T.name}`;");
+        const msgDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // T.name returns a String which is runtime-usable
+        expect(msgDecl.init.type).toEqual(primitiveType("String"));
+      });
+    });
+
+    describe("nested templates", () => {
+      test("template inside template interpolation", () => {
+        const result = check('const inner = "world"; const outer = `Hello, ${`dear ${inner}`}!`;');
+        const outerDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(outerDecl.init.type).toEqual(primitiveType("String"));
+      });
+    });
+
+    describe("template as expression", () => {
+      test("template can be used as function argument", () => {
+        const result = check("const identity = (s: String) => s; const result = identity(`hello`);");
+        const resultDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(resultDecl.init.type).toEqual(primitiveType("String"));
+      });
+
+      test("template can be used in record field", () => {
+        const result = check('const name = "test"; const obj = { message: `Hello ${name}` };');
+        const objDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        expect(objDecl.init.type.kind).toBe("record");
+      });
+
+      test("template can be used in array", () => {
+        const result = check("const items = [`one`, `two`, `three`];");
+        const itemsDecl = result.decls[0] as TypedDecl & { kind: "const" };
+        expect(itemsDecl.init.type.kind).toBe("array");
+      });
     });
   });
 });

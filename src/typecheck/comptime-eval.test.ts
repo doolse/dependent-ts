@@ -7,7 +7,7 @@ import { ComptimeEvaluator, comptimeEquals } from "./comptime-eval";
 import { ComptimeEnv, ComptimeValue, isTypeValue } from "./comptime-env";
 import { TypeEnv } from "./type-env";
 import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
-import { CoreExpr, BinaryOp, dummyLoc, located } from "../ast/core-ast";
+import { CoreExpr, BinaryOp, dummyLoc, located, CorePattern, CoreCase, CorePatternField, CoreTemplatePart } from "../ast/core-ast";
 import { primitiveType, recordType, unionType, Type } from "../types/types";
 
 // Helper to create expressions with dummy locations
@@ -79,6 +79,37 @@ function lambda(params: string[], body: CoreExpr): CoreExpr {
 // Helper to create conditional expressions
 function cond(condition: CoreExpr, then: CoreExpr, else_: CoreExpr): CoreExpr {
   return loc({ kind: "conditional", condition, then, else: else_ });
+}
+
+// Helper to create match expressions
+function matchExpr(expr: CoreExpr, cases: CoreCase[]): CoreExpr {
+  return loc({ kind: "match", expr, cases });
+}
+
+function matchCase(pattern: CorePattern, body: CoreExpr, guard?: CoreExpr): CoreCase {
+  return { pattern, body, guard, loc: dummyLoc() };
+}
+
+function wildcardPattern(): CorePattern {
+  return loc({ kind: "wildcard" });
+}
+
+function literalPattern(value: string | number | boolean | null | undefined): CorePattern {
+  let literalKind: "int" | "float" | "string" | "boolean" | "null" | "undefined";
+  if (typeof value === "string") literalKind = "string";
+  else if (typeof value === "number") literalKind = Number.isInteger(value) ? "int" : "float";
+  else if (typeof value === "boolean") literalKind = "boolean";
+  else if (value === null) literalKind = "null";
+  else literalKind = "undefined";
+  return loc({ kind: "literal", value, literalKind });
+}
+
+function bindingPattern(name: string, nested?: CorePattern): CorePattern {
+  return loc({ kind: "binding", name, pattern: nested });
+}
+
+function destructurePattern(fields: CorePatternField[]): CorePattern {
+  return loc({ kind: "destructure", fields });
 }
 
 describe("ComptimeEvaluator", () => {
@@ -2016,6 +2047,698 @@ describe("Array methods at compile time", () => {
         expect(omittedType.fields).toHaveLength(2);
         expect(omittedType.fields.map(f => f.name)).toEqual(["name", "age"]);
       }
+    });
+  });
+});
+
+describe("match expression evaluation", () => {
+  describe("literal patterns", () => {
+    test("matches integer literal", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (42) { case 42: "matched"; case _: "default"; }
+      const expr = matchExpr(literal(42), [
+        matchCase(literalPattern(42), literal("matched")),
+        matchCase(wildcardPattern(), literal("default")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("matched");
+    });
+
+    test("falls through to next case on no match", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (10) { case 42: "matched"; case _: "default"; }
+      const expr = matchExpr(literal(10), [
+        matchCase(literalPattern(42), literal("matched")),
+        matchCase(wildcardPattern(), literal("default")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("default");
+    });
+
+    test("matches string literal", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match ("hello") { case "hello": 1; case "world": 2; case _: 0; }
+      const expr = matchExpr(literal("hello"), [
+        matchCase(literalPattern("hello"), literal(1)),
+        matchCase(literalPattern("world"), literal(2)),
+        matchCase(wildcardPattern(), literal(0)),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(1);
+    });
+
+    test("matches boolean literal", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (true) { case true: "yes"; case false: "no"; }
+      const expr = matchExpr(literal(true), [
+        matchCase(literalPattern(true), literal("yes")),
+        matchCase(literalPattern(false), literal("no")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("yes");
+    });
+
+    test("matches null literal", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (null) { case null: "null"; case _: "other"; }
+      const expr = matchExpr(literal(null), [
+        matchCase(literalPattern(null), literal("null")),
+        matchCase(wildcardPattern(), literal("other")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("null");
+    });
+  });
+
+  describe("wildcard pattern", () => {
+    test("matches any value", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (42) { case _: "matched"; }
+      const expr = matchExpr(literal(42), [
+        matchCase(wildcardPattern(), literal("matched")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("matched");
+    });
+
+    test("matches records", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match ({ a: 1 }) { case _: "matched"; }
+      const expr = matchExpr(record({ a: literal(1) }), [
+        matchCase(wildcardPattern(), literal("matched")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("matched");
+    });
+  });
+
+  describe("binding patterns", () => {
+    test("captures value in binding", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (42) { case n: n + 1; }
+      const expr = matchExpr(literal(42), [
+        matchCase(bindingPattern("n"), binary("+", id("n"), literal(1))),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(43);
+    });
+
+    test("binding is scoped to case body", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match ("hello") { case s: s; }
+      const expr = matchExpr(literal("hello"), [
+        matchCase(bindingPattern("s"), id("s")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("hello");
+    });
+
+    test("multiple bindings in different cases", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (5) { case 1: 10; case x: x * 2; }
+      const expr = matchExpr(literal(5), [
+        matchCase(literalPattern(1), literal(10)),
+        matchCase(bindingPattern("x"), binary("*", id("x"), literal(2))),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(10);
+    });
+  });
+
+  describe("destructure patterns", () => {
+    test("destructures record fields", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match ({ x: 1, y: 2 }) { case { x, y }: x + y; }
+      const expr = matchExpr(record({ x: literal(1), y: literal(2) }), [
+        matchCase(
+          destructurePattern([{ name: "x" }, { name: "y" }]),
+          binary("+", id("x"), id("y"))
+        ),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(3);
+    });
+
+    test("destructure with renamed binding", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match ({ name: "Alice" }) { case { name: n }: n; }
+      const expr = matchExpr(record({ name: literal("Alice") }), [
+        matchCase(destructurePattern([{ name: "name", binding: "n" }]), id("n")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Alice");
+    });
+
+    test("destructure fails if field missing", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match ({ a: 1 }) { case { b }: b; case _: 0; }
+      const expr = matchExpr(record({ a: literal(1) }), [
+        matchCase(destructurePattern([{ name: "b" }]), id("b")),
+        matchCase(wildcardPattern(), literal(0)),
+      ]);
+
+      // Should fall through to wildcard since 'b' doesn't exist
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(0);
+    });
+
+    test("partial destructure succeeds", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match ({ x: 1, y: 2, z: 3 }) { case { x }: x; }
+      const expr = matchExpr(
+        record({ x: literal(1), y: literal(2), z: literal(3) }),
+        [matchCase(destructurePattern([{ name: "x" }]), id("x"))]
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(1);
+    });
+  });
+
+  describe("guards (when clause)", () => {
+    test("guard passes - case matches", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (10) { case n when n > 5: "big"; case _: "small"; }
+      const expr = matchExpr(literal(10), [
+        matchCase(
+          bindingPattern("n"),
+          literal("big"),
+          binary(">", id("n"), literal(5))
+        ),
+        matchCase(wildcardPattern(), literal("small")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("big");
+    });
+
+    test("guard fails - falls through to next case", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (3) { case n when n > 5: "big"; case _: "small"; }
+      const expr = matchExpr(literal(3), [
+        matchCase(
+          bindingPattern("n"),
+          literal("big"),
+          binary(">", id("n"), literal(5))
+        ),
+        matchCase(wildcardPattern(), literal("small")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("small");
+    });
+
+    test("guard with destructured variables", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match ({ a: 1, b: 2 }) { case { a, b } when a < b: "a < b"; case _: "other"; }
+      const expr = matchExpr(record({ a: literal(1), b: literal(2) }), [
+        matchCase(
+          destructurePattern([{ name: "a" }, { name: "b" }]),
+          literal("a < b"),
+          binary("<", id("a"), id("b"))
+        ),
+        matchCase(wildcardPattern(), literal("other")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("a < b");
+    });
+
+    test("multiple guards in sequence", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (0) { case n when n > 0: "pos"; case n when n < 0: "neg"; case _: "zero"; }
+      const expr = matchExpr(literal(0), [
+        matchCase(
+          bindingPattern("n"),
+          literal("pos"),
+          binary(">", id("n"), literal(0))
+        ),
+        matchCase(
+          bindingPattern("n"),
+          literal("neg"),
+          binary("<", id("n"), literal(0))
+        ),
+        matchCase(wildcardPattern(), literal("zero")),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("zero");
+    });
+  });
+
+  describe("no match error", () => {
+    test("throws when no pattern matches", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (42) { case 1: "one"; case 2: "two"; }
+      const expr = matchExpr(literal(42), [
+        matchCase(literalPattern(1), literal("one")),
+        matchCase(literalPattern(2), literal("two")),
+      ]);
+
+      expect(() => evaluator.evaluate(expr, env, typeEnv)).toThrow(
+        /No pattern matched/
+      );
+    });
+  });
+
+  describe("complex cases", () => {
+    test("nested match expressions", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (1) { case 1: match (2) { case 2: "1,2"; case _: "1,?"; }; case _: "?,?"; }
+      const inner = matchExpr(literal(2), [
+        matchCase(literalPattern(2), literal("1,2")),
+        matchCase(wildcardPattern(), literal("1,?")),
+      ]);
+      const outer = matchExpr(literal(1), [
+        matchCase(literalPattern(1), inner),
+        matchCase(wildcardPattern(), literal("?,?")),
+      ]);
+
+      expect(evaluator.evaluate(outer, env, typeEnv)).toBe("1,2");
+    });
+
+    test("match result used in expression", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // (match (5) { case n: n; }) * 2
+      const matchResult = matchExpr(literal(5), [
+        matchCase(bindingPattern("n"), id("n")),
+      ]);
+      const expr = binary("*", matchResult, literal(2));
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(10);
+    });
+
+    test("match with computation in body", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // match (3) { case n: n * n + 1; }
+      const expr = matchExpr(literal(3), [
+        matchCase(
+          bindingPattern("n"),
+          binary("+", binary("*", id("n"), id("n")), literal(1))
+        ),
+      ]);
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(10);
+    });
+  });
+});
+
+describe("await expression evaluation", () => {
+  test("await throws error at compile time", () => {
+    const evaluator = new ComptimeEvaluator();
+    const env = new ComptimeEnv();
+    const typeEnv = new TypeEnv();
+
+    // await x - should throw because await cannot be evaluated at compile time
+    const awaitExpr = loc({ kind: "await", expr: literal(42) });
+
+    expect(() => evaluator.evaluate(awaitExpr, env, typeEnv)).toThrow(
+      /Cannot use 'await' in compile-time evaluation/
+    );
+  });
+});
+
+// Helper to create template expressions
+function template(...parts: CoreTemplatePart[]): CoreExpr {
+  return loc({ kind: "template", parts });
+}
+
+function templateStr(value: string): CoreTemplatePart {
+  return { kind: "string", value };
+}
+
+function templateExpr(expr: CoreExpr): CoreTemplatePart {
+  return { kind: "expr", expr };
+}
+
+describe("template literal evaluation", () => {
+  describe("plain templates", () => {
+    test("evaluates plain template string", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `hello world`
+      const expr = template(templateStr("hello world"));
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("hello world");
+    });
+
+    test("evaluates empty template", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // ``
+      const expr = template();
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("");
+    });
+
+    test("evaluates template with only string parts", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `hello` + ` ` + `world` (multiple string parts)
+      const expr = template(
+        templateStr("hello"),
+        templateStr(" "),
+        templateStr("world")
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("hello world");
+    });
+  });
+
+  describe("interpolation", () => {
+    test("evaluates template with single interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+      env.defineEvaluated("name", "Alice");
+
+      // `Hello, ${name}!`
+      const expr = template(
+        templateStr("Hello, "),
+        templateExpr(id("name")),
+        templateStr("!")
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Hello, Alice!");
+    });
+
+    test("evaluates template with number interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `The answer is ${42}`
+      const expr = template(
+        templateStr("The answer is "),
+        templateExpr(literal(42))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("The answer is 42");
+    });
+
+    test("evaluates template with multiple interpolations", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+      env.defineEvaluated("a", 1);
+      env.defineEvaluated("b", 2);
+
+      // `${a} + ${b} = ${a + b}`
+      const expr = template(
+        templateExpr(id("a")),
+        templateStr(" + "),
+        templateExpr(id("b")),
+        templateStr(" = "),
+        templateExpr(binary("+", id("a"), id("b")))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("1 + 2 = 3");
+    });
+
+    test("evaluates template with boolean interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `Flag is ${true}`
+      const expr = template(
+        templateStr("Flag is "),
+        templateExpr(literal(true))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Flag is true");
+    });
+
+    test("evaluates template with null interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `Value: ${null}`
+      const expr = template(
+        templateStr("Value: "),
+        templateExpr(literal(null))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Value: null");
+    });
+
+    test("evaluates template with undefined interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `Value: ${undefined}`
+      const expr = template(
+        templateStr("Value: "),
+        templateExpr(literal(undefined))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Value: undefined");
+    });
+  });
+
+  describe("expression interpolation", () => {
+    test("evaluates template with arithmetic expression", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `Double: ${5 * 2}`
+      const expr = template(
+        templateStr("Double: "),
+        templateExpr(binary("*", literal(5), literal(2)))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Double: 10");
+    });
+
+    test("evaluates template with comparison expression", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `Is greater: ${5 > 3}`
+      const expr = template(
+        templateStr("Is greater: "),
+        templateExpr(binary(">", literal(5), literal(3)))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Is greater: true");
+    });
+
+    test("evaluates template with property access", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+      env.defineEvaluated("person", { name: "Bob", age: 30 });
+
+      // `${person.name} is ${person.age} years old`
+      const expr = template(
+        templateExpr(prop(id("person"), "name")),
+        templateStr(" is "),
+        templateExpr(prop(id("person"), "age")),
+        templateStr(" years old")
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Bob is 30 years old");
+    });
+
+    test("evaluates template with array access", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+      env.defineEvaluated("items", ["a", "b", "c"]);
+
+      // `First: ${items[0]}, Last: ${items[2]}`
+      const indexExpr = (arr: CoreExpr, idx: number): CoreExpr =>
+        loc({ kind: "index", object: arr, index: literal(idx) });
+
+      const expr = template(
+        templateStr("First: "),
+        templateExpr(indexExpr(id("items"), 0)),
+        templateStr(", Last: "),
+        templateExpr(indexExpr(id("items"), 2))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("First: a, Last: c");
+    });
+
+    test("evaluates template with function call", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // Define a double function
+      const doubleFn = lambda(["x"], binary("*", id("x"), literal(2)));
+      env.defineEvaluated("double", evaluator.evaluate(doubleFn, env, typeEnv));
+
+      // `Result: ${double(5)}`
+      const expr = template(
+        templateStr("Result: "),
+        templateExpr(call(id("double"), [literal(5)]))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Result: 10");
+    });
+  });
+
+  describe("nested templates", () => {
+    test("evaluates nested template in interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+      env.defineEvaluated("inner", "world");
+
+      // `Hello, ${`dear ${inner}`}!`
+      const innerTemplate = template(
+        templateStr("dear "),
+        templateExpr(id("inner"))
+      );
+
+      const expr = template(
+        templateStr("Hello, "),
+        templateExpr(innerTemplate),
+        templateStr("!")
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Hello, dear world!");
+    });
+  });
+
+  describe("edge cases", () => {
+    test("evaluates template starting with interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `${42} is the answer`
+      const expr = template(
+        templateExpr(literal(42)),
+        templateStr(" is the answer")
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("42 is the answer");
+    });
+
+    test("evaluates template ending with interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `The answer is ${42}`
+      const expr = template(
+        templateStr("The answer is "),
+        templateExpr(literal(42))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("The answer is 42");
+    });
+
+    test("evaluates template with only interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `${42}`
+      const expr = template(templateExpr(literal(42)));
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("42");
+    });
+
+    test("evaluates template with consecutive interpolations", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `${1}${2}${3}`
+      const expr = template(
+        templateExpr(literal(1)),
+        templateExpr(literal(2)),
+        templateExpr(literal(3))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("123");
+    });
+
+    test("evaluates template with float interpolation", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // `Pi is approximately ${3.14159}`
+      const expr = template(
+        templateStr("Pi is approximately "),
+        templateExpr(literal(3.14159))
+      );
+
+      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Pi is approximately 3.14159");
     });
   });
 });

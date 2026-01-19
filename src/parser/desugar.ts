@@ -19,6 +19,7 @@ import {
   CoreArrayElement,
   CoreImportClause,
   CoreImportSpecifier,
+  CoreTemplatePart,
   SourceLocation,
   LiteralKind,
   BinaryOp,
@@ -589,6 +590,7 @@ function isExpression(name: string): boolean {
     "ThrowExpr",
     "ParenExpr",
     "Block",
+    "TemplateExpr",
   ].includes(name);
 }
 
@@ -649,6 +651,9 @@ function desugarExpr(cursor: TreeCursor, source: string): CoreExpr {
 
     case "Block":
       return desugarBlock(cursor, source);
+
+    case "TemplateExpr":
+      return desugarTemplateExpr(cursor, source);
 
     default:
       // Try to descend into child
@@ -1411,6 +1416,86 @@ function desugarThrowExpr(cursor: TreeCursor, source: string): CoreExpr {
   }
 
   return { kind: "throw", expr, loc: throwLoc };
+}
+
+function desugarTemplateExpr(cursor: TreeCursor, source: string): CoreExpr {
+  const templateLoc = loc(cursor);
+  const parts: CoreTemplatePart[] = [];
+
+  if (cursor.firstChild()) {
+    do {
+      switch (cursor.name) {
+        case "TemplatePlain": {
+          // Plain template: `content` - extract between backticks
+          const txt = text(cursor, source);
+          const content = parseTemplateContent(txt.slice(1, -1));
+          if (content) {
+            parts.push({ kind: "string", value: content });
+          }
+          break;
+        }
+        case "TemplateStart": {
+          // Start of interpolated: `content${ - extract between ` and ${
+          const txt = text(cursor, source);
+          const content = parseTemplateContent(txt.slice(1, -2));
+          if (content) {
+            parts.push({ kind: "string", value: content });
+          }
+          break;
+        }
+        case "TemplateMiddle": {
+          // Middle section: }content${ - extract between } and ${
+          const txt = text(cursor, source);
+          const content = parseTemplateContent(txt.slice(1, -2));
+          if (content) {
+            parts.push({ kind: "string", value: content });
+          }
+          break;
+        }
+        case "TemplateEnd": {
+          // End section: }content` - extract between } and `
+          const txt = text(cursor, source);
+          const content = parseTemplateContent(txt.slice(1, -1));
+          if (content) {
+            parts.push({ kind: "string", value: content });
+          }
+          break;
+        }
+        default: {
+          // Expression in interpolation
+          if (isExpression(cursor.name)) {
+            parts.push({ kind: "expr", expr: desugarExpr(cursor, source) });
+          }
+          break;
+        }
+      }
+    } while (cursor.nextSibling());
+    cursor.parent();
+  }
+
+  return { kind: "template", parts, loc: templateLoc };
+}
+
+function parseTemplateContent(content: string): string {
+  // Handle escape sequences in template strings
+  return content.replace(/\\(.)/g, (_, char) => {
+    switch (char) {
+      case "n":
+        return "\n";
+      case "t":
+        return "\t";
+      case "r":
+        return "\r";
+      case "\\":
+        return "\\";
+      case "`":
+        return "`";
+      case "$":
+        return "$";
+      default:
+        return char;
+    }
+  });
 }
 
 function desugarParenExpr(cursor: TreeCursor, source: string): CoreExpr {
