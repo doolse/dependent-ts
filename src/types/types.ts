@@ -327,3 +327,96 @@ export function unwrapMetadata(t: Type): Type {
 export function getMetadata(t: Type): TypeMetadata | undefined {
   return t.kind === "withMetadata" ? t.metadata : undefined;
 }
+
+/**
+ * Substitute `This` type with a concrete receiver type.
+ * Used for fluent interface support.
+ */
+export function substituteThis(type: Type, receiverType: Type): Type {
+  switch (type.kind) {
+    case "this":
+      return receiverType;
+    case "primitive":
+    case "literal":
+    case "typeVar":
+    case "boundedType":
+      return type;
+    case "record":
+      return recordType(
+        type.fields.map((f) => ({
+          ...f,
+          type: substituteThis(f.type, receiverType),
+        })),
+        {
+          indexType: type.indexType
+            ? substituteThis(type.indexType, receiverType)
+            : undefined,
+          closed: type.closed,
+        }
+      );
+    case "function":
+      return functionType(
+        type.params.map((p) => ({
+          ...p,
+          type: substituteThis(p.type, receiverType),
+        })),
+        substituteThis(type.returnType, receiverType),
+        type.async
+      );
+    case "array":
+      return arrayType(
+        type.elementTypes.map((t) => substituteThis(t, receiverType)),
+        type.variadic
+      );
+    case "union":
+      return unionType(type.types.map((t) => substituteThis(t, receiverType)));
+    case "intersection":
+      return intersectionType(
+        type.types.map((t) => substituteThis(t, receiverType))
+      );
+    case "branded":
+      return brandedType(
+        substituteThis(type.baseType, receiverType),
+        type.brand,
+        type.name
+      );
+    case "withMetadata":
+      return withMetadata(
+        substituteThis(type.baseType, receiverType),
+        type.metadata
+      );
+  }
+}
+
+/**
+ * Check if a type contains `This`.
+ */
+export function containsThis(type: Type): boolean {
+  switch (type.kind) {
+    case "this":
+      return true;
+    case "primitive":
+    case "literal":
+    case "typeVar":
+    case "boundedType":
+      return false;
+    case "record":
+      return (
+        type.fields.some((f) => containsThis(f.type)) ||
+        (type.indexType ? containsThis(type.indexType) : false)
+      );
+    case "function":
+      return (
+        type.params.some((p) => containsThis(p.type)) ||
+        containsThis(type.returnType)
+      );
+    case "array":
+      return type.elementTypes.some(containsThis);
+    case "union":
+    case "intersection":
+      return type.types.some(containsThis);
+    case "branded":
+    case "withMetadata":
+      return containsThis(type.baseType);
+  }
+}

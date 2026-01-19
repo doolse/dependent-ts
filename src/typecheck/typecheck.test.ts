@@ -7,7 +7,7 @@
 import { describe, test, expect } from "vitest";
 import { parse } from "../parser";
 import { typecheck } from "./typecheck";
-import { Type, primitiveType, literalType, recordType, arrayType, functionType } from "../types/types";
+import { Type, primitiveType, literalType, recordType, arrayType, functionType, unwrapMetadata } from "../types/types";
 import { TypedDecl, TypedExpr } from "../ast/core-ast";
 
 // Helper to parse and typecheck a single expression in a const declaration
@@ -1549,6 +1549,145 @@ describe("Type Checker", () => {
         const b: MixedLiteral = true;
       `);
       expect(result.decls).toHaveLength(4);
+    });
+  });
+
+  describe("This type (fluent interfaces)", () => {
+    test("record type with function field (no This)", () => {
+      // First test: can we have function-typed fields at all?
+      const result = check(`
+        type Action = { run: (x: Int) => Int };
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("This type is available as builtin", () => {
+      // This is a special type that refers to the enclosing type
+      // Note: Use commas, not semicolons, as field separators in record types
+      const result = check(`
+        type Builder = {
+          name: String,
+          setName: (name: String) => This
+        };
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("record type with This in method return", () => {
+      // Verify This is accepted in record type definitions
+      const result = check(`
+        type Builder = {
+          name: String,
+          setName: (name: String) => This,
+          setValue: (value: Int) => This
+        };
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    // TODO: This substitution is not yet implemented.
+    // When accessing a property that returns This, the This type should be
+    // substituted with the receiver's type.
+    test("This is substituted with receiver type on method access", () => {
+      // When accessing a method that returns This, the return type
+      // should be substituted with the receiver's type
+      //
+      // Use a function parameter to avoid self-reference in const declaration
+      const result = check(`
+        type Builder = {
+          name: String,
+          setName: (name: String) => This
+        };
+        const getSetName = (b: Builder) => b.setName;
+      `);
+      // getSetName returns a function (String) => Builder
+      const fnDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(fnDecl.init.type.kind).toBe("function");
+      const outerFn = fnDecl.init.type as Type & { kind: "function" };
+      // The return type of getSetName should be (String) => Builder
+      expect(outerFn.returnType.kind).toBe("function");
+      const innerFn = outerFn.returnType as Type & { kind: "function" };
+      // The return type of setName should be Builder (This substituted), not "this"
+      // Builder is withMetadata wrapping a record, so unwrap to check
+      expect(unwrapMetadata(innerFn.returnType).kind).toBe("record");
+    });
+
+    test("This substitution on method call", () => {
+      const result = check(`
+        type Builder = {
+          name: String,
+          setName: (name: String) => This
+        };
+        const callSetName = (b: Builder, name: String) => b.setName(name);
+      `);
+      // callSetName returns Builder (record), not This
+      const fnDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(fnDecl.init.type.kind).toBe("function");
+      const outerFn = fnDecl.init.type as Type & { kind: "function" };
+      // The return type should be Builder (withMetadata wrapping record)
+      expect(unwrapMetadata(outerFn.returnType).kind).toBe("record");
+    });
+
+    test("This enables fluent method chaining", () => {
+      const result = check(`
+        type Builder = {
+          name: String,
+          value: Int,
+          setName: (name: String) => This,
+          setValue: (value: Int) => This
+        };
+        const chain = (b: Builder) => b.setName("test").setValue(42);
+      `);
+      // chain returns Builder (withMetadata wrapping record)
+      const fnDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(fnDecl.init.type.kind).toBe("function");
+      const fn = fnDecl.init.type as Type & { kind: "function" };
+      expect(unwrapMetadata(fn.returnType).kind).toBe("record");
+    });
+
+    test("This preserves concrete type through subtyping", () => {
+      // When a value has a more specific type than its declared type,
+      // This should resolve to the concrete receiver type
+      const result = check(`
+        type Base = {
+          name: String,
+          setName: (name: String) => This
+        };
+        type Extended = {
+          name: String,
+          extra: Int,
+          setName: (name: String) => This
+        };
+        const callOnExtended = (e: Extended) => e.setName("hello");
+      `);
+      // callOnExtended returns Extended (with extra field), not Base
+      const fnDecl = result.decls[2] as TypedDecl & { kind: "const" };
+      expect(fnDecl.init.type.kind).toBe("function");
+      const fn = fnDecl.init.type as Type & { kind: "function" };
+      const unwrappedReturn = unwrapMetadata(fn.returnType);
+      expect(unwrappedReturn.kind).toBe("record");
+      const recType = unwrappedReturn as Type & { kind: "record" };
+      // Should have extra field
+      expect(recType.fields.map(f => f.name)).toContain("extra");
+    });
+
+    test("This in nested function types within record", () => {
+      // This should work in nested function contexts
+      const result = check(`
+        type Chainable = {
+          value: Int,
+          transform: (f: (x: Int) => Int) => This
+        };
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("This used outside record context throws", () => {
+      // Using This as a standalone type annotation doesn't make sense
+      // and nothing is assignable to it
+      expect(() => check(`
+        const x: This = 42;
+      `)).toThrow(/not assignable/);
     });
   });
 });

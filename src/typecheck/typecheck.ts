@@ -23,6 +23,7 @@ import {
   unionType,
   FieldInfo,
   ParamInfo,
+  substituteThis,
 } from "../types/types";
 import { isSubtype } from "../types/subtype";
 import { formatType } from "../types/format";
@@ -827,10 +828,11 @@ class TypeChecker {
       );
     }
 
+    const fieldType = substituteThis(field.type, object.type);
     return {
       ...expr,
       object,
-      type: field.type,
+      type: fieldType,
       comptimeOnly: object.comptimeOnly,
     };
   }
