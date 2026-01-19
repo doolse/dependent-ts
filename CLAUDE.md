@@ -62,6 +62,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Sum types**: TypeScript-style discriminated unions
 - **Pattern matching**: `match` expression with `case` clauses, semicolon separated (see Pattern Matching section)
 - **Iteration**: Method chaining (map, filter, reduce, etc.)
+- **Tail call optimization**: Compiler transforms tail-recursive functions to while loops (since JS engines don't implement TCO)
 - **Modules**: ES modules
 - **Compile-time assertions**: `assert` builtin function (see Compile-Time Assertions section)
 

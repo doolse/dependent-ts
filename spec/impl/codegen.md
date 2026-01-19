@@ -523,6 +523,286 @@ function genDestructureCondition(pattern: DestructurePattern, expr: string): Pat
 }
 ```
 
+## Tail Call Optimization
+
+Since DepJS is a functional language with no explicit loops, recursion is the primary iteration mechanism. However, most JavaScript engines do not implement tail call optimization (only Safari/JavaScriptCore does). To prevent stack overflows, the codegen phase transforms tail-recursive functions into while loops.
+
+### Background
+
+- **ES6 specifies proper tail calls**, but only Safari implements them
+- **V8 (Chrome/Node)** briefly implemented them, then removed due to debugging concerns
+- **SpiderMonkey (Firefox)** never implemented them
+- **Without TCO**, deep recursion causes stack overflow errors
+
+### What Qualifies as a Tail Call
+
+A call is in **tail position** if it is the last thing a function does before returning. The result of the call is returned directly without further computation.
+
+**Tail calls:**
+```javascript
+const f = (x) => g(x);                    // Direct return
+const f = (x) => x > 0 ? f(x - 1) : x;   // Both branches are tail calls
+```
+
+**Not tail calls:**
+```javascript
+const f = (x) => g(x) + 1;     // Addition after call
+const f = (x) => { g(x); };    // Result discarded (not returned)
+const f = (x) => h(g(x));      // g(x) is not in tail position
+```
+
+### Transformation Strategy
+
+#### Direct Tail Recursion
+
+A function that calls itself in tail position transforms to a while loop:
+
+**Input (DepJS):**
+```javascript
+const factorial = (n: Int, acc: Int): Int =>
+  n == 0 ? acc : factorial(n - 1, n * acc);
+```
+
+**Output (JavaScript):**
+```javascript
+const factorial = (n, acc) => {
+  while (true) {
+    if (n === 0) return acc;
+    [n, acc] = [n - 1, n * acc];
+  }
+};
+```
+
+#### Conditional Tail Recursion
+
+When recursion appears in conditional branches:
+
+**Input:**
+```javascript
+const gcd = (a: Int, b: Int): Int =>
+  b == 0 ? a : gcd(b, a % b);
+```
+
+**Output:**
+```javascript
+const gcd = (a, b) => {
+  while (true) {
+    if (b === 0) return a;
+    [a, b] = [b, a % b];
+  }
+};
+```
+
+#### Match Expression Tail Recursion
+
+Tail calls in match expressions are also optimized:
+
+**Input:**
+```javascript
+const sumList = (xs: Array<Int>, acc: Int): Int =>
+  match (xs) {
+    case []: acc;
+    case [head, ...tail]: sumList(tail, acc + head);
+  };
+```
+
+**Output:**
+```javascript
+const sumList = (xs, acc) => {
+  while (true) {
+    if (xs.length === 0) return acc;
+    const [head, ...tail] = xs;
+    [xs, acc] = [tail, acc + head];
+  }
+};
+```
+
+### Detection Algorithm
+
+```typescript
+type TailCallInfo = {
+  isTailRecursive: boolean;
+  tailCalls: TailCallSite[];
+};
+
+type TailCallSite = {
+  call: CallExpr;
+  path: ExprPath;  // Path through conditionals/match to reach this call
+};
+
+function analyzeTailCalls(fn: LambdaExpr, fnName: string): TailCallInfo {
+  const tailCalls: TailCallSite[] = [];
+
+  function analyze(expr: RuntimeExpr, isTail: boolean, path: ExprPath): void {
+    switch (expr.kind) {
+      case "call":
+        if (isTail && isRecursiveCall(expr, fnName)) {
+          tailCalls.push({ call: expr, path });
+        }
+        // Arguments are not in tail position
+        for (const arg of expr.args) {
+          analyze(arg, false, path);
+        }
+        break;
+
+      case "conditional":
+        analyze(expr.condition, false, path);
+        analyze(expr.then, isTail, [...path, { kind: "then" }]);
+        analyze(expr.else, isTail, [...path, { kind: "else" }]);
+        break;
+
+      case "match":
+        analyze(expr.expr, false, path);
+        for (let i = 0; i < expr.cases.length; i++) {
+          analyze(expr.cases[i].body, isTail, [...path, { kind: "case", index: i }]);
+        }
+        break;
+
+      case "block":
+        // Only the result expression is in tail position
+        for (const stmt of expr.statements) {
+          analyzeStmt(stmt, false, path);
+        }
+        if (expr.result) {
+          analyze(expr.result, isTail, path);
+        }
+        break;
+
+      // Other expression types: recurse with isTail = false
+      default:
+        // ... handle other cases
+    }
+  }
+
+  analyze(fn.body, true, []);
+
+  return {
+    isTailRecursive: tailCalls.length > 0 && allCallsAreTail(fn, fnName, tailCalls),
+    tailCalls
+  };
+}
+
+function isRecursiveCall(call: CallExpr, fnName: string): boolean {
+  return call.fn.kind === "identifier" && call.fn.name === fnName;
+}
+```
+
+### Code Generation for Tail-Recursive Functions
+
+```typescript
+function genTailRecursiveLambda(
+  name: string,
+  expr: LambdaExpr,
+  tailCalls: TailCallSite[]
+): string {
+  const asyncKw = expr.async ? "async " : "";
+  const params = expr.params.map(p => p.name);
+  const paramsStr = `(${params.join(", ")})`;
+
+  // Generate body with tail calls replaced by parameter reassignment
+  const body = genTailOptimizedBody(expr.body, name, params, tailCalls);
+
+  return `${asyncKw}${paramsStr} => {
+  while (true) {
+${indent(body, 2)}
+  }
+}`;
+}
+
+function genTailOptimizedBody(
+  expr: RuntimeExpr,
+  fnName: string,
+  params: string[],
+  tailCalls: TailCallSite[]
+): string {
+  // Transform the body, replacing recursive tail calls with continue
+  return transformTailCalls(expr, fnName, params);
+}
+
+function transformTailCalls(
+  expr: RuntimeExpr,
+  fnName: string,
+  params: string[]
+): string {
+  switch (expr.kind) {
+    case "call":
+      if (isRecursiveCall(expr, fnName)) {
+        // Replace tail call with parameter reassignment + continue
+        const args = expr.args.map(a => genExpr(a));
+        if (params.length === 1) {
+          return `${params[0]} = ${args[0]}; continue;`;
+        }
+        return `[${params.join(", ")}] = [${args.join(", ")}]; continue;`;
+      }
+      return `return ${genExpr(expr)};`;
+
+    case "conditional":
+      const cond = genExpr(expr.condition);
+      const thenBranch = transformTailCalls(expr.then, fnName, params);
+      const elseBranch = transformTailCalls(expr.else, fnName, params);
+      return `if (${cond}) { ${thenBranch} } else { ${elseBranch} }`;
+
+    case "match":
+      // Transform match with tail-optimized cases
+      return genTailOptimizedMatch(expr, fnName, params);
+
+    default:
+      return `return ${genExpr(expr)};`;
+  }
+}
+```
+
+### Mutual Recursion (Future)
+
+Mutual tail recursion (A calls B, B calls A) requires a more complex **trampoline** transformation:
+
+```javascript
+// Not yet implemented - would transform to:
+const trampolined = (...args) => {
+  let fn = actualFn;
+  while (typeof fn === "function") {
+    fn = fn(...args);
+  }
+  return fn;
+};
+```
+
+For v1, mutual recursion is **not optimized** and may cause stack overflow on deep recursion. Use method chaining (map/filter/reduce) for iteration when mutual recursion would be needed.
+
+### Scope and Limitations
+
+| Scenario | Optimized? | Notes |
+|----------|------------|-------|
+| Direct self-recursion in tail position | ✅ Yes | Transformed to while loop |
+| Tail recursion through conditionals | ✅ Yes | Each branch handled |
+| Tail recursion through match | ✅ Yes | Each case handled |
+| Mutual tail recursion | ❌ No | Would require trampoline |
+| Non-tail recursion | ❌ No | Cannot be optimized |
+| Async tail recursion | ✅ Yes | Same transformation, with async/await |
+
+### Async Tail Recursion
+
+Async functions with tail recursion are also optimized:
+
+**Input:**
+```javascript
+const processAll = async (items: Array<Item>): Promise<Void> =>
+  items.length == 0
+    ? undefined
+    : { await process(items[0]); await processAll(items.slice(1)) };
+```
+
+**Output:**
+```javascript
+const processAll = async (items) => {
+  while (true) {
+    if (items.length === 0) return undefined;
+    await process(items[0]);
+    items = items.slice(1);
+  }
+};
+```
+
 ## Output Formatting
 
 ### Indentation
