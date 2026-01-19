@@ -11,6 +11,7 @@ import { ltType, ltCompare } from "./parser.terms";
 
 // Character codes
 const LT = 60; // <
+const EQ = 61; // =
 const SPACE = 32;
 const TAB = 9;
 const NEWLINE = 10;
@@ -28,6 +29,13 @@ function isWhitespace(ch: number): boolean {
 export const spaceTokens = new ExternalTokenizer((input) => {
   // Only handle <
   if (input.next !== LT) return;
+
+  // Check if this is <= (should be handled by built-in tokenizer, not us)
+  const nextChar = input.peek(1);
+  if (nextChar === EQ) {
+    // This is <=, let the built-in tokenizer handle it
+    return;
+  }
 
   // Look back to check if there was whitespace before the <
   // input.peek(-1) gives us the character before current position

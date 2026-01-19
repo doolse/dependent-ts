@@ -493,6 +493,32 @@ These need to be resolved before or during implementation:
 - Fuel limit configuration
 - Allowed comptime effects (beyond file reading and assert)
 
+## Not Yet Implemented (Documented Features)
+
+These features are documented in the spec but not yet implemented in the codebase:
+
+### Builtins
+- **`Try` builtin**: Catches exceptions and returns `TryResult<T>` discriminated union (see Error Handling section)
+- **`TryResult` type**: `{ ok: true, value: T } | { ok: false, error: Error }`
+- **`toInt(value)`**: Convert Float/Number to Int
+- **`toFloat(value)`**: Convert Int to Float
+
+### Array Methods
+Currently implemented: `map`, `filter`, `find`, `findIndex`, `some`, `every`, `reduce`, `flat`, `flatMap`, `concat`, `slice`, `indexOf`, `includes`, `join`
+
+Not yet implemented:
+- `forEach` - iterate with side effects
+
+### String Methods
+No string methods implemented yet. Need to decide which are built-in vs imported from JS.
+
+### Code TODOs
+- `desugar.ts:540` - Handle annotations on type params
+- `desugar.ts:914` - Handle spread arguments properly
+- `desugar.ts:1910` - Handle spread and labels in tuple elements
+- `type-properties.ts:129` - Track labels in array element info
+- `type-properties.ts:334` - Proper type checking of annotation values
+
 ## Deferred to Future Versions
 
 - **Refinement types**: Predicate-constrained types like `Int where this > 0`. Deferred due to complexity (decidability, runtime vs compile-time checking). Use branded types or runtime validation for now.
