@@ -76,33 +76,102 @@ const x: T = ...;  // T needs comptime → c needs comptime → b needs comptime
 
 Current thinking: Option 2 (lazy) is simpler and matches "demand-driven" semantics.
 
+## TypedComptimeValue: Values Carry Types
+
+A key design decision: every compile-time value carries its type alongside the value.
+
+### Motivation
+
+The comptime evaluator needs to know types for operations like `typeOf`. Previously, this
+required synchronizing two separate environments (TypeEnv for types, ComptimeEnv for values).
+With TypedComptimeValue, each value is a `{ value, type }` pair, providing a single source
+of truth.
+
+### Type Definition
+
+```typescript
+// The raw value without type info (internal use)
+type RawComptimeValue =
+  | Type           // When the value IS a Type
+  | string
+  | number
+  | boolean
+  | null
+  | undefined
+  | RawComptimeValue[]      // Arrays
+  | RawComptimeRecord       // Records
+  | ComptimeClosure
+  | ComptimeBuiltin;
+
+// The main type: value + its type (always paired)
+type TypedComptimeValue = {
+  value: RawComptimeValue;
+  type: Type;
+};
+
+// ComptimeEnv stores TypedComptimeValue
+type ComptimeEntry =
+  | { status: "evaluated"; value: TypedComptimeValue }
+  | { status: "unevaluated"; expr: CoreExpr; typeEnv: TypeEnv }
+  | { status: "evaluating" }
+  | { status: "unavailable" };
+```
+
+### Examples
+
+| Expression | TypedComptimeValue |
+|------------|-------------------|
+| `42` | `{ value: 42, type: literalType(42, "Int") }` |
+| `"hello"` | `{ value: "hello", type: literalType("hello", "String") }` |
+| `Int` | `{ value: primitiveType("Int"), type: primitiveType("Type") }` |
+| `[1, 2]` | `{ value: [1, 2], type: arrayType([literalType(1), literalType(2)]) }` |
+| `{ a: 1 }` | `{ value: { a: 1 }, type: recordType([{ name: "a", type: literalType(1), ... }]) }` |
+
+### Type Values
+
+When the value IS a Type (like `Int`), it gets wrapped:
+```typescript
+{ value: primitiveType("Int"), type: primitiveType("Type") }
+```
+
+`isTypeValue(tv)` checks if `tv.type.kind === "primitive" && tv.type.name === "Type"`.
+
+### Benefits
+
+1. **`typeOf` is trivial** - Just extract the type from the value
+2. **Single source of truth** - No dual TypeEnv/ComptimeEnv synchronization needed
+3. **Closure application is natural** - Arguments carry their types
+4. **Generic inference works** - `(x: T, T: Type = typeOf(x))` just extracts type from bound `x`
+
 ## The `typeOf` Builtin
 
 `typeOf(expr)` returns the compile-time type of an expression as a `Type` value.
 
 ### Semantics
 
-- `typeOf(identifier)` → returns the **declared type** of the binding (from TypeEnv)
+- `typeOf(identifier)` → returns the **type** stored with the binding
 - `typeOf(literal)` → returns the **literal type** (e.g., `typeOf(42)` → literal type `42`)
 - `typeOf` is comptimeOnly - it only exists at compile time
 
-### Why `typeOf` Is Special
+### Implementation
 
-Unlike most builtins, `typeOf` needs **type information**, not values. The comptime evaluator
-normally works with values, but `typeOf(x)` needs to know `x`'s type.
+With TypedComptimeValue, `typeOf` is trivial:
 
-### Implementation Mechanism
+```typescript
+const builtinTypeOf: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "typeOf",
+  impl: (args, _evaluator, loc) => {
+    if (args.length !== 1) {
+      throw new CompileError("typeOf expects exactly 1 argument", loc);
+    }
+    // The type is right there on the argument!
+    return { value: args[0].type, type: primitiveType("Type") };
+  },
+};
+```
 
-When the type checker encounters `typeOf(expr)`:
-1. Type-check `expr` to get its type
-2. Cache this type (by source location) for the evaluator to find
-3. Return type `Type` for the call expression
-
-When the evaluator encounters `typeOf(expr)`:
-1. Look up the cached type for `expr`
-2. Return it as a `Type` value
-
-### Closure Application and Parameter Types
+### Generic Inference with typeOf
 
 For generic inference to work with `typeOf` in default parameters:
 
@@ -111,13 +180,10 @@ const id = (x: T, T: Type = typeOf(x)) => x;
 id(42);  // T should be inferred as literal type 42
 ```
 
-When applying a closure at compile time, we must bind **both**:
-- Parameter VALUES to `comptimeEnv` (already done)
-- Parameter TYPES to `typeEnv` (required for `typeOf`)
-
-The call site knows the argument types (from type checking). These must be passed to
-`applyClosure` so that when the default `typeOf(x)` is evaluated, it can find `x`'s type
-in `typeEnv`.
+Since arguments are TypedComptimeValue, when `typeOf(x)` is evaluated:
+1. Look up `x` in the comptime environment
+2. Get the TypedComptimeValue `{ value: 42, type: literalType(42, "Int") }`
+3. Return `{ value: literalType(42, "Int"), type: primitiveType("Type") }`
 
 ### Order of Parameter Binding
 
@@ -128,7 +194,7 @@ parameters `0..i-1` are already bound. This allows:
 (x: T, T: Type = typeOf(x)) => ...
 ```
 
-When evaluating `typeOf(x)`, `x` is already bound in both envs.
+When evaluating `typeOf(x)`, `x` is already bound with its type.
 
 ## Comptime-Only Tracking
 
@@ -183,62 +249,85 @@ Current thinking: Option A (conservative) is safest for v1.
 
 ## The Comptime Interpreter
 
-We need an interpreter that can evaluate DepJS at compile time.
+We need an interpreter that can evaluate DepJS at compile time. The interpreter returns
+`TypedComptimeValue` pairs containing both the value and its type.
 
 ### Core Evaluation
 
 ```typescript
-function comptimeEval(expr: TypedExpr, env: ComptimeEnv): ComptimeValue {
+function comptimeEval(expr: CoreExpr, env: ComptimeEnv, typeEnv: TypeEnv): TypedComptimeValue {
   switch (expr.kind) {
     case "literal":
-      return expr.value;
+      // Return value + literal type
+      return {
+        value: expr.value,
+        type: literalType(expr.value, expr.literalKind)
+      };
 
     case "identifier":
-      const binding = env.lookup(expr.name);
-      if (!binding.hasComptimeValue) {
-        throw new CompileError(`${expr.name} is not available at compile time`);
-      }
-      return binding.comptimeValue;
+      // ComptimeEnv stores TypedComptimeValue directly
+      return env.getValue(expr.name);  // Already has { value, type }
 
     case "binary":
-      const left = comptimeEval(expr.left, env);
-      const right = comptimeEval(expr.right, env);
-      return applyBinaryOp(expr.op, left, right);
+      const left = comptimeEval(expr.left, env, typeEnv);
+      const right = comptimeEval(expr.right, env, typeEnv);
+      // Compute result value AND result type
+      const resultValue = applyBinaryOp(expr.op, left.value, right.value);
+      const resultType = inferBinaryResultType(expr.op, left.type, right.type);
+      return { value: resultValue, type: resultType };
 
     case "call":
-      const fn = comptimeEval(expr.fn, env);
-      const args = expr.args.map(a => comptimeEval(a, env));
-      return applyFunction(fn, args, env);
+      const fn = comptimeEval(expr.fn, env, typeEnv);
+      const args = expr.args.map(a => comptimeEval(a, env, typeEnv));
+      // Both closures and builtins receive and return TypedComptimeValue
+      return applyFunction(fn, args, env, typeEnv);
 
     case "property":
-      const obj = comptimeEval(expr.object, env);
+      const obj = comptimeEval(expr.object, env, typeEnv);
       if (isTypeValue(obj)) {
-        return getTypeProperty(obj, expr.name);
+        // Type property access returns TypedComptimeValue
+        return getTypeProperty(obj.value as Type, expr.name);
       }
-      return obj[expr.name];
+      // Record property: extract field type from object's type
+      const fieldType = getFieldType(obj.type, expr.name);
+      return { value: (obj.value as Record<string, unknown>)[expr.name], type: fieldType };
 
     case "lambda":
-      // Capture the environment
-      return { kind: "closure", params: expr.params, body: expr.body, env };
+      // Compute the function type from params and infer return type
+      const fnType = computeLambdaType(expr, env, typeEnv);
+      return {
+        value: { kind: "closure", params: expr.params, body: expr.body, env, typeEnv, fnType },
+        type: fnType
+      };
 
     case "conditional":
-      const cond = comptimeEval(expr.condition, env);
-      return cond
-        ? comptimeEval(expr.then, env)
-        : comptimeEval(expr.else, env);
+      const cond = comptimeEval(expr.condition, env, typeEnv);
+      const result = cond.value
+        ? comptimeEval(expr.then, env, typeEnv)
+        : comptimeEval(expr.else, env, typeEnv);
+      return result;
 
     case "record":
-      const fields = {};
+      // Build both the value record and the type record
+      const fields: Record<string, unknown> = {};
+      const fieldInfos: FieldInfo[] = [];
       for (const f of expr.fields) {
-        fields[f.name] = comptimeEval(f.value, env);
+        const fieldVal = comptimeEval(f.value, env, typeEnv);
+        fields[f.name] = fieldVal.value;
+        fieldInfos.push({ name: f.name, type: fieldVal.type, optional: false, annotations: [] });
       }
-      return fields;
+      return { value: fields, type: recordType(fieldInfos) };
 
     case "array":
-      return expr.elements.map(e => comptimeEval(e, env));
+      const elements = expr.elements.map(e => comptimeEval(e, env, typeEnv));
+      const elementTypes = elements.map(e => e.type);
+      return {
+        value: elements.map(e => e.value),
+        type: arrayType(elementTypes, false)  // Fixed-length array
+      };
 
     case "match":
-      return evalMatch(expr, env);
+      return evalMatch(expr, env, typeEnv);
 
     // ... etc
   }
@@ -284,48 +373,57 @@ Current thinking: Default 10,000, configurable via `--comptime-fuel` flag.
 
 ### Type Value Properties
 
-Type values have special property access semantics:
+Type values have special property access semantics. Each property returns a
+`TypedComptimeValue` with both the value and its type:
 
 ```typescript
-function getTypeProperty(type: Type, prop: string): ComptimeValue {
+function getTypeProperty(type: Type, prop: string): TypedComptimeValue {
   switch (prop) {
     // Runtime-usable properties
     case "name":
-      return getTypeName(type);  // String | undefined
+      const name = getTypeName(type);
+      return { value: name, type: unionType([primitiveType("String"), primitiveType("Undefined")]) };
     case "baseName":
-      return getTypeBaseName(type);  // String | undefined
+      const baseName = getTypeBaseName(type);
+      return { value: baseName, type: unionType([primitiveType("String"), primitiveType("Undefined")]) };
     case "fieldNames":
       assertRecordType(type);
-      return type.fields.map(f => f.name);  // Array<String>
+      const fieldNames = type.fields.map(f => f.name);
+      return { value: fieldNames, type: arrayType([primitiveType("String")], true) };
     case "length":
       assertArrayType(type);
-      return type.isFixed ? type.elementTypes.length : undefined;
+      const length = type.isFixed ? type.elementTypes.length : undefined;
+      return { value: length, type: unionType([primitiveType("Int"), primitiveType("Undefined")]) };
     case "isFixed":
       assertArrayType(type);
-      return type.isFixed;
+      return { value: type.isFixed, type: primitiveType("Boolean") };
 
-    // ComptimeOnly properties
+    // ComptimeOnly properties (return Type values)
     case "fields":
       assertRecordType(type);
-      return type.fields;  // Array<FieldInfo> - contains Type
+      return { value: type.fields, type: arrayType([FieldInfoType], true) };
     case "variants":
       assertUnionType(type);
-      return type.types;  // Array<Type>
+      return { value: type.types, type: arrayType([primitiveType("Type")], true) };
     case "typeArgs":
-      return type.metadata?.typeArgs ?? [];  // Array<Type>
+      const typeArgs = type.metadata?.typeArgs ?? [];
+      return { value: typeArgs, type: arrayType([primitiveType("Type")], true) };
     case "elementType":
       assertArrayType(type);
-      return unionOf(type.elementTypes);  // Type
+      const elemType = unionOf(type.elementTypes);
+      return { value: elemType, type: primitiveType("Type") };
     case "returnType":
       assertFunctionType(type);
-      return type.returnType;  // Type
+      return { value: type.returnType, type: primitiveType("Type") };
     case "parameterTypes":
       assertFunctionType(type);
-      return type.params.map(p => p.type);  // Array<Type>
+      const paramTypes = type.params.map(p => p.type);
+      return { value: paramTypes, type: arrayType([primitiveType("Type")], true) };
 
-    // Methods
+    // Methods (return function values)
     case "extends":
-      return (other: Type) => isSubtype(type, other);  // (Type) => Boolean
+      const extendsFn = createExtendsMethod(type);
+      return { value: extendsFn, type: functionType([{ name: "other", type: primitiveType("Type") }], primitiveType("Boolean")) };
 
     default:
       throw new CompileError(`Type has no property '${prop}'`);
