@@ -772,10 +772,14 @@ function desugarArrowParam(cursor: TreeCursor, source: string): CoreParam {
   let type: CoreExpr | undefined;
   let defaultValue: CoreExpr | undefined;
   let rest = false;
+  const annotations: CoreExpr[] = [];
 
   if (cursor.firstChild()) {
     do {
       switch (cursor.name) {
+        case "Annotation":
+          annotations.push(desugarAnnotation(cursor, source));
+          break;
         case "Spread":
           rest = true;
           break;
@@ -798,7 +802,7 @@ function desugarArrowParam(cursor: TreeCursor, source: string): CoreParam {
     cursor.parent();
   }
 
-  return { name, type, defaultValue, annotations: [], rest: rest || undefined };
+  return { name, type, defaultValue, annotations, rest: rest || undefined };
 }
 
 function desugarTernaryExpr(cursor: TreeCursor, source: string): CoreExpr {

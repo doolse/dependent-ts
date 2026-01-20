@@ -81,8 +81,9 @@ ArrowParams {
 
 // Arrow params can be lowercase or uppercase (for type params like T)
 // Rest parameter uses Spread prefix: ...param
+// Annotations can appear before the type annotation: @NonEmpty String
 ArrowParam {
-  Spread? identifierOrTypeName ~arrow TypeAnnotation? DefaultValue?
+  Annotation* Spread? identifierOrTypeName ~arrow TypeAnnotation? DefaultValue?
 }
 
 DefaultValue { "=" expressionNoComma }
