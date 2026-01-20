@@ -32,7 +32,9 @@ import {
   CoreDecl,
   CoreParam,
   CorePattern,
+  CoreArgument,
   TypedExpr,
+  TypedArgument,
   TypedDecl,
   TypedProgram,
   CompileError,
@@ -531,6 +533,20 @@ class TypeChecker {
   }
 
   /**
+   * Get the expression from a CoreArgument.
+   */
+  private getArgExpr(arg: CoreArgument): CoreExpr {
+    return arg.kind === "element" ? arg.value : arg.expr;
+  }
+
+  /**
+   * Get the source location from a CoreArgument.
+   */
+  private getArgLoc(arg: CoreArgument): SourceLocation {
+    return this.getArgExpr(arg).loc;
+  }
+
+  /**
    * Check a function call expression.
    */
   private checkCall(expr: CoreExpr & { kind: "call" }): TypedExpr {
@@ -568,87 +584,134 @@ class TypeChecker {
       ? fnType.params[fnType.params.length - 1]
       : undefined;
 
-    // Check argument count
-    const requiredParams = nonRestParams.filter((p) => !p.optional).length;
-    if (expr.args.length < requiredParams) {
-      throw new CompileError(
-        `Expected at least ${requiredParams} arguments, got ${expr.args.length}`,
-        "typecheck",
-        expr.loc
-      );
-    }
-    // Only check max args if there's no rest parameter
-    if (!hasRestParam && expr.args.length > fnType.params.length) {
-      throw new CompileError(
-        `Expected at most ${fnType.params.length} arguments, got ${expr.args.length}`,
-        "typecheck",
-        expr.loc
-      );
+    // Check for spread arguments - they affect how we count and check arguments
+    const hasSpreadArg = expr.args.some((a) => a.kind === "spread");
+
+    // If no spread arguments, we can do precise count checking
+    if (!hasSpreadArg) {
+      const requiredParams = nonRestParams.filter((p) => !p.optional).length;
+      if (expr.args.length < requiredParams) {
+        throw new CompileError(
+          `Expected at least ${requiredParams} arguments, got ${expr.args.length}`,
+          "typecheck",
+          expr.loc
+        );
+      }
+      // Only check max args if there's no rest parameter
+      if (!hasRestParam && expr.args.length > fnType.params.length) {
+        throw new CompileError(
+          `Expected at most ${fnType.params.length} arguments, got ${expr.args.length}`,
+          "typecheck",
+          expr.loc
+        );
+      }
     }
 
     // Check arguments WITH contextual types from parameter types
-    const args: TypedExpr[] = [];
-    for (let i = 0; i < expr.args.length; i++) {
-      // Get the expected parameter type for contextual typing
-      let contextType: Type | undefined;
-      if (i < nonRestParams.length) {
-        contextType = nonRestParams[i].type;
-      } else if (restParam) {
-        // Rest parameter - get element type
-        if (restParam.type.kind === "array" && restParam.type.variadic) {
-          contextType = restParam.type.elementTypes[0];
-        }
-      }
+    const typedArgs: TypedArgument[] = [];
+    // For type checking, we track the "expanded" argument types
+    const expandedArgTypes: { type: Type; loc: SourceLocation }[] = [];
 
-      const arg = this.checkExpr(expr.args[i], contextType);
-      args.push(arg);
+    for (let i = 0; i < expr.args.length; i++) {
+      const arg = expr.args[i];
+      const argExpr = this.getArgExpr(arg);
+
+      if (arg.kind === "spread") {
+        // Spread argument - check the expression and expand its type
+        const checkedExpr = this.checkExpr(argExpr);
+        typedArgs.push({ kind: "spread", expr: checkedExpr });
+
+        // The spread expression should be an array type
+        if (checkedExpr.type.kind === "array") {
+          // For variadic arrays (T[]), we can't know the count
+          // For fixed arrays ([T, U, V]), we expand each element type
+          if (checkedExpr.type.variadic) {
+            // Variable length - add a single entry representing "unknown number of elements"
+            // We'll check against rest param if available
+            const elemType = checkedExpr.type.elementTypes[0] ?? primitiveType("Unknown");
+            expandedArgTypes.push({ type: elemType, loc: argExpr.loc });
+          } else {
+            // Fixed length - expand each element type
+            for (const elemType of checkedExpr.type.elementTypes) {
+              expandedArgTypes.push({ type: elemType, loc: argExpr.loc });
+            }
+          }
+        } else {
+          throw new CompileError(
+            `Spread argument must be an array type, got '${formatType(checkedExpr.type)}'`,
+            "typecheck",
+            argExpr.loc
+          );
+        }
+      } else {
+        // Regular element argument
+        // Get the expected parameter type for contextual typing
+        let contextType: Type | undefined;
+        const expandedIndex = expandedArgTypes.length;
+        if (expandedIndex < nonRestParams.length) {
+          contextType = nonRestParams[expandedIndex].type;
+        } else if (restParam) {
+          // Rest parameter - get element type
+          if (restParam.type.kind === "array" && restParam.type.variadic) {
+            contextType = restParam.type.elementTypes[0];
+          }
+        }
+
+        const checkedExpr = this.checkExpr(argExpr, contextType);
+        typedArgs.push({ kind: "element", value: checkedExpr });
+        expandedArgTypes.push({ type: checkedExpr.type, loc: argExpr.loc });
+      }
     }
 
-    // Check argument types for non-rest parameters
-    for (let i = 0; i < Math.min(args.length, nonRestParams.length); i++) {
+    // Check expanded argument types against parameters
+    for (let i = 0; i < Math.min(expandedArgTypes.length, nonRestParams.length); i++) {
       const paramType = nonRestParams[i].type;
-      if (!isSubtype(args[i].type, paramType)) {
+      const argInfo = expandedArgTypes[i];
+      if (!isSubtype(argInfo.type, paramType)) {
         throw new CompileError(
-          `Argument type '${formatType(args[i].type)}' is not assignable to parameter type '${formatType(paramType)}'`,
+          `Argument type '${formatType(argInfo.type)}' is not assignable to parameter type '${formatType(paramType)}'`,
           "typecheck",
-          expr.args[i].loc
+          argInfo.loc
         );
       }
     }
 
     // Check rest arguments against the rest parameter's element type
-    if (restParam && args.length > nonRestParams.length) {
-      // Rest param type should be an array type - extract element type
+    if (restParam && expandedArgTypes.length > nonRestParams.length) {
       let restElementType: Type;
       if (restParam.type.kind === "array" && restParam.type.variadic) {
         restElementType = restParam.type.elementTypes[0] ?? primitiveType("Unknown");
       } else {
-        // If not an array type, use the type directly (shouldn't happen normally)
         restElementType = restParam.type;
       }
 
-      for (let i = nonRestParams.length; i < args.length; i++) {
-        if (!isSubtype(args[i].type, restElementType)) {
+      for (let i = nonRestParams.length; i < expandedArgTypes.length; i++) {
+        const argInfo = expandedArgTypes[i];
+        if (!isSubtype(argInfo.type, restElementType)) {
           throw new CompileError(
-            `Rest argument type '${formatType(args[i].type)}' is not assignable to rest parameter element type '${formatType(restElementType)}'`,
+            `Rest argument type '${formatType(argInfo.type)}' is not assignable to rest parameter element type '${formatType(restElementType)}'`,
             "typecheck",
-            expr.args[i].loc
+            argInfo.loc
           );
         }
       }
     }
 
     const comptimeOnly =
-      fn.comptimeOnly || args.some((a) => a.comptimeOnly);
+      fn.comptimeOnly || typedArgs.some((a) =>
+        (a.kind === "element" ? a.value : a.expr).comptimeOnly
+      );
 
     // Handle generic return type inference for array methods
     let returnType = fnType.returnType;
     if (expr.fn.kind === "property") {
       const methodName = expr.fn.name;
+      // Extract TypedExpr[] for the method inference
+      const argExprs = typedArgs.map((a) => a.kind === "element" ? a.value : a.expr);
       returnType = this.inferArrayMethodReturnType(
         fn,
         methodName,
-        args,
+        argExprs,
         fnType.returnType
       );
     }
@@ -656,7 +719,7 @@ class TypeChecker {
     return {
       ...expr,
       fn,
-      args,
+      args: typedArgs as unknown as CoreArgument[],
       type: returnType,
       comptimeOnly,
     };
@@ -671,7 +734,7 @@ class TypeChecker {
     expr: CoreExpr & { kind: "call" },
     fn: TypedExpr,
     fnType: Type & { kind: "intersection" },
-    argExprs: CoreExpr[]
+    coreArgs: CoreArgument[]
   ): TypedExpr {
     // Extract function signatures from the intersection
     const signatures = fnType.types.filter(
@@ -688,19 +751,29 @@ class TypeChecker {
 
     // Type check the arguments without contextual typing first
     // (we'll need their types to match against signatures)
-    const args = argExprs.map((arg) => this.checkExpr(arg));
+    // For now, spread arguments in overloaded calls are not fully supported
+    const typedArgs: TypedArgument[] = coreArgs.map((arg) => {
+      const argExpr = this.getArgExpr(arg);
+      const checked = this.checkExpr(argExpr);
+      if (arg.kind === "spread") {
+        return { kind: "spread" as const, expr: checked };
+      }
+      return { kind: "element" as const, value: checked };
+    });
+
+    const args = typedArgs.map((a) => a.kind === "element" ? a.value : a.expr);
 
     // Check if any argument is a union type
     const hasUnionArg = args.some((a) => a.type.kind === "union");
 
     if (hasUnionArg) {
       // For union arguments, collect all matching return types
-      return this.checkOverloadedCallWithUnion(expr, fn, signatures, args);
+      return this.checkOverloadedCallWithUnion(expr, fn, signatures, args, typedArgs);
     }
 
     // Try each signature in order (first match wins)
     for (const sig of signatures) {
-      const matchResult = this.tryMatchSignature(sig, args, argExprs);
+      const matchResult = this.tryMatchSignature(sig, args, coreArgs);
       if (matchResult.matches) {
         const comptimeOnly =
           fn.comptimeOnly || args.some((a) => a.comptimeOnly);
@@ -708,7 +781,7 @@ class TypeChecker {
         return {
           ...expr,
           fn,
-          args,
+          args: typedArgs as unknown as CoreArgument[],
           type: sig.returnType,
           comptimeOnly,
         };
@@ -736,7 +809,8 @@ class TypeChecker {
     expr: CoreExpr & { kind: "call" },
     fn: TypedExpr,
     signatures: (Type & { kind: "function" })[],
-    args: TypedExpr[]
+    args: TypedExpr[],
+    typedArgs: TypedArgument[]
   ): TypedExpr {
     const matchingReturnTypes: Type[] = [];
 
@@ -765,7 +839,7 @@ class TypeChecker {
     return {
       ...expr,
       fn,
-      args,
+      args: typedArgs as unknown as CoreArgument[],
       type: unionType(matchingReturnTypes),
       comptimeOnly,
     };
@@ -818,7 +892,7 @@ class TypeChecker {
   private tryMatchSignature(
     sig: Type & { kind: "function" },
     args: TypedExpr[],
-    _argExprs: CoreExpr[]
+    _coreArgs: CoreArgument[]
   ): { matches: boolean } {
     // Check argument count
     const hasRestParam = sig.params.length > 0 && sig.params[sig.params.length - 1].rest;

@@ -13,6 +13,7 @@ import {
   CoreDecl,
   CoreRecordField,
   CoreArrayElement,
+  CoreArgument,
   CoreCase,
   CoreTemplatePart,
   CorePattern,
@@ -243,9 +244,46 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
     }
   }
 
+  /**
+   * Extract the expression from a CoreArgument.
+   */
+  private getArgExpr(arg: CoreArgument): CoreExpr {
+    return arg.kind === "element" ? arg.value : arg.expr;
+  }
+
+  /**
+   * Expand CoreArgument[] to evaluated values, handling spreads.
+   */
+  private expandArgs(
+    args: CoreArgument[],
+    env: ComptimeEnv,
+    typeEnv: TypeEnv,
+    loc: SourceLocation
+  ): ComptimeValue[] {
+    const result: ComptimeValue[] = [];
+    for (const arg of args) {
+      const expr = this.getArgExpr(arg);
+      const value = this.evaluate(expr, env, typeEnv);
+      if (arg.kind === "spread") {
+        // Spread - value should be an array
+        if (!Array.isArray(value)) {
+          throw new CompileError(
+            `Spread argument must be an array`,
+            "typecheck",
+            loc
+          );
+        }
+        result.push(...value);
+      } else {
+        result.push(value);
+      }
+    }
+    return result;
+  }
+
   private evalCall(
     fnExpr: CoreExpr,
-    args: CoreExpr[],
+    args: CoreArgument[],
     env: ComptimeEnv,
     typeEnv: TypeEnv,
     loc: SourceLocation
@@ -257,7 +295,7 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
     }
 
     if (isBuiltinValue(fn)) {
-      const evaluatedArgs = args.map((a) => this.evaluate(a, env, typeEnv));
+      const evaluatedArgs = this.expandArgs(args, env, typeEnv, loc);
       return fn.impl(evaluatedArgs, this, loc);
     }
 
@@ -272,7 +310,8 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
         // Type() with no args returns unbounded Type
         return fn;
       }
-      const bound = this.evaluate(args[0], env, typeEnv);
+      const firstArg = this.getArgExpr(args[0]);
+      const bound = this.evaluate(firstArg, env, typeEnv);
       if (!isTypeValue(bound)) {
         throw new CompileError(
           "Type argument must be a Type",
@@ -293,11 +332,14 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
 
   private applyClosure(
     closure: ComptimeClosure,
-    args: CoreExpr[],
+    args: CoreArgument[],
     env: ComptimeEnv,
     typeEnv: TypeEnv,
     loc: SourceLocation
   ): ComptimeValue {
+    // First, expand all arguments (handling spreads)
+    const expandedArgs = this.expandArgs(args, env, typeEnv, loc);
+
     const newEnv = closure.env.extend();
     const newTypeEnv = closure.typeEnv.extend();
 
@@ -305,8 +347,8 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
       const param = closure.params[i];
       let argValue: ComptimeValue;
 
-      if (i < args.length) {
-        argValue = this.evaluate(args[i], env, typeEnv);
+      if (i < expandedArgs.length) {
+        argValue = expandedArgs[i];
       } else if (param.defaultValue) {
         argValue = this.evaluate(param.defaultValue, closure.env, closure.typeEnv);
       } else {

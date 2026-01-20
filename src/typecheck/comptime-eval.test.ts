@@ -38,7 +38,11 @@ function binary(op: BinaryOp, left: CoreExpr, right: CoreExpr): CoreExpr {
 
 // Helper to create call expressions
 function call(fn: CoreExpr, args: CoreExpr[]): CoreExpr {
-  return loc({ kind: "call", fn, args });
+  return loc({
+    kind: "call",
+    fn,
+    args: args.map((e) => ({ kind: "element" as const, value: e })),
+  });
 }
 
 // Helper to create property access

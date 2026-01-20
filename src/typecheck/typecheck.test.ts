@@ -289,6 +289,54 @@ describe("Type Checker", () => {
     });
   });
 
+  describe("spread arguments", () => {
+    test("spread array into rest parameter", () => {
+      const result = check(`
+        const sum = (...nums: Int[]): Int => nums.reduce((a, b) => a + b, 0);
+        const arr = [1, 2, 3];
+        const result = sum(...arr);
+      `);
+      const resultDecl = result.decls[2] as TypedDecl & { kind: "const" };
+      expect(resultDecl.init.type).toEqual(primitiveType("Int"));
+    });
+
+    test("spread fixed array into parameters", () => {
+      const result = check(`
+        const add = (a: Int, b: Int) => a + b;
+        const args: [Int, Int] = [1, 2];
+        const result = add(...args);
+      `);
+      const resultDecl = result.decls[2] as TypedDecl & { kind: "const" };
+      expect(resultDecl.init.type).toEqual(primitiveType("Int"));
+    });
+
+    test("mix of regular and spread arguments", () => {
+      const result = check(`
+        const fn = (a: Int, b: Int, c: Int) => a + b + c;
+        const rest: [Int, Int] = [2, 3];
+        const result = fn(1, ...rest);
+      `);
+      const resultDecl = result.decls[2] as TypedDecl & { kind: "const" };
+      expect(resultDecl.init.type).toEqual(primitiveType("Int"));
+    });
+
+    test("spread argument type checking - error on wrong element type", () => {
+      expect(() => check(`
+        const fn = (a: Int, b: Int) => a + b;
+        const args: [String, String] = ["a", "b"];
+        const result = fn(...args);
+      `)).toThrow("not assignable");
+    });
+
+    test("spread must be array type", () => {
+      expect(() => check(`
+        const fn = (a: Int) => a;
+        const x = 42;
+        const result = fn(...x);
+      `)).toThrow("must be an array");
+    });
+  });
+
   describe("nested constructs", () => {
     test("handles nested function calls", () => {
       const result = check(`

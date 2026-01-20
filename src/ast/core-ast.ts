@@ -29,7 +29,7 @@ export type CoreExprBase =
   | { kind: "literal"; value: LiteralValue; literalKind: LiteralKind }
   | { kind: "binary"; op: BinaryOp; left: CoreExpr; right: CoreExpr }
   | { kind: "unary"; op: UnaryOp; operand: CoreExpr }
-  | { kind: "call"; fn: CoreExpr; args: CoreExpr[] }
+  | { kind: "call"; fn: CoreExpr; args: CoreArgument[] }
   | { kind: "property"; object: CoreExpr; name: string }
   | { kind: "index"; object: CoreExpr; index: CoreExpr }
   | {
@@ -106,6 +106,10 @@ export type CoreArrayElement =
   | { kind: "element"; value: CoreExpr }
   | { kind: "spread"; expr: CoreExpr };
 
+export type CoreArgument =
+  | { kind: "element"; value: CoreExpr }
+  | { kind: "spread"; expr: CoreExpr };
+
 export type CoreTemplatePart =
   | { kind: "string"; value: string }
   | { kind: "expr"; expr: CoreExpr };
@@ -166,6 +170,12 @@ export type CoreImportSpecifier = {
 // Typed AST (output of type checking)
 // ============================================
 
+export type TypedArgument =
+  | { kind: "element"; value: TypedExpr }
+  | { kind: "spread"; expr: TypedExpr };
+
+// Note: For call expressions, args is TypedArgument[] at runtime, but TypeScript
+// inherits CoreExpr's args: CoreArgument[]. The type checker uses casts to work around this.
 export type TypedExpr = CoreExpr & {
   type: Type;
   comptimeValue?: unknown; // If expression was evaluated at comptime

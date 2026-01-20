@@ -17,6 +17,7 @@ import {
   CorePatternField,
   CoreRecordField,
   CoreArrayElement,
+  CoreArgument,
   CoreImportClause,
   CoreImportSpecifier,
   CoreTemplatePart,
@@ -27,6 +28,20 @@ import {
   CompileError,
 } from "../ast/core-ast";
 import { parser } from "./parser";
+
+/**
+ * Helper to wrap a CoreExpr as an element CoreArgument.
+ */
+function elementArg(expr: CoreExpr): CoreArgument {
+  return { kind: "element", value: expr };
+}
+
+/**
+ * Helper to wrap an array of CoreExpr as element CoreArguments.
+ */
+function elementArgs(exprs: CoreExpr[]): CoreArgument[] {
+  return exprs.map(elementArg);
+}
 
 /**
  * Parse source code and desugar to CoreAST.
@@ -203,7 +218,7 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
   const allTypeParams = [...typeParams, ...functionTypeParams.map(p => ({
     name: p.name,
     constraint: p.type?.kind === "call" && p.type.fn.kind === "identifier" && p.type.fn.name === "Type"
-      ? p.type.args[0]
+      ? (p.type.args[0]?.kind === "element" ? p.type.args[0].value : undefined)
       : undefined,
     defaultValue: p.defaultValue
   }))];
@@ -231,10 +246,10 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
   const withMetadataCall: CoreExpr = {
     kind: "call",
     fn: { kind: "identifier", name: "WithMetadata", loc: declLoc },
-    args: [
+    args: elementArgs([
       effectiveTypeExpr,
       { kind: "record", fields: metadata, loc: declLoc },
-    ],
+    ]),
     loc: declLoc,
   };
 
@@ -246,7 +261,7 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
         ? {
             kind: "call" as const,
             fn: { kind: "identifier" as const, name: "Type", loc: declLoc },
-            args: [tp.constraint],
+            args: elementArgs([tp.constraint]),
             loc: declLoc,
           }
         : { kind: "identifier" as const, name: "Type", loc: declLoc },
@@ -322,10 +337,10 @@ function desugarNewtypeDecl(cursor: TreeCursor, source: string): CoreDecl {
   const init: CoreExpr = {
     kind: "call",
     fn: { kind: "identifier", name: "Branded", loc: declLoc },
-    args: [
+    args: elementArgs([
       baseType,
       { kind: "literal", value: name, literalKind: "string", loc: declLoc },
-    ],
+    ]),
     loc: declLoc,
   };
 
@@ -875,7 +890,7 @@ function desugarAwaitExpr(cursor: TreeCursor, source: string): CoreExpr {
 function desugarCallExpr(cursor: TreeCursor, source: string): CoreExpr {
   const exprLoc = loc(cursor);
   let fn: CoreExpr | undefined;
-  const args: CoreExpr[] = [];
+  const args: CoreArgument[] = [];
 
   if (cursor.firstChild()) {
     fn = desugarExpr(cursor, source);
@@ -901,7 +916,7 @@ function desugarCallExpr(cursor: TreeCursor, source: string): CoreExpr {
   return { kind: "call", fn, args, loc: exprLoc };
 }
 
-function desugarArgument(cursor: TreeCursor, source: string): CoreExpr {
+function desugarArgument(cursor: TreeCursor, source: string): CoreArgument {
   if (cursor.firstChild()) {
     let isSpread = false;
     if (nodeName(cursor) === "Spread") {
@@ -911,8 +926,10 @@ function desugarArgument(cursor: TreeCursor, source: string): CoreExpr {
     const expr = desugarExpr(cursor, source);
     cursor.parent();
 
-    // TODO: Handle spread arguments properly
-    return expr;
+    if (isSpread) {
+      return { kind: "spread", expr };
+    }
+    return { kind: "element", value: expr };
   }
   error("argument missing expression", cursor);
 }
@@ -921,7 +938,7 @@ function desugarTypeCallExpr(cursor: TreeCursor, source: string): CoreExpr {
   const exprLoc = loc(cursor);
   let fn: CoreExpr | undefined;
   const typeArgs: CoreExpr[] = [];
-  const args: CoreExpr[] = [];
+  const args: CoreArgument[] = [];
 
   if (cursor.firstChild()) {
     fn = desugarExpr(cursor, source);
@@ -958,8 +975,12 @@ function desugarTypeCallExpr(cursor: TreeCursor, source: string): CoreExpr {
     error("type call expression missing function", cursor);
   }
 
-  // Type args are passed as first arguments
-  return { kind: "call", fn, args: [...typeArgs, ...args], loc: exprLoc };
+  // Type args are passed as first arguments, wrapped as element CoreArguments
+  const typeArgsAsArgs: CoreArgument[] = typeArgs.map((expr) => ({
+    kind: "element" as const,
+    value: expr,
+  }));
+  return { kind: "call", fn, args: [...typeArgsAsArgs, ...args], loc: exprLoc };
 }
 
 function desugarMemberExpr(cursor: TreeCursor, source: string): CoreExpr {
@@ -1630,7 +1651,7 @@ function desugarUnionType(cursor: TreeCursor, source: string): CoreExpr {
   return types.reduce((left, right) => ({
     kind: "call",
     fn: { kind: "identifier", name: "Union", loc: typeLoc },
-    args: [left, right],
+    args: elementArgs([left, right]),
     loc: typeLoc,
   }));
 }
@@ -1652,7 +1673,7 @@ function desugarIntersectionType(cursor: TreeCursor, source: string): CoreExpr {
   return types.reduce((left, right) => ({
     kind: "call",
     fn: { kind: "identifier", name: "Intersection", loc: typeLoc },
-    args: [left, right],
+    args: elementArgs([left, right]),
     loc: typeLoc,
   }));
 }
@@ -1698,7 +1719,7 @@ function desugarNamedType(cursor: TreeCursor, source: string): CoreExpr {
 
   // Apply type arguments
   if (typeArgs.length > 0) {
-    result = { kind: "call", fn: result, args: typeArgs, loc: typeLoc };
+    result = { kind: "call", fn: result, args: elementArgs(typeArgs), loc: typeLoc };
   }
 
   // Apply array suffixes: T[][] → Array(Array(T))
@@ -1706,7 +1727,7 @@ function desugarNamedType(cursor: TreeCursor, source: string): CoreExpr {
     result = {
       kind: "call",
       fn: { kind: "identifier", name: "Array", loc: typeLoc },
-      args: [result],
+      args: elementArgs([result]),
       loc: typeLoc,
     };
   }
@@ -1738,12 +1759,12 @@ function desugarRecordType(
     cursor.parent();
   }
 
-  const args: CoreExpr[] = [
-    { kind: "array", elements: fields.map((f) => ({ kind: "element" as const, value: f })), loc: typeLoc },
+  const args: CoreArgument[] = [
+    elementArg({ kind: "array", elements: fields.map((f) => ({ kind: "element" as const, value: f })), loc: typeLoc }),
   ];
 
   if (closed) {
-    args.push({ kind: "identifier", name: "Never", loc: typeLoc });
+    args.push(elementArg({ kind: "identifier", name: "Never", loc: typeLoc }));
   }
 
   return {
@@ -1851,10 +1872,10 @@ function desugarIndexedRecordType(cursor: TreeCursor, source: string): CoreExpr 
   return {
     kind: "call",
     fn: { kind: "identifier", name: "RecordType", loc: typeLoc },
-    args: [
+    args: elementArgs([
       { kind: "array", elements: [], loc: typeLoc },
       valueType,
-    ],
+    ]),
     loc: typeLoc,
   };
 }
@@ -1883,7 +1904,7 @@ function desugarTupleType(cursor: TreeCursor, source: string): CoreExpr {
   return {
     kind: "call",
     fn: { kind: "identifier", name: "Array", loc: typeLoc },
-    args: elements,
+    args: elementArgs(elements),
     loc: typeLoc,
   };
 }
@@ -1952,10 +1973,10 @@ function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
   const functionTypeCall: CoreExpr = {
     kind: "call",
     fn: { kind: "identifier", name: "FunctionType", loc: typeLoc },
-    args: [
+    args: elementArgs([
       { kind: "array", elements: params.map((p) => ({ kind: "element" as const, value: p })), loc: typeLoc },
       returnType,
-    ],
+    ]),
     loc: typeLoc,
   };
 
@@ -1967,7 +1988,7 @@ function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
         ? {
             kind: "call" as const,
             fn: { kind: "identifier" as const, name: "Type", loc: typeLoc },
-            args: [tp.constraint],
+            args: elementArgs([tp.constraint]),
             loc: typeLoc,
           }
         : { kind: "identifier" as const, name: "Type", loc: typeLoc },
@@ -2080,7 +2101,7 @@ function desugarParenType(cursor: TreeCursor, source: string): CoreExpr {
     result = {
       kind: "call",
       fn: { kind: "identifier", name: "Array", loc: typeLoc },
-      args: [result],
+      args: elementArgs([result]),
       loc: typeLoc,
     };
   }
@@ -2099,7 +2120,7 @@ function desugarLiteralType(cursor: TreeCursor, source: string): CoreExpr {
     return {
       kind: "call",
       fn: { kind: "identifier", name: "LiteralType", loc: typeLoc },
-      args: [literalExpr],
+      args: elementArgs([literalExpr]),
       loc: typeLoc,
     };
   }
