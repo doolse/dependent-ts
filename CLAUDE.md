@@ -512,11 +512,21 @@ Not yet implemented:
 ### String Methods
 No string methods implemented yet. Need to decide which are built-in vs imported from JS.
 
-### Code TODOs
-- `desugar.ts:540` - Handle annotations on type params
-- `desugar.ts:1910` - Handle spread and labels in tuple elements
-- `type-properties.ts:129` - Track labels in array element info
-- `type-properties.ts:334` - Proper type checking of annotation values
+### Annotations - Partial Implementation
+Annotations are mostly implemented, but **arrow function parameter/return annotations** are not yet supported in the grammar.
+
+The spec says: `(x: @NonEmpty String): @Valid User`
+
+But the grammar's `ArrowParam` rule doesn't include `Annotation*`:
+```
+ArrowParam {
+  Spread? identifierOrTypeName ~arrow TypeAnnotation? DefaultValue?
+}
+```
+
+To complete this:
+- Add `Annotation*` to `ArrowParam` rule in `depjs.grammar`
+- Update `desugarArrowParam()` in `desugar.ts` to handle annotations
 
 ## Deferred to Future Versions
 
