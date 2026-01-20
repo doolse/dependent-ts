@@ -76,6 +76,60 @@ const x: T = ...;  // T needs comptime → c needs comptime → b needs comptime
 
 Current thinking: Option 2 (lazy) is simpler and matches "demand-driven" semantics.
 
+## The `typeOf` Builtin
+
+`typeOf(expr)` returns the compile-time type of an expression as a `Type` value.
+
+### Semantics
+
+- `typeOf(identifier)` → returns the **declared type** of the binding (from TypeEnv)
+- `typeOf(literal)` → returns the **literal type** (e.g., `typeOf(42)` → literal type `42`)
+- `typeOf` is comptimeOnly - it only exists at compile time
+
+### Why `typeOf` Is Special
+
+Unlike most builtins, `typeOf` needs **type information**, not values. The comptime evaluator
+normally works with values, but `typeOf(x)` needs to know `x`'s type.
+
+### Implementation Mechanism
+
+When the type checker encounters `typeOf(expr)`:
+1. Type-check `expr` to get its type
+2. Cache this type (by source location) for the evaluator to find
+3. Return type `Type` for the call expression
+
+When the evaluator encounters `typeOf(expr)`:
+1. Look up the cached type for `expr`
+2. Return it as a `Type` value
+
+### Closure Application and Parameter Types
+
+For generic inference to work with `typeOf` in default parameters:
+
+```
+const id = (x: T, T: Type = typeOf(x)) => x;
+id(42);  // T should be inferred as literal type 42
+```
+
+When applying a closure at compile time, we must bind **both**:
+- Parameter VALUES to `comptimeEnv` (already done)
+- Parameter TYPES to `typeEnv` (required for `typeOf`)
+
+The call site knows the argument types (from type checking). These must be passed to
+`applyClosure` so that when the default `typeOf(x)` is evaluated, it can find `x`'s type
+in `typeEnv`.
+
+### Order of Parameter Binding
+
+Parameters are bound left-to-right. When evaluating a default for parameter `i`,
+parameters `0..i-1` are already bound. This allows:
+
+```
+(x: T, T: Type = typeOf(x)) => ...
+```
+
+When evaluating `typeOf(x)`, `x` is already bound in both envs.
+
 ## Comptime-Only Tracking
 
 Some values can **only exist at compile time**:
