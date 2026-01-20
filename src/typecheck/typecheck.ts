@@ -44,10 +44,10 @@ import {
   SourceLocation,
 } from "../ast/core-ast";
 import { TypeEnv, TypeBinding, ComptimeStatus } from "./type-env";
-import { ComptimeEnv, TypedComptimeValue, isTypeValue, isClosureValue, isBuiltinValue } from "./comptime-env";
+import { ComptimeEnv, TypedComptimeValue, isTypeValue, isClosureValue, isBuiltinValue, isRawTypeValue } from "./comptime-env";
 import { ComptimeEvaluator } from "./comptime-eval";
 import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
-import { isComptimeOnlyProperty, getTypePropertyType } from "./type-properties";
+import { isComptimeOnlyProperty, getTypePropertyType, getTypeProperty } from "./type-properties";
 import { getArrayMethodType, getArrayElementType } from "./array-methods";
 
 /**
@@ -365,11 +365,22 @@ class TypeChecker {
    */
   private checkIdentifier(expr: CoreExpr & { kind: "identifier" }): TypedExpr {
     const binding = this.typeEnv.lookupOrThrow(expr.name, expr.loc);
+    const isComptimeOnly = binding.comptimeStatus === "comptimeOnly";
+
+    // For comptime-only bindings, try to get the evaluated value
+    let comptimeValue: unknown;
+    if (isComptimeOnly) {
+      const evaluated = this.comptimeEnv.getEvaluatedValue(expr.name);
+      if (evaluated !== undefined) {
+        comptimeValue = evaluated.value;
+      }
+    }
 
     return {
       ...expr,
       type: binding.type,
-      comptimeOnly: binding.comptimeStatus === "comptimeOnly",
+      comptimeOnly: isComptimeOnly,
+      comptimeValue,
     };
   }
 
@@ -701,11 +712,6 @@ class TypeChecker {
       }
     }
 
-    const comptimeOnly =
-      fn.comptimeOnly || typedArgs.some((a) =>
-        (a.kind === "element" ? a.value : a.expr).comptimeOnly
-      );
-
     // Handle generic return type inference for array methods
     let returnType = fnType.returnType;
     if (expr.fn.kind === "property") {
@@ -720,12 +726,38 @@ class TypeChecker {
       );
     }
 
+    // A call is comptimeOnly if:
+    // 1. The result type cannot exist at runtime (like Type), OR
+    // 2. The function itself is comptimeOnly (like assert - it shouldn't emit code)
+    //
+    // Note: If the function is comptimeOnly but returns a runtime-usable value
+    // (like X.extends(Number) returning Boolean), we still set comptimeOnly=false
+    // but capture the comptimeValue for potential branch elimination.
+    const comptimeOnly = isComptimeOnlyType(returnType) || fn.comptimeOnly;
+
+    // If the function or any argument is comptime-only, try to evaluate the call
+    // and capture the value. This enables branch elimination for conditionals
+    // with comptime conditions like `X.extends(Number) ? ... : ...`
+    let comptimeValue: unknown;
+    const hasComptimeInputs = fn.comptimeOnly || typedArgs.some((a) =>
+      (a.kind === "element" ? a.value : a.expr).comptimeOnly
+    );
+    if (hasComptimeInputs) {
+      try {
+        const result = this.evaluator.evaluate(expr, this.comptimeEnv, this.typeEnv);
+        comptimeValue = result.value;
+      } catch {
+        // If evaluation fails, that's OK - we just won't have a comptimeValue
+      }
+    }
+
     return {
       ...expr,
       fn,
       args: typedArgs as unknown as CoreArgument[],
       type: returnType,
       comptimeOnly,
+      comptimeValue,
     };
   }
 
@@ -1042,11 +1074,24 @@ class TypeChecker {
         );
       }
 
+      // If we have the actual Type value, evaluate the property access
+      let comptimeValue: unknown;
+      if (object.comptimeValue !== undefined && isRawTypeValue(object.comptimeValue)) {
+        const result = getTypeProperty(
+          object.comptimeValue as Type,
+          expr.name,
+          this.evaluator,
+          expr.loc
+        );
+        comptimeValue = result.value;
+      }
+
       return {
         ...expr,
         object,
         type: propType,
         comptimeOnly: isComptimeOnly,
+        comptimeValue,
       };
     }
 
@@ -1369,13 +1414,18 @@ class TypeChecker {
 
     const resultType = unionType([then.type, else_.type]);
 
+    // A conditional is comptimeOnly only if BOTH branches are comptimeOnly.
+    // If condition is comptimeOnly but branches are runtime, the result is runtime
+    // (erasure will eliminate the dead branch based on the comptime condition value).
+    const comptimeOnly = then.comptimeOnly && else_.comptimeOnly;
+
     return {
       ...expr,
       condition,
       then,
       else: else_,
       type: resultType,
-      comptimeOnly: condition.comptimeOnly || then.comptimeOnly || else_.comptimeOnly,
+      comptimeOnly,
     };
   }
 

@@ -138,10 +138,7 @@ describe("Erasure", () => {
   });
 
   describe("comptime value inlining", () => {
-    // Note: These tests are skipped because the type checker doesn't yet set
-    // comptimeValue on expressions. Once that's implemented, these should pass.
-
-    test.skip("inlines comptime string values", () => {
+    test("inlines comptime string values", () => {
       const decls = eraseCode(`
         type Person = { name: String, age: Int };
         const typeName = Person.name;
@@ -155,7 +152,7 @@ describe("Erasure", () => {
       expect(literal.value).toBe("Person");
     });
 
-    test.skip("inlines comptime array values", () => {
+    test("inlines comptime array values", () => {
       const decls = eraseCode(`
         type Person = { name: String, age: Int };
         const fieldNames = Person.fieldNames;
@@ -169,7 +166,7 @@ describe("Erasure", () => {
       expect(arr.elements.length).toBe(2);
     });
 
-    test.skip("inlines comptime boolean values", () => {
+    test("inlines comptime boolean values", () => {
       // Note: Array literal doesn't have .isFixed - that's on the Type
       const decls = eraseCode(`
         type MyArr = [Int, Int, Int];
@@ -184,22 +181,20 @@ describe("Erasure", () => {
   });
 
   describe("conditional branch elimination", () => {
-    // Note: Branch elimination tests are skipped because the type checker doesn't yet
-    // set comptimeValue on expressions. Once that's implemented, these should pass.
-
-    test.skip("eliminates true branch when condition is comptime true", () => {
+    test("eliminates true branch when condition is comptime true", () => {
       const decls = eraseCode(`
         type X = Int;
         const result = X.extends(Number) ? "yes" : "no";
       `);
 
       const resultDecl = getDecl(decls, "result") as CoreDecl & { kind: "const" };
+      expect(resultDecl).toBeDefined();
       const literal = resultDecl.init as CoreExpr & { kind: "literal" };
       expect(literal.kind).toBe("literal");
       expect(literal.value).toBe("yes");
     });
 
-    test.skip("eliminates false branch when condition is comptime false", () => {
+    test("eliminates false branch when condition is comptime false", () => {
       const decls = eraseCode(`
         type X = String;
         const result = X.extends(Int) ? "yes" : "no";
@@ -300,7 +295,7 @@ describe("Erasure", () => {
       expect(hasDecl(decls, "person")).toBe(true);
     });
 
-    test.skip("handles mixed record with comptime type info (requires comptimeValue)", () => {
+    test("handles mixed record with comptime type info", () => {
       const decls = eraseCode(`
         type Person = { name: String, age: Int };
         const typeName = Person.name;
@@ -309,7 +304,7 @@ describe("Erasure", () => {
 
       // Person should be erased (Type value)
       expect(hasDecl(decls, "Person")).toBe(false);
-      // typeName should be inlined (once comptimeValue is set)
+      // typeName should be inlined
       expect(hasDecl(decls, "typeName")).toBe(true);
       // person should be preserved
       expect(hasDecl(decls, "person")).toBe(true);
