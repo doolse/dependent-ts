@@ -557,6 +557,75 @@ const f = () => {
 };
 ```
 
+## Implementation Bugs (Should Work But Don't)
+
+These are bugs in the current implementation where the spec says something should work but it doesn't. Each has a corresponding test file in `examples/should-work/`.
+
+### Parser: Operator Precedence (BUG)
+**Test file**: `examples/should-work/operator-precedence.djs`
+
+Standard mathematical operator precedence is not implemented correctly. The parser treats operators left-to-right without proper precedence:
+
+```
+const a = 1 + 2 * 3;  // Should be 7 (1 + (2*3))
+                       // Actually computes 9 ((1+2) * 3)
+```
+
+**Impact**: High - basic arithmetic doesn't work correctly.
+**Type**: Implementation bug in parser (Lezer grammar likely needs precedence annotations).
+
+### Type Checker: Recursive Functions (BUG)
+**Test file**: `examples/should-work/recursive-function.djs`
+
+Recursive function definitions don't work even with explicit return type annotations (which the spec says should enable recursion):
+
+```
+const factorial = (n: Int): Int => n <= 1 ? 1 : n * factorial(n - 1);
+// Error: 'factorial' is not defined
+```
+
+**Impact**: High - recursion is the only way to iterate in a functional language without loops.
+**Type**: Implementation bug - the binding should be visible within its own initializer when it has a type annotation.
+
+### Type Checker: Pattern Match Destructure Bindings (BUG)
+**Test file**: `examples/should-work/destructure-binding.djs`
+
+Destructure patterns in match expressions don't introduce bindings into the case body scope:
+
+```
+const greet = (p: Person): String => match (p) {
+  case { name, age }: name;  // Error: 'name' is not defined
+};
+```
+
+The codegen correctly extracts bindings (`const name = _match.name;`) but the type checker doesn't add them to scope.
+
+**Impact**: High - destructuring is a core pattern matching feature.
+**Type**: Implementation bug in type checker - bindings from patterns aren't added to the type environment for the case body.
+
+### Type Checker: Type Narrowing in Pattern Match (BUG/DESIGN?)
+**Test file**: `examples/should-work/type-narrowing.djs`
+
+After matching a discriminant in a pattern, the scrutinee's type is not narrowed in the case body:
+
+```
+type Shape = { kind: "circle", radius: Int } | { kind: "rectangle", width: Int, height: Int };
+
+const area = (s: Shape): Int => match (s) {
+  case { kind: "circle" }: s.radius * s.radius;  // Error: Cannot access 'radius' on 'Shape'
+};
+```
+
+The type of `s` should be narrowed to `{ kind: "circle", radius: Int }` inside this case.
+
+**Impact**: High - discriminated unions are unusable without narrowing.
+**Type**: Could be implementation bug OR design decision. The spec mentions "Type narrowing: Inside case body, matched expression's type is narrowed" so this seems like a bug.
+
+## Examples Directory
+
+- `examples/` - Working examples demonstrating current capabilities
+- `examples/should-work/` - Examples that SHOULD work per spec but currently fail due to bugs
+
 ## Deferred to Future Versions
 
 - **Refinement types**: Predicate-constrained types like `Int where this > 0`. Deferred due to complexity (decidability, runtime vs compile-time checking). Use branded types or runtime validation for now.

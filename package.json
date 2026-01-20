@@ -6,7 +6,8 @@
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "bin": {
-    "depjs": "dist/repl.js"
+    "depjs": "dist/cli.js",
+    "depjs-repl": "dist/repl.js"
   },
   "scripts": {
     "build": "tsc",
@@ -14,11 +15,14 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "typecheck": "tsc --noEmit",
-    "repl": "node dist/repl.js"
+    "repl": "tsx src/repl.ts",
+    "cli": "tsx src/cli.ts",
+    "depjs": "tsx src/cli.ts"
   },
   "devDependencies": {
     "@lezer/generator": "^1.7.0",
     "@types/node": "^20.10.0",
+    "tsx": "^4.21.0",
     "typescript": "^5.3.0",
     "vitest": "^2.0.0"
   },

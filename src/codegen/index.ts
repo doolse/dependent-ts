@@ -4,5 +4,6 @@
  * Public exports for the code generation phase.
  */
 
-export { codegen, codegenDecls, CodegenOptions } from "./codegen";
+export { codegen, codegenDecls } from "./codegen";
+export type { CodegenOptions } from "./codegen";
 export { CodeBuilder } from "./code-builder";

@@ -315,6 +315,60 @@ export function createInitialTypeEnv(): TypeEnv {
     mutable: false,
   });
 
+  // ============================================
+  // Runtime builtins (not comptime-only)
+  // ============================================
+
+  // print: (...args: Unknown[]) => Void - maps to console.log
+  env.define("print", {
+    type: functionType(
+      [{ name: "args", type: primitiveType("Unknown"), optional: false, rest: true }],
+      primitiveType("Void")
+    ),
+    comptimeStatus: "runtime",
+    mutable: false,
+  });
+
+  // console object with log method
+  const consoleType: Type = recordType(
+    [
+      {
+        name: "log",
+        type: functionType(
+          [{ name: "args", type: primitiveType("Unknown"), optional: false, rest: true }],
+          primitiveType("Void")
+        ),
+        optional: false,
+        annotations: [],
+      },
+      {
+        name: "error",
+        type: functionType(
+          [{ name: "args", type: primitiveType("Unknown"), optional: false, rest: true }],
+          primitiveType("Void")
+        ),
+        optional: false,
+        annotations: [],
+      },
+      {
+        name: "warn",
+        type: functionType(
+          [{ name: "args", type: primitiveType("Unknown"), optional: false, rest: true }],
+          primitiveType("Void")
+        ),
+        optional: false,
+        annotations: [],
+      },
+    ],
+    { closed: false }
+  );
+
+  env.define("console", {
+    type: consoleType,
+    comptimeStatus: "runtime",
+    mutable: false,
+  });
+
   return env;
 }
 

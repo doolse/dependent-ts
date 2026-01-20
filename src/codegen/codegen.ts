@@ -16,7 +16,15 @@ import { PREC } from "./precedence";
 export type CodegenOptions = {
   /** Indentation string (default: "  ") */
   indent?: string;
+  /** Include runtime preamble with print function (default: true) */
+  includePreamble?: boolean;
 };
+
+/**
+ * Runtime preamble - defines helpers like print.
+ */
+const RUNTIME_PREAMBLE = `const print = (...args) => console.log(...args);
+`;
 
 /**
  * Generate JavaScript code from a RuntimeProgram.
@@ -36,7 +44,13 @@ export function codegenDecls(
   options: CodegenOptions = {}
 ): string {
   const indent = options.indent ?? "  ";
+  const includePreamble = options.includePreamble ?? true;
   const builder = new CodeBuilder(indent);
+
+  // Add runtime preamble if requested
+  if (includePreamble) {
+    builder.write(RUNTIME_PREAMBLE);
+  }
 
   for (const decl of decls) {
     const code = genDecl(decl, { builder, parentPrecedence: PREC.PRIMARY });
