@@ -12,6 +12,7 @@ import {
   recordType,
   functionType,
   arrayType,
+  arrayTypeFromElements,
   unionType,
   intersectionType,
   brandedType,
@@ -21,6 +22,8 @@ import {
   FieldInfo,
   TypeMetadata,
   Unknown,
+  getArrayElementTypes,
+  isVariadicArray,
 } from "../types/types";
 import { CompileError, SourceLocation } from "../ast/core-ast";
 import {
@@ -240,10 +243,10 @@ export function createInitialTypeEnv(): TypeEnv {
     mutable: false,
   });
 
-  // Array is variadic - accepts rest parameters
+  // Array is variadic - accepts rest parameters of Type or element records { type: Type, label?, spread? }
   env.define("Array", {
     type: functionType(
-      [{ name: "elementTypes", type: arrayType([typeType], true), optional: false, rest: true }],
+      [{ name: "elementTypes", type: arrayType([primitiveType("Unknown")], true), optional: false, rest: true }],
       typeType
     ),
     comptimeStatus: "comptimeOnly",
@@ -340,6 +343,12 @@ const builtinRecordType: ComptimeBuiltin = {
       );
     }
 
+    // Get the type information for the fields array
+    const fieldsArrayType = args[0].type;
+    const fieldRecordTypes = fieldsArrayType.kind === "array"
+      ? getArrayElementTypes(fieldsArrayType)
+      : [];
+
     const fields: FieldInfo[] = fieldsArg.map((f, i) => {
       if (!isRecordValue(f)) {
         throw new CompileError(
@@ -348,11 +357,38 @@ const builtinRecordType: ComptimeBuiltin = {
           loc
         );
       }
+
+      // Extract typed annotations from the field's annotations array
+      const rawAnnotations = (f.annotations as unknown[]) ?? [];
+      let typedAnnotations: { value: unknown; type: Type }[] = [];
+
+      // Try to get annotation types from the array type
+      const fieldType = fieldRecordTypes.length > 0
+        ? (fieldRecordTypes[i] ?? fieldRecordTypes[0])
+        : undefined;
+      if (fieldType && fieldType.kind === "record") {
+        const annotationsFieldType = fieldType.fields.find(fd => fd.name === "annotations");
+        if (annotationsFieldType && annotationsFieldType.type.kind === "array") {
+          const annElementTypes = getArrayElementTypes(annotationsFieldType.type);
+          const annVariadic = isVariadicArray(annotationsFieldType.type);
+          typedAnnotations = rawAnnotations.map((value, j) => ({
+            value,
+            type: annVariadic
+              ? annElementTypes[0] ?? Unknown
+              : annElementTypes[j] ?? Unknown,
+          }));
+        }
+      }
+      // Fallback: use Unknown type
+      if (typedAnnotations.length === 0 && rawAnnotations.length > 0) {
+        typedAnnotations = rawAnnotations.map(value => ({ value, type: Unknown }));
+      }
+
       return {
         name: f.name as string,
         type: f.type as Type,
         optional: (f.optional as boolean) ?? false,
-        annotations: (f.annotations as unknown[]) ?? [],
+        annotations: typedAnnotations,
       };
     });
 
@@ -477,24 +513,46 @@ const builtinArray: ComptimeBuiltin = {
   kind: "builtin",
   name: "Array",
   impl: (args, _evaluator, loc) => {
-    const types: Type[] = [];
+    const elements: { type: Type; label?: string; spread?: boolean }[] = [];
 
     for (const arg of args) {
-      if (!isTypeValue(arg)) {
+      // Accept either plain Type values or { type: Type, label?: String, spread?: Boolean } records
+      if (isTypeValue(arg)) {
+        // Plain Type - backward compatible
+        elements.push({ type: arg.value as Type });
+      } else if (isRecordValue(arg.value)) {
+        const rec = arg.value as RawComptimeRecord;
+        const elemType = rec.type;
+        if (!isRawTypeValue(elemType)) {
+          throw new CompileError(
+            "Array element 'type' must be a Type",
+            "typecheck",
+            loc
+          );
+        }
+        elements.push({
+          type: elemType,
+          label: rec.label as string | undefined,
+          spread: rec.spread as boolean | undefined,
+        });
+      } else {
         throw new CompileError(
-          "Array arguments must be Types",
+          "Array arguments must be Types or element records { type: Type, label?: String, spread?: Boolean }",
           "typecheck",
           loc
         );
       }
-      types.push(arg.value as Type);
     }
 
-    // Single type = variable-length array
-    // Multiple types = fixed-length array (tuple)
-    const variadic = types.length === 1;
+    // Single spread element = variable-length array (backward compat)
+    // Multiple elements or any non-spread = fixed-length array (tuple)
+    if (elements.length === 1 && !elements[0].label && !elements[0].spread) {
+      // Single plain type without label: variable-length array T[]
+      return wrapTypeValue(arrayType([elements[0].type], true));
+    }
 
-    return wrapTypeValue(arrayType(types, variadic));
+    // Otherwise, create array from elements
+    return wrapTypeValue(arrayTypeFromElements(elements));
   },
 };
 
@@ -528,10 +586,36 @@ const builtinWithMetadata: ComptimeBuiltin = {
       );
     }
 
+    // Extract typed annotations by pairing values with their types from the metadata type
+    let typedAnnotations: { value: unknown; type: Type }[] | undefined;
+    const rawAnnotations = metadataArg.annotations as unknown[] | undefined;
+    if (rawAnnotations && Array.isArray(rawAnnotations)) {
+      // Get the type of the annotations field from the metadata argument's type
+      const metadataType = args[1].type;
+      if (metadataType.kind === "record") {
+        const annotationsField = metadataType.fields.find(f => f.name === "annotations");
+        if (annotationsField && annotationsField.type.kind === "array") {
+          const annElementTypes = getArrayElementTypes(annotationsField.type);
+          const annVariadic = isVariadicArray(annotationsField.type);
+          // For fixed-length arrays, types are per-element; for variadic, there's one type
+          typedAnnotations = rawAnnotations.map((value, i) => ({
+            value,
+            type: annVariadic
+              ? annElementTypes[0] ?? Unknown
+              : annElementTypes[i] ?? Unknown,
+          }));
+        }
+      }
+      // Fallback: if we couldn't extract types, use Unknown
+      if (!typedAnnotations) {
+        typedAnnotations = rawAnnotations.map(value => ({ value, type: Unknown }));
+      }
+    }
+
     const metadata: TypeMetadata = {
       name: metadataArg.name as string | undefined,
       typeArgs: metadataArg.typeArgs as Type[] | undefined,
-      annotations: metadataArg.annotations as unknown[] | undefined,
+      annotations: typedAnnotations,
     };
 
     return wrapTypeValue(withMetadata(baseType, metadata));

@@ -8,7 +8,7 @@ import { ComptimeEnv, TypedComptimeValue, isTypeValue, isRawTypeValue, wrapValue
 import { TypeEnv } from "./type-env";
 import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
 import { CoreExpr, BinaryOp, dummyLoc, located, CorePattern, CoreCase, CorePatternField, CoreTemplatePart } from "../ast/core-ast";
-import { primitiveType, recordType, unionType, Type } from "../types/types";
+import { primitiveType, recordType, unionType, arrayType, Type, isVariadicArray, getArrayElementTypes } from "../types/types";
 
 // Helper to create expressions with dummy locations
 function loc<T>(expr: T): T & { loc: { from: number; to: number } } {
@@ -125,7 +125,7 @@ function typed(value: RawComptimeValue, type?: Type): TypedComptimeValue {
     typeof value === "boolean" ? primitiveType("Boolean") :
     value === null ? primitiveType("Null") :
     value === undefined ? primitiveType("Undefined") :
-    Array.isArray(value) ? { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true } :
+    Array.isArray(value) ? arrayType([primitiveType("Unknown")], true) :
     isRawTypeValue(value) ? primitiveType("Type") :
     primitiveType("Unknown")
   );
@@ -535,7 +535,9 @@ describe("builtins", () => {
       expect(isTypeValue(result)).toBe(true);
       const arrType = result.value as Type;
       expect(arrType.kind).toBe("array");
-      expect((arrType as { kind: "array"; variadic: boolean }).variadic).toBe(true);
+      if (arrType.kind === "array") {
+        expect(isVariadicArray(arrType)).toBe(true);
+      }
     });
 
     test("creates tuple type with multiple args", () => {
@@ -550,8 +552,10 @@ describe("builtins", () => {
       expect(isTypeValue(result)).toBe(true);
       const arrType = result.value as Type;
       expect(arrType.kind).toBe("array");
-      expect((arrType as { kind: "array"; variadic: boolean }).variadic).toBe(false);
-      expect((arrType as { kind: "array"; elementTypes: Type[] }).elementTypes).toHaveLength(2);
+      if (arrType.kind === "array") {
+        expect(isVariadicArray(arrType)).toBe(false);
+        expect(getArrayElementTypes(arrType)).toHaveLength(2);
+      }
     });
   });
 

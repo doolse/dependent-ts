@@ -2,7 +2,7 @@
  * Type formatting for error messages.
  */
 
-import { Type, getMetadata, unwrapMetadata } from "./types";
+import { Type, getMetadata, unwrapMetadata, isVariadicArray } from "./types";
 
 /**
  * Format a type as a human-readable string.
@@ -64,13 +64,19 @@ export function formatType(t: Type): string {
     }
 
     case "array": {
-      if (base.variadic && base.elementTypes.length === 1) {
+      const variadic = isVariadicArray(base);
+      if (variadic && base.elements.length === 1 && !base.elements[0].label) {
         // Variable-length array: T[]
-        return `${formatTypeParens(base.elementTypes[0])}[]`;
+        return `${formatTypeParens(base.elements[0].type)}[]`;
       }
 
-      // Fixed-length array: [T, U, ...]
-      return `[${base.elementTypes.map(formatType).join(", ")}]`;
+      // Fixed-length array or array with spread: [T, U, ...] or [x: T, y: U]
+      const formatted = base.elements.map(e => {
+        const spreadPrefix = e.spread ? "..." : "";
+        const labelPrefix = e.label ? `${e.label}: ` : "";
+        return `${spreadPrefix}${labelPrefix}${formatType(e.type)}`;
+      });
+      return `[${formatted.join(", ")}]`;
     }
 
     case "union": {

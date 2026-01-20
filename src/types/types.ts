@@ -23,13 +23,21 @@ export type PrimitiveName =
 export type LiteralBaseType = "Int" | "Float" | "String" | "Boolean";
 
 /**
+ * Typed annotation - stores both the value and its type.
+ */
+export type TypedAnnotation = {
+  value: unknown;
+  type: Type;
+};
+
+/**
  * Field information for record types.
  */
 export type FieldInfo = {
   name: string;
   type: Type;
   optional: boolean;
-  annotations: unknown[];
+  annotations: TypedAnnotation[];
 };
 
 /**
@@ -48,7 +56,7 @@ export type ParamInfo = {
 export type TypeMetadata = {
   name?: string;
   typeArgs?: Type[];
-  annotations?: unknown[];
+  annotations?: TypedAnnotation[];
 };
 
 /**
@@ -93,10 +101,21 @@ export type FunctionType = {
   async: boolean;
 };
 
+/**
+ * Element definition for array types.
+ * Supports labels (e.g., [x: Int, y: Int]) and spread (e.g., [Int, ...String]).
+ */
+export type ArrayElementDef = {
+  type: Type;
+  label?: string;
+  spread?: boolean; // True for ...Type (rest element)
+};
+
 export type ArrayType = {
   kind: "array";
-  elementTypes: Type[];
-  variadic: boolean; // False for fixed-length arrays like [Int, String]
+  elements: ArrayElementDef[];
+  // Derived: isVariadic = any element has spread: true
+  // For backwards compat: single spread element = variadic, else fixed-length
 };
 
 export type UnionType = {
@@ -176,11 +195,50 @@ export function functionType(
   return { kind: "function", params, returnType, async };
 }
 
+/**
+ * Create an array type from types and variadic flag (backward compatible).
+ * For variadic arrays, pass a single type and variadic=true.
+ * For fixed arrays, pass multiple types and variadic=false.
+ */
 export function arrayType(
   elementTypes: Type[],
   variadic: boolean = false
 ): ArrayType {
-  return { kind: "array", elementTypes, variadic };
+  if (variadic) {
+    // Single spread element
+    return {
+      kind: "array",
+      elements: [{ type: elementTypes[0] || primitiveType("Unknown"), spread: true }],
+    };
+  }
+  // Fixed-length array
+  return {
+    kind: "array",
+    elements: elementTypes.map(type => ({ type })),
+  };
+}
+
+/**
+ * Create an array type from element definitions.
+ */
+export function arrayTypeFromElements(elements: ArrayElementDef[]): ArrayType {
+  return { kind: "array", elements };
+}
+
+/**
+ * Check if an array type is variadic (has any spread element).
+ */
+export function isVariadicArray(arr: ArrayType): boolean {
+  return arr.elements.some(e => e.spread === true);
+}
+
+/**
+ * Get the element types from an array type (for backward compatibility).
+ * For variadic arrays, returns the single element type.
+ * For fixed arrays, returns all element types.
+ */
+export function getArrayElementTypes(arr: ArrayType): Type[] {
+  return arr.elements.map(e => e.type);
 }
 
 export function unionType(types: Type[]): Type {
@@ -297,7 +355,7 @@ export function containsTypeType(t: Type): boolean {
         containsTypeType(t.returnType)
       );
     case "array":
-      return t.elementTypes.some(containsTypeType);
+      return t.elements.some(e => containsTypeType(e.type));
     case "union":
     case "intersection":
       return t.types.some(containsTypeType);
@@ -364,9 +422,11 @@ export function substituteThis(type: Type, receiverType: Type): Type {
         type.async
       );
     case "array":
-      return arrayType(
-        type.elementTypes.map((t) => substituteThis(t, receiverType)),
-        type.variadic
+      return arrayTypeFromElements(
+        type.elements.map(e => ({
+          ...e,
+          type: substituteThis(e.type, receiverType),
+        }))
       );
     case "union":
       return unionType(type.types.map((t) => substituteThis(t, receiverType)));
@@ -411,7 +471,7 @@ export function containsThis(type: Type): boolean {
         containsThis(type.returnType)
       );
     case "array":
-      return type.elementTypes.some(containsThis);
+      return type.elements.some(e => containsThis(e.type));
     case "union":
     case "intersection":
       return type.types.some(containsThis);

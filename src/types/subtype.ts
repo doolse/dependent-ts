@@ -11,6 +11,8 @@ import {
   ArrayType,
   FunctionType,
   unwrapMetadata,
+  isVariadicArray,
+  getArrayElementTypes,
 } from "./types";
 
 /**
@@ -215,44 +217,62 @@ function isRecordSubtype(sub: RecordType, sup: RecordType): boolean {
  * Rules:
  * - Fixed-length [A, B] is subtype of variable-length (A | B)[]
  * - For same variadic-ness, element types must match positionally
+ * - Arrays with spread suffix like [Int, ...String] have special rules
  */
 function isArraySubtype(sub: ArrayType, sup: ArrayType): boolean {
+  const subVariadic = isVariadicArray(sub);
+  const supVariadic = isVariadicArray(sup);
+  const subElements = getArrayElementTypes(sub);
+  const supElements = getArrayElementTypes(sup);
+
   // Fixed-length is subtype of variable-length
-  if (!sub.variadic && sup.variadic) {
+  if (!subVariadic && supVariadic) {
     // Sub's element types must all be subtypes of sup's element type union
     const supElementType =
-      sup.elementTypes.length === 1
-        ? sup.elementTypes[0]
-        : { kind: "union" as const, types: sup.elementTypes };
+      supElements.length === 1
+        ? supElements[0]
+        : { kind: "union" as const, types: supElements };
 
-    return sub.elementTypes.every((t) => isSubtype(t, supElementType));
+    return subElements.every((t) => isSubtype(t, supElementType));
   }
 
   // Variable to fixed: NOT a subtype (can't guarantee length)
-  if (sub.variadic && !sup.variadic) {
+  if (subVariadic && !supVariadic) {
     return false;
   }
 
   // Same variadic-ness: check element types
-  if (sub.variadic === sup.variadic) {
-    // For fixed arrays, must have same length
-    if (!sub.variadic && sub.elementTypes.length !== sup.elementTypes.length) {
-      return false;
-    }
+  if (subVariadic === supVariadic) {
+    // Handle spread suffix: [Int, ...String] vs [Int, ...String]
+    // Non-spread elements must match, then spread elements must match
+    const subNonSpread = sub.elements.filter(e => !e.spread);
+    const supNonSpread = sup.elements.filter(e => !e.spread);
+    const subSpread = sub.elements.find(e => e.spread);
+    const supSpread = sup.elements.find(e => e.spread);
 
-    // For variable arrays, check element type
-    if (sub.variadic) {
-      // Both variable: sub's element type must be subtype
-      const subElem = sub.elementTypes[0];
-      const supElem = sup.elementTypes[0];
-      if (subElem && supElem) {
-        return isSubtype(subElem, supElem);
+    // For fixed arrays (no spread), must have same length
+    if (!subSpread && !supSpread) {
+      if (subNonSpread.length !== supNonSpread.length) {
+        return false;
       }
-      return true; // Empty arrays
+      return subNonSpread.every((e, i) => isSubtype(e.type, supNonSpread[i].type));
     }
 
-    // Fixed arrays: check each position
-    return sub.elementTypes.every((t, i) => isSubtype(t, sup.elementTypes[i]));
+    // Both have spread: check fixed prefix and spread element
+    if (subSpread && supSpread) {
+      // Fixed prefix must match
+      if (subNonSpread.length !== supNonSpread.length) {
+        return false;
+      }
+      if (!subNonSpread.every((e, i) => isSubtype(e.type, supNonSpread[i].type))) {
+        return false;
+      }
+      // Spread types must match
+      return isSubtype(subSpread.type, supSpread.type);
+    }
+
+    // Only one has spread - variadic mismatch already handled above
+    return false;
   }
 
   return false;
@@ -355,8 +375,9 @@ function isFunctionSubtype(sub: FunctionType, sup: FunctionType): boolean {
  * Extract the element type from a rest parameter's array type.
  */
 function getRestElementType(param: { type: Type; rest?: boolean }): Type | undefined {
-  if (param.type.kind === "array" && param.type.variadic) {
-    return param.type.elementTypes[0];
+  if (param.type.kind === "array" && isVariadicArray(param.type)) {
+    const spreadElem = param.type.elements.find(e => e.spread);
+    return spreadElem?.type;
   }
   return param.type;
 }
@@ -421,12 +442,14 @@ export function typesEqual(a: Type, b: Type): boolean {
 
     case "array": {
       const bArr = bBase as typeof aBase;
-      if (aBase.variadic !== bArr.variadic) return false;
-      if (aBase.elementTypes.length !== bArr.elementTypes.length) return false;
+      if (aBase.elements.length !== bArr.elements.length) return false;
 
-      return aBase.elementTypes.every((t, i) =>
-        typesEqual(t, bArr.elementTypes[i])
-      );
+      return aBase.elements.every((e, i) => {
+        const bElem = bArr.elements[i];
+        if (e.spread !== bElem.spread) return false;
+        if (e.label !== bElem.label) return false;
+        return typesEqual(e.type, bElem.type);
+      });
     }
 
     case "union":

@@ -7,7 +7,7 @@
 import { describe, test, expect } from "vitest";
 import { parse } from "../parser";
 import { typecheck } from "./typecheck";
-import { Type, primitiveType, literalType, recordType, arrayType, functionType, unwrapMetadata, withMetadata, FunctionType } from "../types/types";
+import { Type, primitiveType, literalType, recordType, arrayType, functionType, unwrapMetadata, withMetadata, FunctionType, isVariadicArray, getArrayElementTypes } from "../types/types";
 import { TypedDecl, TypedExpr } from "../ast/core-ast";
 
 // Helper to parse and typecheck a single expression in a const declaration
@@ -134,16 +134,19 @@ describe("Type Checker", () => {
     test("infers fixed array type", () => {
       const typed = checkExpr("[1, 2, 3]");
       expect(typed.type.kind).toBe("array");
-      const arr = typed.type as Type & { kind: "array" };
-      expect(arr.elementTypes).toHaveLength(3);
+      if (typed.type.kind === "array") {
+        expect(getArrayElementTypes(typed.type)).toHaveLength(3);
+      }
     });
 
     test("preserves element literal types", () => {
       const typed = checkExpr("[1, 2]");
       expect(typed.type.kind).toBe("array");
-      const arr = typed.type as Type & { kind: "array" };
-      expect(arr.elementTypes[0].kind).toBe("literal");
-      expect(arr.elementTypes[1].kind).toBe("literal");
+      if (typed.type.kind === "array") {
+        const elems = getArrayElementTypes(typed.type);
+        expect(elems[0].kind).toBe("literal");
+        expect(elems[1].kind).toBe("literal");
+      }
     });
   });
 
@@ -943,8 +946,9 @@ describe("Type Checker", () => {
       `);
       const decl = result.decls[0] as TypedDecl & { kind: "const" };
       expect(decl.declType.kind).toBe("array");
-      const arr = decl.declType as Type & { kind: "array" };
-      expect(arr.variadic).toBe(true);
+      if (decl.declType.kind === "array") {
+        expect(isVariadicArray(decl.declType)).toBe(true);
+      }
     });
 
     test("record literal widens with contextual type", () => {

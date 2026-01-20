@@ -13,6 +13,7 @@ import {
   arrayType,
   unionType,
   ParamInfo,
+  getArrayElementTypes,
 } from "../types/types";
 
 /**
@@ -21,13 +22,14 @@ import {
  * For variadic arrays like Int[], returns the single element type.
  */
 export function getArrayElementType(arrType: Type & { kind: "array" }): Type {
-  if (arrType.elementTypes.length === 0) {
+  const elementTypes = getArrayElementTypes(arrType);
+  if (elementTypes.length === 0) {
     return primitiveType("Never");
   }
-  if (arrType.elementTypes.length === 1) {
-    return arrType.elementTypes[0];
+  if (elementTypes.length === 1) {
+    return elementTypes[0];
   }
-  return unionType(arrType.elementTypes);
+  return unionType(elementTypes);
 }
 
 /**

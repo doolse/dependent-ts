@@ -166,7 +166,7 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
   let name = "";
   let typeExpr: CoreExpr | undefined;
   const annotations: CoreExpr[] = [];
-  let typeParams: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr }[] = [];
+  let typeParams: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr; annotations?: CoreExpr[] }[] = [];
 
   if (cursor.firstChild()) {
     do {
@@ -220,7 +220,8 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
     constraint: p.type?.kind === "call" && p.type.fn.kind === "identifier" && p.type.fn.name === "Type"
       ? (p.type.args[0]?.kind === "element" ? p.type.args[0].value : undefined)
       : undefined,
-    defaultValue: p.defaultValue
+    defaultValue: p.defaultValue,
+    annotations: p.annotations,
   }))];
 
   const metadata: CoreRecordField[] = [
@@ -266,7 +267,7 @@ function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
           }
         : { kind: "identifier" as const, name: "Type", loc: declLoc },
       defaultValue: tp.defaultValue,
-      annotations: [],
+      annotations: tp.annotations || [],
     }));
 
     // Add typeArgs to metadata
@@ -516,8 +517,8 @@ function desugarExprStatement(cursor: TreeCursor, source: string): CoreDecl {
 function desugarTypeParams(
   cursor: TreeCursor,
   source: string
-): { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr }[] {
-  const params: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr }[] = [];
+): { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr; annotations?: CoreExpr[] }[] {
+  const params: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr; annotations?: CoreExpr[] }[] = [];
 
   if (cursor.firstChild()) {
     do {
@@ -541,18 +542,19 @@ function desugarTypeParams(
 function desugarTypeParam(
   cursor: TreeCursor,
   source: string
-): { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr } {
+): { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr; annotations: CoreExpr[] } {
   let name = "";
   let constraint: CoreExpr | undefined;
   let defaultValue: CoreExpr | undefined;
   let nextIsConstraint = false;
   let nextIsDefault = false;
+  const annotations: CoreExpr[] = [];
 
   if (cursor.firstChild()) {
     do {
       switch (cursor.name) {
         case "Annotation":
-          // TODO: Handle annotations on type params
+          annotations.push(desugarAnnotation(cursor, source));
           break;
         case "TypeName":
           name = text(cursor, source);
@@ -578,7 +580,7 @@ function desugarTypeParam(
     cursor.parent();
   }
 
-  return { name, constraint, defaultValue };
+  return { name, constraint, defaultValue, annotations };
 }
 
 // ============================================
@@ -1900,7 +1902,7 @@ function desugarTupleType(cursor: TreeCursor, source: string): CoreExpr {
     cursor.parent();
   }
 
-  // [A, B, C] → Array(A, B, C)
+  // [A, B, C] → Array(A, B, C) where each element is a record { type, label?, spread? }
   return {
     kind: "call",
     fn: { kind: "identifier", name: "Array", loc: typeLoc },
@@ -1910,14 +1912,22 @@ function desugarTupleType(cursor: TreeCursor, source: string): CoreExpr {
 }
 
 function desugarTupleElement(cursor: TreeCursor, source: string): CoreExpr {
+  const elemLoc = loc(cursor);
   let isSpread = false;
+  let label: string | undefined;
   let type: CoreExpr | undefined;
 
   if (cursor.firstChild()) {
     do {
-      if (nodeName(cursor) === "Spread") {
+      const name = nodeName(cursor);
+      if (name === "Spread") {
         isSpread = true;
-      } else if (isTypeExpression(nodeName(cursor))) {
+      } else if (name === "identifier") {
+        // This is a label if followed by ":"
+        label = text(cursor, source);
+      } else if (name === ":") {
+        // Skip colon
+      } else if (isTypeExpression(name)) {
         type = desugarTypeExpr(cursor, source);
       }
     } while (cursor.nextSibling());
@@ -1928,15 +1938,35 @@ function desugarTupleElement(cursor: TreeCursor, source: string): CoreExpr {
     error("tuple element missing type", cursor);
   }
 
-  // TODO: Handle spread and labels properly
-  return type;
+  // Return record: { type: Type, label?: String, spread?: Boolean }
+  const fields: CoreRecordField[] = [
+    { kind: "field", name: "type", value: type },
+  ];
+
+  if (label !== undefined) {
+    fields.push({
+      kind: "field",
+      name: "label",
+      value: { kind: "literal", value: label, literalKind: "string", loc: elemLoc },
+    });
+  }
+
+  if (isSpread) {
+    fields.push({
+      kind: "field",
+      name: "spread",
+      value: { kind: "literal", value: true, literalKind: "boolean", loc: elemLoc },
+    });
+  }
+
+  return { kind: "record", fields, loc: elemLoc };
 }
 
 function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
   const typeLoc = loc(cursor);
   const params: CoreExpr[] = [];
   let returnType: CoreExpr | undefined;
-  let typeParams: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr }[] = [];
+  let typeParams: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr; annotations?: CoreExpr[] }[] = [];
 
   if (cursor.firstChild()) {
     do {
@@ -1992,7 +2022,7 @@ function desugarFunctionType(cursor: TreeCursor, source: string): CoreExpr {
             loc: typeLoc,
           }
         : { kind: "identifier" as const, name: "Type", loc: typeLoc },
-      annotations: [],
+      annotations: tp.annotations || [],
     }));
 
     return {

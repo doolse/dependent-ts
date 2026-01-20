@@ -14,9 +14,12 @@ import {
   literalType,
   recordType,
   arrayType,
+  arrayTypeFromElements,
   unionType,
   functionType,
   FieldInfo,
+  isVariadicArray,
+  getArrayElementTypes,
 } from "../types/types";
 import { isSubtype } from "../types/subtype";
 import { formatType } from "../types/format";
@@ -373,13 +376,13 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
         }
         // For spreads, we need to wrap each element with its type from the array type
         const arrType = tv.type;
-        const elementType = arrType.kind === "array"
-          ? (arrType.variadic ? arrType.elementTypes[0] : undefined)
-          : undefined;
+        const elementTypes = arrType.kind === "array" ? getArrayElementTypes(arrType) : [];
+        const variadic = arrType.kind === "array" && isVariadicArray(arrType);
+        const elementType = variadic && elementTypes.length > 0 ? elementTypes[0] : undefined;
         const rawElements = tv.value as RawComptimeValue[];
         for (let i = 0; i < rawElements.length; i++) {
-          const elemType = arrType.kind === "array" && !arrType.variadic && i < arrType.elementTypes.length
-            ? arrType.elementTypes[i]
+          const elemType = arrType.kind === "array" && !variadic && i < elementTypes.length
+            ? elementTypes[i]
             : elementType ?? primitiveType("Unknown");
           result.push({ value: rawElements[i], type: elemType });
         }
@@ -615,12 +618,13 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
       // Get element type from array type
       let elemType: Type = primitiveType("Unknown");
       if (obj.type.kind === "array") {
-        if (obj.type.variadic) {
-          elemType = obj.type.elementTypes[0] ?? primitiveType("Unknown");
-        } else if (index.value >= 0 && index.value < obj.type.elementTypes.length) {
-          elemType = obj.type.elementTypes[index.value];
+        const elementTypes = getArrayElementTypes(obj.type);
+        if (isVariadicArray(obj.type)) {
+          elemType = elementTypes[0] ?? primitiveType("Unknown");
+        } else if (index.value >= 0 && index.value < elementTypes.length) {
+          elemType = elementTypes[index.value];
         } else {
-          elemType = unionType(obj.type.elementTypes);
+          elemType = unionType(elementTypes);
         }
       }
       return { value: rawValue, type: elemType };
@@ -783,7 +787,7 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
         hasSpread = true;
         // Add element types from spread
         if (spreadArr.type.kind === "array") {
-          elementTypes.push(...spreadArr.type.elementTypes);
+          elementTypes.push(...getArrayElementTypes(spreadArr.type));
         }
       }
     }
@@ -791,7 +795,7 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
     // If there's a spread, the result is variadic
     const resultType = hasSpread
       ? arrayType([unionType(elementTypes)], true)
-      : arrayType(elementTypes, false);
+      : arrayTypeFromElements(elementTypes.map(type => ({ type })));
 
     return { value: rawResult, type: resultType };
   }
@@ -918,14 +922,16 @@ function getArrayMethod(
   loc?: SourceLocation
 ): TypedComptimeValue | undefined {
   // Get element type from array type
+  const elementTypes = arrType.kind === "array" ? getArrayElementTypes(arrType) : [];
+  const variadic = arrType.kind === "array" && isVariadicArray(arrType);
   const elementType = arrType.kind === "array"
-    ? (arrType.variadic ? arrType.elementTypes[0] : unionType(arrType.elementTypes))
+    ? (variadic ? elementTypes[0] : unionType(elementTypes))
     : primitiveType("Unknown");
 
   // Helper to wrap raw element with its type
   const wrapElement = (elem: RawComptimeValue, index: number): TypedComptimeValue => {
-    const elemType = arrType.kind === "array" && !arrType.variadic && index < arrType.elementTypes.length
-      ? arrType.elementTypes[index]
+    const elemType = arrType.kind === "array" && !variadic && index < elementTypes.length
+      ? elementTypes[index]
       : elementType;
     return { value: elem, type: elemType };
   };
@@ -1207,7 +1213,7 @@ function getArrayMethod(
           }
           // Get the inner element type
           if (mapped.type.kind === "array") {
-            resultTypes.push(...mapped.type.elementTypes);
+            resultTypes.push(...getArrayElementTypes(mapped.type));
           } else {
             resultTypes.push(mapped.type);
           }

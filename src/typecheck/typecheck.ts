@@ -20,10 +20,13 @@ import {
   recordType,
   functionType,
   arrayType,
+  arrayTypeFromElements,
   unionType,
   FieldInfo,
   ParamInfo,
   substituteThis,
+  isVariadicArray,
+  getArrayElementTypes,
 } from "../types/types";
 import { isSubtype } from "../types/subtype";
 import { formatType } from "../types/format";
@@ -625,14 +628,15 @@ class TypeChecker {
         if (checkedExpr.type.kind === "array") {
           // For variadic arrays (T[]), we can't know the count
           // For fixed arrays ([T, U, V]), we expand each element type
-          if (checkedExpr.type.variadic) {
+          const elemTypes = getArrayElementTypes(checkedExpr.type);
+          if (isVariadicArray(checkedExpr.type)) {
             // Variable length - add a single entry representing "unknown number of elements"
             // We'll check against rest param if available
-            const elemType = checkedExpr.type.elementTypes[0] ?? primitiveType("Unknown");
+            const elemType = elemTypes[0] ?? primitiveType("Unknown");
             expandedArgTypes.push({ type: elemType, loc: argExpr.loc });
           } else {
             // Fixed length - expand each element type
-            for (const elemType of checkedExpr.type.elementTypes) {
+            for (const elemType of elemTypes) {
               expandedArgTypes.push({ type: elemType, loc: argExpr.loc });
             }
           }
@@ -652,8 +656,8 @@ class TypeChecker {
           contextType = nonRestParams[expandedIndex].type;
         } else if (restParam) {
           // Rest parameter - get element type
-          if (restParam.type.kind === "array" && restParam.type.variadic) {
-            contextType = restParam.type.elementTypes[0];
+          if (restParam.type.kind === "array" && isVariadicArray(restParam.type)) {
+            contextType = getArrayElementTypes(restParam.type)[0];
           }
         }
 
@@ -679,8 +683,8 @@ class TypeChecker {
     // Check rest arguments against the rest parameter's element type
     if (restParam && expandedArgTypes.length > nonRestParams.length) {
       let restElementType: Type;
-      if (restParam.type.kind === "array" && restParam.type.variadic) {
-        restElementType = restParam.type.elementTypes[0] ?? primitiveType("Unknown");
+      if (restParam.type.kind === "array" && isVariadicArray(restParam.type)) {
+        restElementType = getArrayElementTypes(restParam.type)[0] ?? primitiveType("Unknown");
       } else {
         restElementType = restParam.type;
       }
@@ -920,8 +924,8 @@ class TypeChecker {
       const restParam = sig.params[sig.params.length - 1];
       let restElementType: Type;
 
-      if (restParam.type.kind === "array" && restParam.type.variadic) {
-        restElementType = restParam.type.elementTypes[0] ?? primitiveType("Unknown");
+      if (restParam.type.kind === "array" && isVariadicArray(restParam.type)) {
+        restElementType = getArrayElementTypes(restParam.type)[0] ?? primitiveType("Unknown");
       } else {
         restElementType = restParam.type;
       }
@@ -1148,20 +1152,21 @@ class TypeChecker {
       }
 
       // For fixed-length arrays with literal integer index, return specific element type
+      const elemTypes = getArrayElementTypes(objType);
       if (
-        !objType.variadic &&
+        !isVariadicArray(objType) &&
         index.type.kind === "literal" &&
         index.type.baseType === "Int"
       ) {
         const indexValue = index.type.value as number;
-        if (indexValue >= 0 && indexValue < objType.elementTypes.length) {
-          elementType = objType.elementTypes[indexValue];
+        if (indexValue >= 0 && indexValue < elemTypes.length) {
+          elementType = elemTypes[indexValue];
         } else {
           // Out of bounds - could error here, but for now return union
-          elementType = unionType(objType.elementTypes);
+          elementType = unionType(elemTypes);
         }
       } else {
-        elementType = unionType(objType.elementTypes);
+        elementType = unionType(elemTypes);
       }
     } else if (objType.kind === "record" && objType.indexType) {
       // Indexed record
@@ -1458,8 +1463,8 @@ class TypeChecker {
       let ctx = contextType;
       if (ctx.kind === "withMetadata") ctx = ctx.baseType;
       if (ctx.kind === "array") {
-        elementContextType = unionType(ctx.elementTypes);
-        variadic = ctx.variadic;
+        elementContextType = unionType(getArrayElementTypes(ctx));
+        variadic = isVariadicArray(ctx);
       }
     }
 
@@ -1473,7 +1478,7 @@ class TypeChecker {
           spreadType = spreadType.baseType;
         }
         if (spreadType.kind === "array") {
-          elementTypes.push(...spreadType.elementTypes);
+          elementTypes.push(...getArrayElementTypes(spreadType));
         }
 
         typedElements.push({ kind: "spread", expr: spreadExpr });

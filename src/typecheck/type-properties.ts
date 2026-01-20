@@ -13,6 +13,9 @@ import {
   getMetadata,
   unionType,
   primitiveType,
+  isVariadicArray,
+  getArrayElementTypes,
+  arrayType,
 } from "../types/types";
 import { formatType } from "../types/format";
 import { isSubtype } from "../types/subtype";
@@ -67,7 +70,7 @@ export function getTypeProperty(
       }
       return wrapValue(
         base.fields.map((f) => f.name),
-        { kind: "array", elementTypes: [primitiveType("String")], variadic: true }
+        arrayType([primitiveType("String")], true)
       );
 
     case "length":
@@ -75,7 +78,7 @@ export function getTypeProperty(
         return wrapValue(undefined, primitiveType("Undefined"));
       }
       return wrapValue(
-        base.variadic ? undefined : base.elementTypes.length,
+        isVariadicArray(base) ? undefined : base.elements.length,
         unionType([primitiveType("Int"), primitiveType("Undefined")])
       );
 
@@ -83,7 +86,7 @@ export function getTypeProperty(
       if (base.kind !== "array") {
         return wrapValue(false, primitiveType("Boolean"));
       }
-      return wrapValue(!base.variadic, primitiveType("Boolean"));
+      return wrapValue(!isVariadicArray(base), primitiveType("Boolean"));
 
     case "brand":
       return wrapValue(
@@ -111,7 +114,7 @@ export function getTypeProperty(
           { name: "name", type: primitiveType("String"), optional: false, annotations: [] },
           { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
           { name: "optional", type: primitiveType("Boolean"), optional: false, annotations: [] },
-          { name: "annotations", type: { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true }, optional: false, annotations: [] },
+          { name: "annotations", type: arrayType([primitiveType("Unknown")], true), optional: false, annotations: [] },
         ],
         closed: false,
       };
@@ -122,7 +125,7 @@ export function getTypeProperty(
           optional: f.optional,
           annotations: f.annotations as RawComptimeValue[],
         })),
-        { kind: "array", elementTypes: [FieldInfoType], variadic: true }
+        arrayType([FieldInfoType], true)
       );
 
     case "variants":
@@ -135,13 +138,13 @@ export function getTypeProperty(
       }
       return wrapValue(
         base.types,
-        { kind: "array", elementTypes: [primitiveType("Type")], variadic: true }
+        arrayType([primitiveType("Type")], true)
       );
 
     case "typeArgs":
       return wrapValue(
         metadata?.typeArgs ?? [],
-        { kind: "array", elementTypes: [primitiveType("Type")], variadic: true }
+        arrayType([primitiveType("Type")], true)
       );
 
     case "elementType":
@@ -152,31 +155,33 @@ export function getTypeProperty(
           loc
         );
       }
-      return wrapTypeValue(unionType(base.elementTypes));
+      return wrapTypeValue(unionType(getArrayElementTypes(base)));
 
     case "elements":
-      // ArrayElementInfo type: { type: Type, label: String | Undefined }
+      // ArrayElementInfo type: { type: Type, label: String | Undefined, spread: Boolean | Undefined }
       const ArrayElementInfoType: Type = {
         kind: "record",
         fields: [
           { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
           { name: "label", type: unionType([primitiveType("String"), primitiveType("Undefined")]), optional: false, annotations: [] },
+          { name: "spread", type: unionType([primitiveType("Boolean"), primitiveType("Undefined")]), optional: false, annotations: [] },
         ],
         closed: false,
       };
       if (base.kind !== "array") {
         return wrapValue(undefined, primitiveType("Undefined"));
       }
-      if (base.variadic) {
+      if (isVariadicArray(base)) {
         return wrapValue(undefined, primitiveType("Undefined"));
       }
-      // Return ArrayElementInfo[]
+      // Return ArrayElementInfo[] with actual labels and spread info
       return wrapValue(
-        base.elementTypes.map((t, i) => ({
-          type: t,
-          label: undefined, // TODO: track labels
+        base.elements.map(e => ({
+          type: e.type,
+          label: e.label,
+          spread: e.spread,
         })),
-        { kind: "array", elementTypes: [ArrayElementInfoType], variadic: true }
+        arrayType([ArrayElementInfoType], true)
       );
 
     case "returnType":
@@ -213,7 +218,7 @@ export function getTypeProperty(
       }
       return wrapValue(
         base.params.map((p) => p.type),
-        { kind: "array", elementTypes: [primitiveType("Type")], variadic: true }
+        arrayType([primitiveType("Type")], true)
       );
 
     case "baseType":
@@ -261,9 +266,11 @@ export function getTypeProperty(
       return wrapValue(undefined, primitiveType("Undefined"));
 
     case "annotations":
+      // Extract just the values from TypedAnnotation[]
+      const annValues = (metadata?.annotations ?? []).map(ann => ann.value);
       return wrapValue(
-        (metadata?.annotations ?? []) as RawComptimeValue[],
-        { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true }
+        annValues as RawComptimeValue[],
+        arrayType([primitiveType("Unknown")], true)
       );
 
     case "closed":
@@ -289,7 +296,7 @@ export function getTypeProperty(
       // Return only the function types from the intersection
       return wrapValue(
         base.types.filter((t) => t.kind === "function"),
-        { kind: "array", elementTypes: [primitiveType("Type")], variadic: true }
+        arrayType([primitiveType("Type")], true)
       );
 
     // ============================================
@@ -383,6 +390,7 @@ function createExtendsMethod(type: Type): ComptimeBuiltin {
 
 /**
  * Create the T.annotation<A>() method.
+ * Returns the first annotation whose type is a subtype of the requested type.
  */
 function createAnnotationMethod(
   type: Type,
@@ -408,15 +416,13 @@ function createAnnotationMethod(
           loc
         );
       }
-      const annotationType = rawArg;
+      const annotationType = rawArg as Type;
       const annotations = metadata?.annotations ?? [];
 
-      // Find first annotation that matches the type
+      // Find first annotation whose type is a subtype of the requested type
       for (const ann of annotations) {
-        // TODO: proper type checking of annotation value against annotationType
-        // For now, just return first annotation
-        if (ann !== undefined) {
-          return wrapValue(ann as RawComptimeValue, primitiveType("Unknown"));
+        if (ann.value !== undefined && isSubtype(ann.type, annotationType)) {
+          return wrapValue(ann.value as RawComptimeValue, ann.type);
         }
       }
 
@@ -478,7 +484,7 @@ export function getTypePropertyType(prop: string): Type | undefined {
       { name: "name", type: primitiveType("String"), optional: false, annotations: [] },
       { name: "type", type: primitiveType("Type"), optional: false, annotations: [] },
       { name: "optional", type: primitiveType("Boolean"), optional: false, annotations: [] },
-      { name: "annotations", type: { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true }, optional: false, annotations: [] },
+      { name: "annotations", type: arrayType([primitiveType("Unknown")], true), optional: false, annotations: [] },
     ],
     closed: false,
   };
@@ -500,7 +506,7 @@ export function getTypePropertyType(prop: string): Type | undefined {
     case "baseName":
       return unionType([primitiveType("String"), primitiveType("Undefined")]);
     case "fieldNames":
-      return { kind: "array", elementTypes: [primitiveType("String")], variadic: true };
+      return arrayType([primitiveType("String")], true);
     case "length":
       return unionType([primitiveType("Int"), primitiveType("Undefined")]);
     case "isFixed":
@@ -526,23 +532,23 @@ export function getTypePropertyType(prop: string): Type | undefined {
 
     // Comptime-only properties returning arrays
     case "fields":
-      return { kind: "array", elementTypes: [FieldInfoType], variadic: true };
+      return arrayType([FieldInfoType], true);
     case "variants":
-      return { kind: "array", elementTypes: [primitiveType("Type")], variadic: true };
+      return arrayType([primitiveType("Type")], true);
     case "typeArgs":
-      return { kind: "array", elementTypes: [primitiveType("Type")], variadic: true };
+      return arrayType([primitiveType("Type")], true);
     case "parameterTypes":
-      return { kind: "array", elementTypes: [primitiveType("Type")], variadic: true };
+      return arrayType([primitiveType("Type")], true);
     case "elements":
       return unionType([
-        { kind: "array", elementTypes: [ArrayElementInfoType], variadic: true },
+        arrayType([ArrayElementInfoType], true),
         primitiveType("Undefined"),
       ]);
     case "annotations":
-      return { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true };
+      return arrayType([primitiveType("Unknown")], true);
     case "signatures":
       // Returns Array<FunctionType> - array of function types
-      return { kind: "array", elementTypes: [primitiveType("Type")], variadic: true };
+      return arrayType([primitiveType("Type")], true);
 
     // Methods
     case "extends":
