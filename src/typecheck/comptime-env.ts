@@ -5,32 +5,45 @@
  * - Lazy evaluation: values are computed on first access
  * - Cycle detection: detects circular dependencies
  * - Caching: evaluated values are cached
+ * - TypedComptimeValue: Every comptime value carries its type for easy type introspection
  */
 
-import { Type } from "../types/types";
+import { Type, primitiveType } from "../types/types";
 import { CoreExpr, CompileError, SourceLocation } from "../ast/core-ast";
 import { TypeEnv } from "./type-env";
 
 /**
- * Comptime values that can exist during compile-time evaluation.
+ * Raw comptime values - the underlying value without type information.
+ * Used internally; most code should work with TypedComptimeValue.
  */
-export type ComptimeValue =
-  | Type // Type values
+export type RawComptimeValue =
+  | Type // Type values (when the value IS a Type)
   | string
   | number
   | boolean
   | null
   | undefined
-  | ComptimeValue[] // Arrays
-  | ComptimeRecord // Records
+  | RawComptimeValue[] // Arrays
+  | RawComptimeRecord // Records
   | ComptimeClosure // User-defined functions
   | ComptimeBuiltin; // Built-in functions
 
 // Using a branded type pattern to distinguish plain records from Type values
-export type ComptimeRecord = { [key: string]: ComptimeValue } & { __comptimeRecord?: true };
+export type RawComptimeRecord = { [key: string]: RawComptimeValue } & { __comptimeRecord?: true };
+
+/**
+ * TypedComptimeValue - a value paired with its type.
+ * This is the main type used throughout the comptime evaluator.
+ * Every comptime value knows its type, making typeOf trivial.
+ */
+export type TypedComptimeValue = {
+  value: RawComptimeValue;
+  type: Type;
+};
 
 /**
  * A closure captured during comptime evaluation.
+ * The closure captures its lexical environment and knows its function type.
  */
 export type ComptimeClosure = {
   kind: "closure";
@@ -38,6 +51,7 @@ export type ComptimeClosure = {
   body: CoreExpr;
   env: ComptimeEnv;
   typeEnv: TypeEnv;
+  fnType: Type; // The function type of this closure
 };
 
 /**
@@ -47,17 +61,18 @@ export type ComptimeBuiltin = {
   kind: "builtin";
   name: string;
   impl: BuiltinImpl;
+  fnType?: Type; // Optional function type for the builtin
 };
 
 /**
  * Implementation of a built-in function.
- * The evaluator is passed for recursive evaluation of arguments.
+ * Receives TypedComptimeValue arguments and returns a TypedComptimeValue.
  */
 export type BuiltinImpl = (
-  args: ComptimeValue[],
+  args: TypedComptimeValue[],
   evaluator: ComptimeEvaluatorInterface,
   loc?: SourceLocation
-) => ComptimeValue;
+) => TypedComptimeValue;
 
 /**
  * Interface for the comptime evaluator (to avoid circular deps).
@@ -67,7 +82,7 @@ export interface ComptimeEvaluatorInterface {
     expr: CoreExpr,
     comptimeEnv: ComptimeEnv,
     typeEnv: TypeEnv
-  ): ComptimeValue;
+  ): TypedComptimeValue;
 
   /**
    * Call a closure with pre-evaluated arguments.
@@ -75,18 +90,19 @@ export interface ComptimeEvaluatorInterface {
    */
   applyClosureWithValues(
     closure: ComptimeClosure,
-    args: ComptimeValue[],
+    args: TypedComptimeValue[],
     loc?: SourceLocation
-  ): ComptimeValue;
+  ): TypedComptimeValue;
 }
 
 /**
  * Entry in the comptime environment.
+ * Stores TypedComptimeValue when evaluated.
  */
 export type ComptimeEntry =
   | { status: "unevaluated"; expr: CoreExpr; typeEnv: TypeEnv }
   | { status: "evaluating" } // For cycle detection
-  | { status: "evaluated"; value: ComptimeValue }
+  | { status: "evaluated"; value: TypedComptimeValue }
   | { status: "unavailable" }; // Cannot be evaluated at comptime
 
 /**
@@ -103,12 +119,13 @@ export class ComptimeEnv {
 
   /**
    * Get a value, evaluating lazily if needed.
+   * Returns TypedComptimeValue containing both the value and its type.
    */
   getValue(
     name: string,
     evaluator: ComptimeEvaluatorInterface,
     loc?: SourceLocation
-  ): ComptimeValue {
+  ): TypedComptimeValue {
     const entry = this.getEntry(name);
 
     if (!entry) {
@@ -164,8 +181,9 @@ export class ComptimeEnv {
 
   /**
    * Get an already-evaluated value, or undefined if not evaluated yet.
+   * Returns TypedComptimeValue containing both the value and its type.
    */
-  getEvaluatedValue(name: string): ComptimeValue | undefined {
+  getEvaluatedValue(name: string): TypedComptimeValue | undefined {
     const entry = this.getEntry(name);
     if (entry?.status === "evaluated") {
       return entry.value;
@@ -181,9 +199,9 @@ export class ComptimeEnv {
   }
 
   /**
-   * Define a binding with an already-evaluated value.
+   * Define a binding with an already-evaluated typed value.
    */
-  defineEvaluated(name: string, value: ComptimeValue): void {
+  defineEvaluated(name: string, value: TypedComptimeValue): void {
     this.entries.set(name, { status: "evaluated", value });
   }
 
@@ -226,13 +244,13 @@ export class ComptimeEnv {
 }
 
 // ============================================
-// Type guards for ComptimeValue
+// Type guards for RawComptimeValue
 // ============================================
 
 /**
- * Check if a value is a Type.
+ * Check if a raw value is a Type.
  */
-export function isTypeValue(value: unknown): value is Type {
+export function isRawTypeValue(value: unknown): value is Type {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -256,9 +274,25 @@ export function isTypeValue(value: unknown): value is Type {
 }
 
 /**
- * Check if a value is a closure.
+ * Check if a TypedComptimeValue holds a Type value.
+ * The value's type will be Type (primitive).
  */
-export function isClosureValue(value: ComptimeValue): value is ComptimeClosure {
+export function isTypeValue(tv: TypedComptimeValue): boolean {
+  return (
+    tv.type.kind === "primitive" &&
+    tv.type.name === "Type"
+  );
+}
+
+/**
+ * Legacy alias for isRawTypeValue for backward compatibility.
+ */
+export const isTypeValueRaw = isRawTypeValue;
+
+/**
+ * Check if a raw value is a closure.
+ */
+export function isClosureValue(value: RawComptimeValue): value is ComptimeClosure {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -268,9 +302,9 @@ export function isClosureValue(value: ComptimeValue): value is ComptimeClosure {
 }
 
 /**
- * Check if a value is a builtin.
+ * Check if a raw value is a builtin.
  */
-export function isBuiltinValue(value: ComptimeValue): value is ComptimeBuiltin {
+export function isBuiltinValue(value: RawComptimeValue): value is ComptimeBuiltin {
   return (
     typeof value === "object" &&
     value !== null &&
@@ -280,9 +314,9 @@ export function isBuiltinValue(value: ComptimeValue): value is ComptimeBuiltin {
 }
 
 /**
- * Check if a value is a record (plain object, not a Type).
+ * Check if a raw value is a record (plain object, not a Type).
  */
-export function isRecordValue(value: ComptimeValue): value is ComptimeRecord {
+export function isRecordValue(value: RawComptimeValue): value is RawComptimeRecord {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     return false;
   }
@@ -310,4 +344,30 @@ export function isRecordValue(value: ComptimeValue): value is ComptimeRecord {
     }
   }
   return true;
+}
+
+// ============================================
+// Helper functions for TypedComptimeValue
+// ============================================
+
+/**
+ * Wrap a raw value with its type to create a TypedComptimeValue.
+ */
+export function wrapValue(value: RawComptimeValue, type: Type): TypedComptimeValue {
+  return { value, type };
+}
+
+/**
+ * Extract the raw value from a TypedComptimeValue.
+ */
+export function unwrapValue(tv: TypedComptimeValue): RawComptimeValue {
+  return tv.value;
+}
+
+/**
+ * Create a TypedComptimeValue for a Type value.
+ * When the value IS a Type, its type is the primitive Type.
+ */
+export function wrapTypeValue(typeValue: Type): TypedComptimeValue {
+  return { value: typeValue, type: primitiveType("Type") };
 }

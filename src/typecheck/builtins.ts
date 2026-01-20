@@ -25,11 +25,15 @@ import {
 import { CompileError, SourceLocation } from "../ast/core-ast";
 import {
   ComptimeEnv,
-  ComptimeValue,
+  TypedComptimeValue,
+  RawComptimeValue,
+  RawComptimeRecord,
   ComptimeBuiltin,
-  ComptimeRecord,
   isTypeValue,
+  isRawTypeValue,
   isRecordValue,
+  wrapTypeValue,
+  wrapValue,
 } from "./comptime-env";
 import { TypeEnv } from "./type-env";
 
@@ -88,6 +92,7 @@ const TypeMetadataType: Type = recordType(
 
 /**
  * Create the initial comptime environment with all builtins.
+ * All values are wrapped as TypedComptimeValue.
  */
 export function createInitialComptimeEnv(): ComptimeEnv {
   const env = new ComptimeEnv();
@@ -108,33 +113,42 @@ export function createInitialComptimeEnv(): ComptimeEnv {
   ];
 
   for (const name of primitives) {
-    env.defineEvaluated(name, primitiveType(name));
+    // Each primitive type IS a Type value, so its type is Type
+    env.defineEvaluated(name, wrapTypeValue(primitiveType(name)));
   }
 
-  // Built-in record types
-  env.defineEvaluated("FieldInfo", FieldInfoType);
-  env.defineEvaluated("ParamInfo", ParamInfoType);
-  env.defineEvaluated("ArrayElementInfo", ArrayElementInfoType);
-  env.defineEvaluated("TypeMetadata", TypeMetadataType);
+  // Built-in record types (all are Type values)
+  env.defineEvaluated("FieldInfo", wrapTypeValue(FieldInfoType));
+  env.defineEvaluated("ParamInfo", wrapTypeValue(ParamInfoType));
+  env.defineEvaluated("ArrayElementInfo", wrapTypeValue(ArrayElementInfoType));
+  env.defineEvaluated("TypeMetadata", wrapTypeValue(TypeMetadataType));
 
-  // Type constructors
-  env.defineEvaluated("RecordType", builtinRecordType);
-  env.defineEvaluated("Union", builtinUnion);
-  env.defineEvaluated("Intersection", builtinIntersection);
-  env.defineEvaluated("FunctionType", builtinFunctionType);
-  env.defineEvaluated("Array", builtinArray);
-  env.defineEvaluated("WithMetadata", builtinWithMetadata);
-  env.defineEvaluated("Branded", builtinBranded);
-  env.defineEvaluated("LiteralType", builtinLiteralType);
+  // Type constructors - wrapped as TypedComptimeValue with function type Unknown (for simplicity)
+  env.defineEvaluated("RecordType", wrapBuiltinValue(builtinRecordType));
+  env.defineEvaluated("Union", wrapBuiltinValue(builtinUnion));
+  env.defineEvaluated("Intersection", wrapBuiltinValue(builtinIntersection));
+  env.defineEvaluated("FunctionType", wrapBuiltinValue(builtinFunctionType));
+  env.defineEvaluated("Array", wrapBuiltinValue(builtinArray));
+  env.defineEvaluated("WithMetadata", wrapBuiltinValue(builtinWithMetadata));
+  env.defineEvaluated("Branded", wrapBuiltinValue(builtinBranded));
+  env.defineEvaluated("LiteralType", wrapBuiltinValue(builtinLiteralType));
 
   // Special builtins
-  env.defineEvaluated("typeOf", builtinTypeOf);
-  env.defineEvaluated("assert", builtinAssert);
+  env.defineEvaluated("typeOf", wrapBuiltinValue(builtinTypeOf));
+  env.defineEvaluated("assert", wrapBuiltinValue(builtinAssert));
 
   // This type
-  env.defineEvaluated("This", { kind: "this" } as Type);
+  env.defineEvaluated("This", wrapTypeValue({ kind: "this" } as Type));
 
   return env;
+}
+
+/**
+ * Helper to wrap a builtin as a TypedComptimeValue.
+ */
+function wrapBuiltinValue(builtin: ComptimeBuiltin): TypedComptimeValue {
+  // Builtins are functions, their precise type is defined in TypeEnv
+  return wrapValue(builtin, primitiveType("Unknown"));
 }
 
 /**
@@ -317,7 +331,7 @@ const builtinRecordType: ComptimeBuiltin = {
       );
     }
 
-    const fieldsArg = args[0];
+    const fieldsArg = args[0].value;
     if (!Array.isArray(fieldsArg)) {
       throw new CompileError(
         "RecordType first argument must be an array of FieldInfo",
@@ -342,13 +356,15 @@ const builtinRecordType: ComptimeBuiltin = {
       };
     });
 
-    const indexType = args.length > 1 ? (args[1] as Type | undefined) : undefined;
+    const indexType = args.length > 1 && isTypeValue(args[1])
+      ? (args[1].value as Type)
+      : undefined;
 
     // Determine if closed based on indexType being Never
     const closed =
       indexType?.kind === "primitive" && indexType.name === "Never";
 
-    return recordType(fields, { indexType: closed ? undefined : indexType, closed });
+    return wrapTypeValue(recordType(fields, { indexType: closed ? undefined : indexType, closed }));
   },
 };
 
@@ -366,10 +382,10 @@ const builtinUnion: ComptimeBuiltin = {
           loc
         );
       }
-      types.push(arg);
+      types.push(arg.value as Type);
     }
 
-    return unionType(types);
+    return wrapTypeValue(unionType(types));
   },
 };
 
@@ -387,10 +403,10 @@ const builtinIntersection: ComptimeBuiltin = {
           loc
         );
       }
-      types.push(arg);
+      types.push(arg.value as Type);
     }
 
-    return intersectionType(types);
+    return wrapTypeValue(intersectionType(types));
   },
 };
 
@@ -406,7 +422,7 @@ const builtinFunctionType: ComptimeBuiltin = {
       );
     }
 
-    const paramInfos = args[0];
+    const paramInfos = args[0].value;
     if (!Array.isArray(paramInfos)) {
       throw new CompileError(
         "FunctionType first argument must be an array of ParamInfo",
@@ -415,19 +431,19 @@ const builtinFunctionType: ComptimeBuiltin = {
       );
     }
 
-    const returnType = args[1];
-    if (!isTypeValue(returnType)) {
+    if (!isTypeValue(args[1])) {
       throw new CompileError(
         "FunctionType second argument must be a Type",
         "typecheck",
         loc
       );
     }
+    const returnType = args[1].value as Type;
 
     // Convert ParamInfo records or Types to ParamInfo
     const params = paramInfos.map((p, i) => {
       // If it's a Type directly (legacy format), wrap it
-      if (isTypeValue(p)) {
+      if (isRawTypeValue(p)) {
         return { name: `arg${i}`, type: p, optional: false };
       }
       // If it's a ParamInfo record with name, type, optional, rest
@@ -436,13 +452,14 @@ const builtinFunctionType: ComptimeBuiltin = {
         p !== null &&
         "name" in p &&
         "type" in p &&
-        isTypeValue(p.type as unknown)
+        isRawTypeValue((p as RawComptimeRecord).type)
       ) {
+        const rec = p as RawComptimeRecord;
         return {
-          name: String(p.name),
-          type: p.type as Type,
-          optional: Boolean(p.optional),
-          rest: Boolean(p.rest),
+          name: String(rec.name),
+          type: rec.type as Type,
+          optional: Boolean(rec.optional),
+          rest: Boolean(rec.rest),
         };
       }
       throw new CompileError(
@@ -452,7 +469,7 @@ const builtinFunctionType: ComptimeBuiltin = {
       );
     });
 
-    return functionType(params, returnType);
+    return wrapTypeValue(functionType(params, returnType));
   },
 };
 
@@ -470,14 +487,14 @@ const builtinArray: ComptimeBuiltin = {
           loc
         );
       }
-      types.push(arg);
+      types.push(arg.value as Type);
     }
 
     // Single type = variable-length array
     // Multiple types = fixed-length array (tuple)
     const variadic = types.length === 1;
 
-    return arrayType(types, variadic);
+    return wrapTypeValue(arrayType(types, variadic));
   },
 };
 
@@ -493,16 +510,16 @@ const builtinWithMetadata: ComptimeBuiltin = {
       );
     }
 
-    const baseType = args[0];
-    if (!isTypeValue(baseType)) {
+    if (!isTypeValue(args[0])) {
       throw new CompileError(
         "WithMetadata first argument must be a Type",
         "typecheck",
         loc
       );
     }
+    const baseType = args[0].value as Type;
 
-    const metadataArg = args[1];
+    const metadataArg = args[1].value;
     if (!isRecordValue(metadataArg)) {
       throw new CompileError(
         "WithMetadata second argument must be a metadata record",
@@ -517,7 +534,7 @@ const builtinWithMetadata: ComptimeBuiltin = {
       annotations: metadataArg.annotations as unknown[] | undefined,
     };
 
-    return withMetadata(baseType, metadata);
+    return wrapTypeValue(withMetadata(baseType, metadata));
   },
 };
 
@@ -533,16 +550,16 @@ const builtinBranded: ComptimeBuiltin = {
       );
     }
 
-    const baseType = args[0];
-    if (!isTypeValue(baseType)) {
+    if (!isTypeValue(args[0])) {
       throw new CompileError(
         "Branded first argument must be a Type",
         "typecheck",
         loc
       );
     }
+    const baseType = args[0].value as Type;
 
-    const brand = args[1];
+    const brand = args[1].value;
     if (typeof brand !== "string") {
       throw new CompileError(
         "Branded second argument must be a string",
@@ -551,7 +568,7 @@ const builtinBranded: ComptimeBuiltin = {
       );
     }
 
-    return brandedType(baseType, brand, brand);
+    return wrapTypeValue(brandedType(baseType, brand, brand));
   },
 };
 
@@ -567,17 +584,17 @@ const builtinLiteralType: ComptimeBuiltin = {
       );
     }
 
-    const value = args[0];
+    const value = args[0].value;
 
     // Determine the base type from the value
     if (typeof value === "string") {
-      return literalType(value, "String");
+      return wrapTypeValue(literalType(value, "String"));
     } else if (typeof value === "number") {
       // Check if it's an integer or float
       const isInt = Number.isInteger(value);
-      return literalType(value, isInt ? "Int" : "Float");
+      return wrapTypeValue(literalType(value, isInt ? "Int" : "Float"));
     } else if (typeof value === "boolean") {
-      return literalType(value, "Boolean");
+      return wrapTypeValue(literalType(value, "Boolean"));
     } else {
       throw new CompileError(
         `LiteralType argument must be a string, number, or boolean, got ${typeof value}`,
@@ -588,17 +605,24 @@ const builtinLiteralType: ComptimeBuiltin = {
   },
 };
 
+/**
+ * typeOf builtin - NOW TRIVIAL!
+ * With TypedComptimeValue, we just extract the type from the argument.
+ */
 const builtinTypeOf: ComptimeBuiltin = {
   kind: "builtin",
   name: "typeOf",
-  impl: (_args, _evaluator, loc) => {
-    // typeOf is special - it needs access to type information
-    // This is handled specially in the type checker, not here
-    throw new CompileError(
-      "typeOf must be handled specially during type checking, not comptime evaluation",
-      "typecheck",
-      loc
-    );
+  impl: (args, _evaluator, loc) => {
+    if (args.length !== 1) {
+      throw new CompileError(
+        "typeOf expects exactly 1 argument",
+        "typecheck",
+        loc
+      );
+    }
+    // The type is right there on the argument!
+    // Return it wrapped as a Type value
+    return wrapTypeValue(args[0].type);
   },
 };
 
@@ -614,14 +638,14 @@ const builtinAssert: ComptimeBuiltin = {
       );
     }
 
-    const condition = args[0];
-    const message = args.length > 1 ? String(args[1]) : "Assertion failed";
+    const condition = args[0].value;
+    const message = args.length > 1 ? String(args[1].value) : "Assertion failed";
 
     if (!condition) {
       throw new CompileError(message, "typecheck", loc);
     }
 
-    return undefined; // Void
+    return wrapValue(undefined, primitiveType("Void"));
   },
 };
 
@@ -636,19 +660,19 @@ const builtinType: ComptimeBuiltin = {
   impl: (args, _evaluator, loc) => {
     if (args.length === 0) {
       // Type with no args = unbounded Type
-      return primitiveType("Type");
+      return wrapTypeValue(primitiveType("Type"));
     }
 
-    const bound = args[0];
-    if (!isTypeValue(bound)) {
+    if (!isTypeValue(args[0])) {
       throw new CompileError(
         "Type argument must be a Type",
         "typecheck",
         loc
       );
     }
+    const bound = args[0].value as Type;
 
     // Type(Bound) creates a bounded type constraint
-    return boundedType(bound as Type);
+    return wrapTypeValue(boundedType(bound));
   },
 };

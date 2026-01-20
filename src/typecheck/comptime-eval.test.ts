@@ -3,8 +3,8 @@
  */
 
 import { describe, test, expect } from "vitest";
-import { ComptimeEvaluator, comptimeEquals } from "./comptime-eval";
-import { ComptimeEnv, ComptimeValue, isTypeValue } from "./comptime-env";
+import { ComptimeEvaluator, rawComptimeEquals } from "./comptime-eval";
+import { ComptimeEnv, TypedComptimeValue, isTypeValue, isRawTypeValue, wrapValue, RawComptimeValue } from "./comptime-env";
 import { TypeEnv } from "./type-env";
 import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
 import { CoreExpr, BinaryOp, dummyLoc, located, CorePattern, CoreCase, CorePatternField, CoreTemplatePart } from "../ast/core-ast";
@@ -116,6 +116,27 @@ function destructurePattern(fields: CorePatternField[]): CorePattern {
   return loc({ kind: "destructure", fields });
 }
 
+// Helper to wrap a raw value with a type for testing
+function typed(value: RawComptimeValue, type?: Type): TypedComptimeValue {
+  // Default type based on value type
+  const defaultType: Type = type ?? (
+    typeof value === "number" ? (Number.isInteger(value) ? primitiveType("Int") : primitiveType("Float")) :
+    typeof value === "string" ? primitiveType("String") :
+    typeof value === "boolean" ? primitiveType("Boolean") :
+    value === null ? primitiveType("Null") :
+    value === undefined ? primitiveType("Undefined") :
+    Array.isArray(value) ? { kind: "array", elementTypes: [primitiveType("Unknown")], variadic: true } :
+    isRawTypeValue(value) ? primitiveType("Type") :
+    primitiveType("Unknown")
+  );
+  return wrapValue(value, defaultType);
+}
+
+// Helper to evaluate and extract raw value
+function evalRaw(evaluator: ComptimeEvaluator, expr: CoreExpr, env: ComptimeEnv, typeEnv: TypeEnv): RawComptimeValue {
+  return evaluator.evaluate(expr, env, typeEnv).value;
+}
+
 describe("ComptimeEvaluator", () => {
   describe("literals", () => {
     test("evaluates integer literals", () => {
@@ -123,9 +144,9 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(literal(42), env, typeEnv)).toBe(42);
-      expect(evaluator.evaluate(literal(0), env, typeEnv)).toBe(0);
-      expect(evaluator.evaluate(literal(-5), env, typeEnv)).toBe(-5);
+      expect(evalRaw(evaluator, literal(42), env, typeEnv)).toBe(42);
+      expect(evalRaw(evaluator, literal(0), env, typeEnv)).toBe(0);
+      expect(evalRaw(evaluator, literal(-5), env, typeEnv)).toBe(-5);
     });
 
     test("evaluates float literals", () => {
@@ -133,8 +154,8 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(literal(3.14), env, typeEnv)).toBe(3.14);
-      expect(evaluator.evaluate(literal(0.0), env, typeEnv)).toBe(0.0);
+      expect(evalRaw(evaluator, literal(3.14), env, typeEnv)).toBe(3.14);
+      expect(evalRaw(evaluator, literal(0.0), env, typeEnv)).toBe(0.0);
     });
 
     test("evaluates string literals", () => {
@@ -142,8 +163,8 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(literal("hello"), env, typeEnv)).toBe("hello");
-      expect(evaluator.evaluate(literal(""), env, typeEnv)).toBe("");
+      expect(evalRaw(evaluator, literal("hello"), env, typeEnv)).toBe("hello");
+      expect(evalRaw(evaluator, literal(""), env, typeEnv)).toBe("");
     });
 
     test("evaluates boolean literals", () => {
@@ -151,8 +172,8 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(literal(true), env, typeEnv)).toBe(true);
-      expect(evaluator.evaluate(literal(false), env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, literal(true), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, literal(false), env, typeEnv)).toBe(false);
     });
 
     test("evaluates null and undefined", () => {
@@ -160,8 +181,8 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(literal(null), env, typeEnv)).toBe(null);
-      expect(evaluator.evaluate(literal(undefined), env, typeEnv)).toBe(undefined);
+      expect(evalRaw(evaluator, literal(null), env, typeEnv)).toBe(null);
+      expect(evalRaw(evaluator, literal(undefined), env, typeEnv)).toBe(undefined);
     });
   });
 
@@ -171,11 +192,11 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      env.defineEvaluated("x", 42);
-      env.defineEvaluated("name", "hello");
+      env.defineEvaluated("x", typed(42));
+      env.defineEvaluated("name", typed("hello"));
 
-      expect(evaluator.evaluate(id("x"), env, typeEnv)).toBe(42);
-      expect(evaluator.evaluate(id("name"), env, typeEnv)).toBe("hello");
+      expect(evalRaw(evaluator, id("x"), env, typeEnv)).toBe(42);
+      expect(evalRaw(evaluator, id("name"), env, typeEnv)).toBe("hello");
     });
 
     test("throws on undefined identifier", () => {
@@ -197,10 +218,10 @@ describe("ComptimeEvaluator", () => {
       env.defineUnevaluated("lazy", literal(100), typeEnv);
 
       // Should evaluate on access
-      expect(evaluator.evaluate(id("lazy"), env, typeEnv)).toBe(100);
+      expect(evalRaw(evaluator, id("lazy"), env, typeEnv)).toBe(100);
 
       // Should be cached now
-      expect(env.getEvaluatedValue("lazy")).toBe(100);
+      expect(env.getEvaluatedValue("lazy")?.value).toBe(100);
     });
   });
 
@@ -210,11 +231,11 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(binary("+", literal(2), literal(3)), env, typeEnv)).toBe(5);
-      expect(evaluator.evaluate(binary("-", literal(10), literal(4)), env, typeEnv)).toBe(6);
-      expect(evaluator.evaluate(binary("*", literal(3), literal(4)), env, typeEnv)).toBe(12);
-      expect(evaluator.evaluate(binary("/", literal(10), literal(2)), env, typeEnv)).toBe(5);
-      expect(evaluator.evaluate(binary("%", literal(10), literal(3)), env, typeEnv)).toBe(1);
+      expect(evalRaw(evaluator, binary("+", literal(2), literal(3)), env, typeEnv)).toBe(5);
+      expect(evalRaw(evaluator, binary("-", literal(10), literal(4)), env, typeEnv)).toBe(6);
+      expect(evalRaw(evaluator, binary("*", literal(3), literal(4)), env, typeEnv)).toBe(12);
+      expect(evalRaw(evaluator, binary("/", literal(10), literal(2)), env, typeEnv)).toBe(5);
+      expect(evalRaw(evaluator, binary("%", literal(10), literal(3)), env, typeEnv)).toBe(1);
     });
 
     test("string concatenation", () => {
@@ -222,10 +243,10 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(binary("+", literal("hello"), literal(" world")), env, typeEnv)).toBe(
+      expect(evalRaw(evaluator, binary("+", literal("hello"), literal(" world")), env, typeEnv)).toBe(
         "hello world"
       );
-      expect(evaluator.evaluate(binary("+", literal("num: "), literal(42)), env, typeEnv)).toBe(
+      expect(evalRaw(evaluator, binary("+", literal("num: "), literal(42)), env, typeEnv)).toBe(
         "num: 42"
       );
     });
@@ -235,12 +256,12 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(binary("<", literal(1), literal(2)), env, typeEnv)).toBe(true);
-      expect(evaluator.evaluate(binary(">", literal(5), literal(3)), env, typeEnv)).toBe(true);
-      expect(evaluator.evaluate(binary("<=", literal(3), literal(3)), env, typeEnv)).toBe(true);
-      expect(evaluator.evaluate(binary(">=", literal(4), literal(4)), env, typeEnv)).toBe(true);
-      expect(evaluator.evaluate(binary("==", literal(5), literal(5)), env, typeEnv)).toBe(true);
-      expect(evaluator.evaluate(binary("!=", literal(5), literal(6)), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, binary("<", literal(1), literal(2)), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, binary(">", literal(5), literal(3)), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, binary("<=", literal(3), literal(3)), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, binary(">=", literal(4), literal(4)), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, binary("==", literal(5), literal(5)), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, binary("!=", literal(5), literal(6)), env, typeEnv)).toBe(true);
     });
 
     test("logical operations", () => {
@@ -248,10 +269,10 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(binary("&&", literal(true), literal(true)), env, typeEnv)).toBe(true);
-      expect(evaluator.evaluate(binary("&&", literal(true), literal(false)), env, typeEnv)).toBe(false);
-      expect(evaluator.evaluate(binary("||", literal(false), literal(true)), env, typeEnv)).toBe(true);
-      expect(evaluator.evaluate(binary("||", literal(false), literal(false)), env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, binary("&&", literal(true), literal(true)), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, binary("&&", literal(true), literal(false)), env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, binary("||", literal(false), literal(true)), env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, binary("||", literal(false), literal(false)), env, typeEnv)).toBe(false);
     });
 
     test("bitwise operations", () => {
@@ -259,9 +280,9 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(binary("|", literal(5), literal(3)), env, typeEnv)).toBe(7);
-      expect(evaluator.evaluate(binary("&", literal(5), literal(3)), env, typeEnv)).toBe(1);
-      expect(evaluator.evaluate(binary("^", literal(5), literal(3)), env, typeEnv)).toBe(6);
+      expect(evalRaw(evaluator, binary("|", literal(5), literal(3)), env, typeEnv)).toBe(7);
+      expect(evalRaw(evaluator, binary("&", literal(5), literal(3)), env, typeEnv)).toBe(1);
+      expect(evalRaw(evaluator, binary("^", literal(5), literal(3)), env, typeEnv)).toBe(6);
     });
   });
 
@@ -275,9 +296,9 @@ describe("ComptimeEvaluator", () => {
       const not = (e: CoreExpr): CoreExpr => loc({ kind: "unary", op: "!", operand: e });
       const bitnot = (e: CoreExpr): CoreExpr => loc({ kind: "unary", op: "~", operand: e });
 
-      expect(evaluator.evaluate(neg(literal(5)), env, typeEnv)).toBe(-5);
-      expect(evaluator.evaluate(not(literal(true)), env, typeEnv)).toBe(false);
-      expect(evaluator.evaluate(bitnot(literal(5)), env, typeEnv)).toBe(~5);
+      expect(evalRaw(evaluator, neg(literal(5)), env, typeEnv)).toBe(-5);
+      expect(evalRaw(evaluator, not(literal(true)), env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, bitnot(literal(5)), env, typeEnv)).toBe(~5);
     });
   });
 
@@ -288,7 +309,7 @@ describe("ComptimeEvaluator", () => {
       const typeEnv = new TypeEnv();
 
       const result = evaluator.evaluate(array(literal(1), literal(2), literal(3)), env, typeEnv);
-      expect(result).toEqual([1, 2, 3]);
+      expect(result.value).toEqual([1, 2, 3]);
     });
 
     test("evaluates record literals", () => {
@@ -297,7 +318,7 @@ describe("ComptimeEvaluator", () => {
       const typeEnv = new TypeEnv();
 
       const result = evaluator.evaluate(record({ a: literal(1), b: literal("hello") }), env, typeEnv);
-      expect(result).toEqual({ a: 1, b: "hello" });
+      expect(result.value).toEqual({ a: 1, b: "hello" });
     });
 
     test("property access on records", () => {
@@ -306,8 +327,8 @@ describe("ComptimeEvaluator", () => {
       const typeEnv = new TypeEnv();
 
       const rec = record({ x: literal(10), y: literal(20) });
-      expect(evaluator.evaluate(prop(rec, "x"), env, typeEnv)).toBe(10);
-      expect(evaluator.evaluate(prop(rec, "y"), env, typeEnv)).toBe(20);
+      expect(evalRaw(evaluator, prop(rec, "x"), env, typeEnv)).toBe(10);
+      expect(evalRaw(evaluator, prop(rec, "y"), env, typeEnv)).toBe(20);
     });
 
     test("index access on arrays", () => {
@@ -318,8 +339,8 @@ describe("ComptimeEvaluator", () => {
       const arr = array(literal("a"), literal("b"), literal("c"));
       const idx = (obj: CoreExpr, i: CoreExpr): CoreExpr => loc({ kind: "index", object: obj, index: i });
 
-      expect(evaluator.evaluate(idx(arr, literal(0)), env, typeEnv)).toBe("a");
-      expect(evaluator.evaluate(idx(arr, literal(1)), env, typeEnv)).toBe("b");
+      expect(evalRaw(evaluator, idx(arr, literal(0)), env, typeEnv)).toBe("a");
+      expect(evalRaw(evaluator, idx(arr, literal(1)), env, typeEnv)).toBe("b");
     });
 
     test("array length", () => {
@@ -328,7 +349,7 @@ describe("ComptimeEvaluator", () => {
       const typeEnv = new TypeEnv();
 
       const arr = array(literal(1), literal(2), literal(3));
-      expect(evaluator.evaluate(prop(arr, "length"), env, typeEnv)).toBe(3);
+      expect(evalRaw(evaluator, prop(arr, "length"), env, typeEnv)).toBe(3);
     });
   });
 
@@ -343,7 +364,7 @@ describe("ComptimeEvaluator", () => {
       // addOne(5)
       const callExpr = call(addOne, [literal(5)]);
 
-      expect(evaluator.evaluate(callExpr, env, typeEnv)).toBe(6);
+      expect(evalRaw(evaluator, callExpr, env, typeEnv)).toBe(6);
     });
 
     test("evaluates multi-param lambda", () => {
@@ -356,7 +377,7 @@ describe("ComptimeEvaluator", () => {
       // add(3, 4)
       const callExpr = call(add, [literal(3), literal(4)]);
 
-      expect(evaluator.evaluate(callExpr, env, typeEnv)).toBe(7);
+      expect(evalRaw(evaluator, callExpr, env, typeEnv)).toBe(7);
     });
 
     test("closures capture environment", () => {
@@ -364,14 +385,14 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      env.defineEvaluated("multiplier", 10);
+      env.defineEvaluated("multiplier", typed(10));
 
       // (x) => x * multiplier
       const times = lambda(["x"], binary("*", id("x"), id("multiplier")));
       // times(5)
       const callExpr = call(times, [literal(5)]);
 
-      expect(evaluator.evaluate(callExpr, env, typeEnv)).toBe(50);
+      expect(evalRaw(evaluator, callExpr, env, typeEnv)).toBe(50);
     });
   });
 
@@ -381,7 +402,7 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(cond(literal(true), literal("yes"), literal("no")), env, typeEnv)).toBe(
+      expect(evalRaw(evaluator, cond(literal(true), literal("yes"), literal("no")), env, typeEnv)).toBe(
         "yes"
       );
     });
@@ -391,7 +412,7 @@ describe("ComptimeEvaluator", () => {
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
 
-      expect(evaluator.evaluate(cond(literal(false), literal("yes"), literal("no")), env, typeEnv)).toBe(
+      expect(evalRaw(evaluator, cond(literal(false), literal("yes"), literal("no")), env, typeEnv)).toBe(
         "no"
       );
     });
@@ -407,7 +428,7 @@ describe("ComptimeEvaluator", () => {
         env,
         typeEnv
       );
-      expect(result).toBe("safe");
+      expect(result.value).toBe("safe");
     });
   });
 
@@ -432,7 +453,7 @@ describe("ComptimeEvaluator", () => {
       const typeEnv = new TypeEnv();
 
       // Use some fuel
-      evaluator.evaluate(literal(1), env, typeEnv);
+      evalRaw(evaluator, literal(1), env, typeEnv);
       expect(evaluator.getRemainingFuel()).toBeLessThan(100);
 
       // Reset
@@ -451,13 +472,13 @@ describe("builtins", () => {
 
       const int = evaluator.evaluate(id("Int"), env, typeEnv);
       expect(isTypeValue(int)).toBe(true);
-      expect((int as Type).kind).toBe("primitive");
-      expect((int as Type & { kind: "primitive" }).name).toBe("Int");
+      expect((int.value as Type).kind).toBe("primitive");
+      expect((int.value as Type & { kind: "primitive" }).name).toBe("Int");
 
       const str = evaluator.evaluate(id("String"), env, typeEnv);
       expect(isTypeValue(str)).toBe(true);
-      expect((str as Type).kind).toBe("primitive");
-      expect((str as Type & { kind: "primitive" }).name).toBe("String");
+      expect((str.value as Type).kind).toBe("primitive");
+      expect((str.value as Type & { kind: "primitive" }).name).toBe("String");
     });
   });
 
@@ -472,9 +493,9 @@ describe("builtins", () => {
       const result = evaluator.evaluate(unionExpr, env, typeEnv);
 
       expect(isTypeValue(result)).toBe(true);
-      const unionType = result as Type;
-      expect(unionType.kind).toBe("union");
-      expect((unionType as { kind: "union"; types: Type[] }).types).toHaveLength(2);
+      const unionTypeVal = result.value as Type;
+      expect(unionTypeVal.kind).toBe("union");
+      expect((unionTypeVal as { kind: "union"; types: Type[] }).types).toHaveLength(2);
     });
   });
 
@@ -495,7 +516,7 @@ describe("builtins", () => {
       const result = evaluator.evaluate(recordTypeExpr, env, typeEnv);
 
       expect(isTypeValue(result)).toBe(true);
-      const recType = result as Type;
+      const recType = result.value as Type;
       expect(recType.kind).toBe("record");
       expect((recType as { kind: "record"; fields: { name: string }[] }).fields[0].name).toBe("x");
     });
@@ -512,7 +533,7 @@ describe("builtins", () => {
       const result = evaluator.evaluate(arrayExpr, env, typeEnv);
 
       expect(isTypeValue(result)).toBe(true);
-      const arrType = result as Type;
+      const arrType = result.value as Type;
       expect(arrType.kind).toBe("array");
       expect((arrType as { kind: "array"; variadic: boolean }).variadic).toBe(true);
     });
@@ -527,7 +548,7 @@ describe("builtins", () => {
       const result = evaluator.evaluate(tupleExpr, env, typeEnv);
 
       expect(isTypeValue(result)).toBe(true);
-      const arrType = result as Type;
+      const arrType = result.value as Type;
       expect(arrType.kind).toBe("array");
       expect((arrType as { kind: "array"; variadic: boolean }).variadic).toBe(false);
       expect((arrType as { kind: "array"; elementTypes: Type[] }).elementTypes).toHaveLength(2);
@@ -571,8 +592,8 @@ describe("type properties", () => {
       const env = createInitialComptimeEnv();
       const typeEnv = createInitialTypeEnv();
 
-      expect(evaluator.evaluate(prop(id("Int"), "name"), env, typeEnv)).toBe("Int");
-      expect(evaluator.evaluate(prop(id("String"), "name"), env, typeEnv)).toBe("String");
+      expect(evalRaw(evaluator, prop(id("Int"), "name"), env, typeEnv)).toBe("Int");
+      expect(evalRaw(evaluator, prop(id("String"), "name"), env, typeEnv)).toBe("String");
     });
   });
 
@@ -602,7 +623,7 @@ describe("type properties", () => {
 
       // Get fieldNames
       const fieldNames = evaluator.evaluate(prop(id("MyRecord"), "fieldNames"), env, typeEnv);
-      expect(fieldNames).toEqual(["x", "y"]);
+      expect(fieldNames.value).toEqual(["x", "y"]);
     });
 
     test(".fields returns FieldInfo array", () => {
@@ -619,7 +640,8 @@ describe("type properties", () => {
       const recTypeExpr = call(id("RecordType"), [array(fieldInfo)]);
       env.defineEvaluated("MyRecord", evaluator.evaluate(recTypeExpr, env, typeEnv));
 
-      const fields = evaluator.evaluate(prop(id("MyRecord"), "fields"), env, typeEnv) as ComptimeValue[];
+      const fieldsResult = evaluator.evaluate(prop(id("MyRecord"), "fields"), env, typeEnv);
+      const fields = fieldsResult.value as RawComptimeValue[];
       expect(Array.isArray(fields)).toBe(true);
       expect(fields).toHaveLength(1);
       expect((fields[0] as Record<string, unknown>).name).toBe("value");
@@ -635,11 +657,11 @@ describe("type properties", () => {
 
       // Int.extends(Number) should be true
       const extendsCall = call(prop(id("Int"), "extends"), [id("Number")]);
-      expect(evaluator.evaluate(extendsCall, env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, extendsCall, env, typeEnv)).toBe(true);
 
       // String.extends(Number) should be false
       const extendsCall2 = call(prop(id("String"), "extends"), [id("Number")]);
-      expect(evaluator.evaluate(extendsCall2, env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, extendsCall2, env, typeEnv)).toBe(false);
     });
   });
 
@@ -654,10 +676,11 @@ describe("type properties", () => {
       env.defineEvaluated("MyUnion", evaluator.evaluate(unionExpr, env, typeEnv));
 
       // Get variants
-      const variants = evaluator.evaluate(prop(id("MyUnion"), "variants"), env, typeEnv) as Type[];
+      const variantsResult = evaluator.evaluate(prop(id("MyUnion"), "variants"), env, typeEnv);
+      const variants = variantsResult.value as Type[];
       expect(Array.isArray(variants)).toBe(true);
       expect(variants).toHaveLength(2);
-      expect(variants.every(isTypeValue)).toBe(true);
+      expect(variants.every(isRawTypeValue)).toBe(true);
     });
   });
 });
@@ -675,8 +698,8 @@ describe("function type properties", () => {
 
       const result = evaluator.evaluate(returnType, env, typeEnv);
       expect(isTypeValue(result)).toBe(true);
-      expect((result as Type).kind).toBe("primitive");
-      expect((result as Type & { kind: "primitive" }).name).toBe("String");
+      expect((result.value as Type).kind).toBe("primitive");
+      expect((result.value as Type & { kind: "primitive" }).name).toBe("String");
     });
 
     test("throws for non-function types", () => {
@@ -703,7 +726,8 @@ describe("function type properties", () => {
       ]);
       const paramTypes = prop(fnType, "parameterTypes");
 
-      const result = evaluator.evaluate(paramTypes, env, typeEnv) as Type[];
+      const resultTyped = evaluator.evaluate(paramTypes, env, typeEnv);
+      const result = resultTyped.value as Type[];
       expect(Array.isArray(result)).toBe(true);
       expect(result).toHaveLength(2);
       expect((result[0] as Type & { kind: "primitive" }).name).toBe("Int");
@@ -719,7 +743,8 @@ describe("function type properties", () => {
       const fnType = call(id("FunctionType"), [array(), id("Int")]);
       const paramTypes = prop(fnType, "parameterTypes");
 
-      const result = evaluator.evaluate(paramTypes, env, typeEnv) as Type[];
+      const resultTyped = evaluator.evaluate(paramTypes, env, typeEnv);
+      const result = resultTyped.value as Type[];
       expect(Array.isArray(result)).toBe(true);
       expect(result).toHaveLength(0);
     });
@@ -742,7 +767,7 @@ describe("function type properties", () => {
       // ReturnType(MyFn) should be String
       const result = evaluator.evaluate(call(id("ReturnType"), [id("MyFn")]), env, typeEnv);
       expect(isTypeValue(result)).toBe(true);
-      expect((result as Type & { kind: "primitive" }).name).toBe("String");
+      expect((result.value as Type & { kind: "primitive" }).name).toBe("String");
     });
   });
 });
@@ -758,8 +783,8 @@ describe("Intersection types", () => {
     const result = evaluator.evaluate(intersectExpr, env, typeEnv);
 
     expect(isTypeValue(result)).toBe(true);
-    expect((result as Type).kind).toBe("intersection");
-    expect((result as { kind: "intersection"; types: Type[] }).types).toHaveLength(2);
+    expect((result.value as Type).kind).toBe("intersection");
+    expect((result.value as { kind: "intersection"; types: Type[] }).types).toHaveLength(2);
   });
 
   test("intersection of record types", () => {
@@ -790,7 +815,7 @@ describe("Intersection types", () => {
     const result = evaluator.evaluate(intersectExpr, env, typeEnv);
 
     expect(isTypeValue(result)).toBe(true);
-    expect((result as Type).kind).toBe("intersection");
+    expect((result.value as Type).kind).toBe("intersection");
   });
 
   test(".signatures returns function types from intersection", () => {
@@ -811,7 +836,8 @@ describe("Intersection types", () => {
     const intersectExpr = call(id("Intersection"), [fnType1, fnType2]);
     const signatures = prop(intersectExpr, "signatures");
 
-    const result = evaluator.evaluate(signatures, env, typeEnv) as Type[];
+    const resultTyped = evaluator.evaluate(signatures, env, typeEnv);
+    const result = resultTyped.value as Type[];
     expect(Array.isArray(result)).toBe(true);
     expect(result).toHaveLength(2);
     expect(result[0].kind).toBe("function");
@@ -873,7 +899,7 @@ describe("Branded types", () => {
       const result = evaluator.evaluate(brandedExpr, env, typeEnv);
 
       expect(isTypeValue(result)).toBe(true);
-      expect((result as Type).kind).toBe("branded");
+      expect((result.value as Type).kind).toBe("branded");
     });
 
     test(".baseType returns underlying type", () => {
@@ -887,7 +913,7 @@ describe("Branded types", () => {
 
       const baseType = evaluator.evaluate(prop(id("UserId"), "baseType"), env, typeEnv);
       expect(isTypeValue(baseType)).toBe(true);
-      expect((baseType as Type & { kind: "primitive" }).name).toBe("String");
+      expect((baseType.value as Type & { kind: "primitive" }).name).toBe("String");
     });
 
     test(".brand returns brand name", () => {
@@ -900,7 +926,7 @@ describe("Branded types", () => {
       env.defineEvaluated("OrderId", evaluator.evaluate(brandedExpr, env, typeEnv));
 
       const brand = evaluator.evaluate(prop(id("OrderId"), "brand"), env, typeEnv);
-      expect(brand).toBe("OrderId");
+      expect(brand.value).toBe("OrderId");
     });
   });
 
@@ -918,11 +944,11 @@ describe("Branded types", () => {
 
       // UserId.extends(OrderId) should be false
       const extendsCall = call(prop(id("UserId"), "extends"), [id("OrderId")]);
-      expect(evaluator.evaluate(extendsCall, env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, extendsCall, env, typeEnv)).toBe(false);
 
       // UserId.extends(UserId) should be true
       const selfExtends = call(prop(id("UserId"), "extends"), [id("UserId")]);
-      expect(evaluator.evaluate(selfExtends, env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, selfExtends, env, typeEnv)).toBe(true);
     });
   });
 });
@@ -952,8 +978,8 @@ describe(".keysType property", () => {
     // Person.keysType should be "name" | "age"
     const keysType = evaluator.evaluate(prop(id("Person"), "keysType"), env, typeEnv);
     expect(isTypeValue(keysType)).toBe(true);
-    expect((keysType as Type).kind).toBe("union");
-    const unionTypes = (keysType as { kind: "union"; types: Type[] }).types;
+    expect((keysType.value as Type).kind).toBe("union");
+    const unionTypes = (keysType.value as { kind: "union"; types: Type[] }).types;
     expect(unionTypes).toHaveLength(2);
     expect(unionTypes.every((t) => t.kind === "literal")).toBe(true);
     const values = unionTypes.map((t) => (t as { kind: "literal"; value: string }).value);
@@ -973,8 +999,8 @@ describe(".keysType property", () => {
     // Empty.keysType should be Never
     const keysType = evaluator.evaluate(prop(id("Empty"), "keysType"), env, typeEnv);
     expect(isTypeValue(keysType)).toBe(true);
-    expect((keysType as Type).kind).toBe("primitive");
-    expect((keysType as Type & { kind: "primitive" }).name).toBe("Never");
+    expect((keysType.value as Type).kind).toBe("primitive");
+    expect((keysType.value as Type & { kind: "primitive" }).name).toBe("Never");
   });
 
   test("throws for non-record types", () => {
@@ -1005,7 +1031,7 @@ describe("WithMetadata", () => {
     // .name should return "MyInt"
     env.defineEvaluated("MyInt", result);
     const name = evaluator.evaluate(prop(id("MyInt"), "name"), env, typeEnv);
-    expect(name).toBe("MyInt");
+    expect(name.value).toBe("MyInt");
   });
 
   test("attaches typeArgs to type", () => {
@@ -1025,7 +1051,8 @@ describe("WithMetadata", () => {
     env.defineEvaluated("IntArray", evaluator.evaluate(withMeta, env, typeEnv));
 
     // .typeArgs should return [Int]
-    const typeArgs = evaluator.evaluate(prop(id("IntArray"), "typeArgs"), env, typeEnv) as Type[];
+    const typeArgsResult = evaluator.evaluate(prop(id("IntArray"), "typeArgs"), env, typeEnv);
+    const typeArgs = typeArgsResult.value as Type[];
     expect(Array.isArray(typeArgs)).toBe(true);
     expect(typeArgs).toHaveLength(1);
     expect((typeArgs[0] as Type & { kind: "primitive" }).name).toBe("Int");
@@ -1048,7 +1075,7 @@ describe("WithMetadata", () => {
     env.defineEvaluated("Container", evaluator.evaluate(withMeta, env, typeEnv));
 
     const baseName = evaluator.evaluate(prop(id("Container"), "baseName"), env, typeEnv);
-    expect(baseName).toBe("Container");
+    expect(baseName.value).toBe("Container");
   });
 
   test("attaches annotations to type", () => {
@@ -1067,11 +1094,12 @@ describe("WithMetadata", () => {
     env.defineEvaluated("Email", evaluator.evaluate(withMeta, env, typeEnv));
 
     // .annotations should return ["validated"]
-    const annotations = evaluator.evaluate(
+    const annotationsResult = evaluator.evaluate(
       prop(id("Email"), "annotations"),
       env,
       typeEnv
-    ) as string[];
+    );
+    const annotations = annotationsResult.value as string[];
     expect(Array.isArray(annotations)).toBe(true);
     expect(annotations).toContain("validated");
   });
@@ -1095,10 +1123,10 @@ describe("conditional type patterns", () => {
     env.defineEvaluated("IsNumber", evaluator.evaluate(isNumberFn, env, typeEnv));
 
     // IsNumber(Int) should be true (Int extends Number)
-    expect(evaluator.evaluate(call(id("IsNumber"), [id("Int")]), env, typeEnv)).toBe(true);
+    expect(evalRaw(evaluator, call(id("IsNumber"), [id("Int")]), env, typeEnv)).toBe(true);
 
     // IsNumber(String) should be false
-    expect(evaluator.evaluate(call(id("IsNumber"), [id("String")]), env, typeEnv)).toBe(false);
+    expect(evalRaw(evaluator, call(id("IsNumber"), [id("String")]), env, typeEnv)).toBe(false);
   });
 
   test("NonNullable pattern", () => {
@@ -1121,12 +1149,12 @@ describe("conditional type patterns", () => {
     // NonNullable(String) should return String
     const result1 = evaluator.evaluate(call(id("NonNullable"), [id("String")]), env, typeEnv);
     expect(isTypeValue(result1)).toBe(true);
-    expect((result1 as Type & { kind: "primitive" }).name).toBe("String");
+    expect((result1.value as Type & { kind: "primitive" }).name).toBe("String");
 
     // NonNullable(Null) should return Never
     const result2 = evaluator.evaluate(call(id("NonNullable"), [id("Null")]), env, typeEnv);
     expect(isTypeValue(result2)).toBe(true);
-    expect((result2 as Type & { kind: "primitive" }).name).toBe("Never");
+    expect((result2.value as Type & { kind: "primitive" }).name).toBe("Never");
   });
 
   test("Extract pattern - returns type if matches, Never otherwise", () => {
@@ -1152,7 +1180,7 @@ describe("conditional type patterns", () => {
       typeEnv
     );
     expect(isTypeValue(result1)).toBe(true);
-    expect((result1 as Type & { kind: "primitive" }).name).toBe("Int");
+    expect((result1.value as Type & { kind: "primitive" }).name).toBe("Int");
 
     // Extract(String, Number) should return Never
     const result2 = evaluator.evaluate(
@@ -1161,7 +1189,7 @@ describe("conditional type patterns", () => {
       typeEnv
     );
     expect(isTypeValue(result2)).toBe(true);
-    expect((result2 as Type & { kind: "primitive" }).name).toBe("Never");
+    expect((result2.value as Type & { kind: "primitive" }).name).toBe("Never");
   });
 
   test("Exclude pattern - returns Never if matches, type otherwise", () => {
@@ -1187,7 +1215,7 @@ describe("conditional type patterns", () => {
       typeEnv
     );
     expect(isTypeValue(result1)).toBe(true);
-    expect((result1 as Type & { kind: "primitive" }).name).toBe("Never");
+    expect((result1.value as Type & { kind: "primitive" }).name).toBe("Never");
 
     // Exclude(String, Number) should return String
     const result2 = evaluator.evaluate(
@@ -1196,42 +1224,42 @@ describe("conditional type patterns", () => {
       typeEnv
     );
     expect(isTypeValue(result2)).toBe(true);
-    expect((result2 as Type & { kind: "primitive" }).name).toBe("String");
+    expect((result2.value as Type & { kind: "primitive" }).name).toBe("String");
   });
 });
 
-describe("comptimeEquals", () => {
+describe("rawComptimeEquals", () => {
   test("primitives", () => {
-    expect(comptimeEquals(1, 1)).toBe(true);
-    expect(comptimeEquals(1, 2)).toBe(false);
-    expect(comptimeEquals("hello", "hello")).toBe(true);
-    expect(comptimeEquals("hello", "world")).toBe(false);
-    expect(comptimeEquals(true, true)).toBe(true);
-    expect(comptimeEquals(null, null)).toBe(true);
-    expect(comptimeEquals(undefined, undefined)).toBe(true);
-    expect(comptimeEquals(null, undefined)).toBe(false);
+    expect(rawComptimeEquals(1, 1)).toBe(true);
+    expect(rawComptimeEquals(1, 2)).toBe(false);
+    expect(rawComptimeEquals("hello", "hello")).toBe(true);
+    expect(rawComptimeEquals("hello", "world")).toBe(false);
+    expect(rawComptimeEquals(true, true)).toBe(true);
+    expect(rawComptimeEquals(null, null)).toBe(true);
+    expect(rawComptimeEquals(undefined, undefined)).toBe(true);
+    expect(rawComptimeEquals(null, undefined)).toBe(false);
   });
 
   test("arrays", () => {
-    expect(comptimeEquals([1, 2, 3], [1, 2, 3])).toBe(true);
-    expect(comptimeEquals([1, 2], [1, 2, 3])).toBe(false);
-    expect(comptimeEquals(["a", "b"], ["a", "b"])).toBe(true);
+    expect(rawComptimeEquals([1, 2, 3], [1, 2, 3])).toBe(true);
+    expect(rawComptimeEquals([1, 2], [1, 2, 3])).toBe(false);
+    expect(rawComptimeEquals(["a", "b"], ["a", "b"])).toBe(true);
   });
 
   test("nested arrays", () => {
-    expect(comptimeEquals([[1, 2], [3, 4]], [[1, 2], [3, 4]])).toBe(true);
-    expect(comptimeEquals([[1, 2], [3]], [[1, 2], [3, 4]])).toBe(false);
+    expect(rawComptimeEquals([[1, 2], [3, 4]], [[1, 2], [3, 4]])).toBe(true);
+    expect(rawComptimeEquals([[1, 2], [3]], [[1, 2], [3, 4]])).toBe(false);
   });
 
   test("records", () => {
-    expect(comptimeEquals({ a: 1, b: 2 }, { a: 1, b: 2 })).toBe(true);
-    expect(comptimeEquals({ a: 1, b: 2 }, { a: 1, b: 3 })).toBe(false);
-    expect(comptimeEquals({ a: 1 }, { a: 1, b: 2 })).toBe(false);
+    expect(rawComptimeEquals({ a: 1, b: 2 }, { a: 1, b: 2 })).toBe(true);
+    expect(rawComptimeEquals({ a: 1, b: 2 }, { a: 1, b: 3 })).toBe(false);
+    expect(rawComptimeEquals({ a: 1 }, { a: 1, b: 2 })).toBe(false);
   });
 
   test("types", () => {
-    expect(comptimeEquals(primitiveType("Int"), primitiveType("Int"))).toBe(true);
-    expect(comptimeEquals(primitiveType("Int"), primitiveType("String"))).toBe(false);
+    expect(rawComptimeEquals(primitiveType("Int"), primitiveType("Int"))).toBe(true);
+    expect(rawComptimeEquals(primitiveType("Int"), primitiveType("String"))).toBe(false);
   });
 });
 
@@ -1248,7 +1276,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary("*", id("x"), literal(2)))]
       );
 
-      expect(evaluator.evaluate(mapExpr, env, typeEnv)).toEqual([2, 4, 6]);
+      expect(evalRaw(evaluator, mapExpr, env, typeEnv)).toEqual([2, 4, 6]);
     });
 
     test("passes index as second argument", () => {
@@ -1262,7 +1290,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x", "i"], id("i"))]
       );
 
-      expect(evaluator.evaluate(mapExpr, env, typeEnv)).toEqual([0, 1, 2]);
+      expect(evalRaw(evaluator, mapExpr, env, typeEnv)).toEqual([0, 1, 2]);
     });
 
     test("works with record transformation", () => {
@@ -1271,13 +1299,13 @@ describe("Array methods at compile time", () => {
       const typeEnv = new TypeEnv();
 
       // [{ a: 1 }, { a: 2 }].map(r => r.a)
-      env.defineEvaluated("arr", [{ a: 1 }, { a: 2 }]);
+      env.defineEvaluated("arr", typed([{ a: 1 }, { a: 2 }]));
       const mapExpr = call(
         prop(id("arr"), "map"),
         [lambda(["r"], prop(id("r"), "a"))]
       );
 
-      expect(evaluator.evaluate(mapExpr, env, typeEnv)).toEqual([1, 2]);
+      expect(evalRaw(evaluator, mapExpr, env, typeEnv)).toEqual([1, 2]);
     });
   });
 
@@ -1293,7 +1321,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(2)))]
       );
 
-      expect(evaluator.evaluate(filterExpr, env, typeEnv)).toEqual([3, 4, 5]);
+      expect(evalRaw(evaluator, filterExpr, env, typeEnv)).toEqual([3, 4, 5]);
     });
 
     test("returns empty array when no matches", () => {
@@ -1307,7 +1335,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(10)))]
       );
 
-      expect(evaluator.evaluate(filterExpr, env, typeEnv)).toEqual([]);
+      expect(evalRaw(evaluator, filterExpr, env, typeEnv)).toEqual([]);
     });
   });
 
@@ -1323,7 +1351,7 @@ describe("Array methods at compile time", () => {
         [literal(2)]
       );
 
-      expect(evaluator.evaluate(includesExpr, env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, includesExpr, env, typeEnv)).toBe(true);
     });
 
     test("returns false when element does not exist", () => {
@@ -1337,7 +1365,7 @@ describe("Array methods at compile time", () => {
         [literal(5)]
       );
 
-      expect(evaluator.evaluate(includesExpr, env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, includesExpr, env, typeEnv)).toBe(false);
     });
 
     test("works with strings", () => {
@@ -1351,7 +1379,7 @@ describe("Array methods at compile time", () => {
         [literal("b")]
       );
 
-      expect(evaluator.evaluate(includesExpr, env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, includesExpr, env, typeEnv)).toBe(true);
     });
   });
 
@@ -1367,7 +1395,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(2)))]
       );
 
-      expect(evaluator.evaluate(findExpr, env, typeEnv)).toBe(3);
+      expect(evalRaw(evaluator, findExpr, env, typeEnv)).toBe(3);
     });
 
     test("returns undefined when not found", () => {
@@ -1381,7 +1409,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(10)))]
       );
 
-      expect(evaluator.evaluate(findExpr, env, typeEnv)).toBe(undefined);
+      expect(evalRaw(evaluator, findExpr, env, typeEnv)).toBe(undefined);
     });
   });
 
@@ -1397,7 +1425,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(2)))]
       );
 
-      expect(evaluator.evaluate(findIndexExpr, env, typeEnv)).toBe(2);
+      expect(evalRaw(evaluator, findIndexExpr, env, typeEnv)).toBe(2);
     });
 
     test("returns -1 when not found", () => {
@@ -1411,7 +1439,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(10)))]
       );
 
-      expect(evaluator.evaluate(findIndexExpr, env, typeEnv)).toBe(-1);
+      expect(evalRaw(evaluator, findIndexExpr, env, typeEnv)).toBe(-1);
     });
   });
 
@@ -1427,7 +1455,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(2)))]
       );
 
-      expect(evaluator.evaluate(someExpr, env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, someExpr, env, typeEnv)).toBe(true);
     });
 
     test("returns false when no elements match", () => {
@@ -1441,7 +1469,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(10)))]
       );
 
-      expect(evaluator.evaluate(someExpr, env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, someExpr, env, typeEnv)).toBe(false);
     });
   });
 
@@ -1457,7 +1485,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(0)))]
       );
 
-      expect(evaluator.evaluate(everyExpr, env, typeEnv)).toBe(true);
+      expect(evalRaw(evaluator, everyExpr, env, typeEnv)).toBe(true);
     });
 
     test("returns false when some elements don't match", () => {
@@ -1471,7 +1499,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(1)))]
       );
 
-      expect(evaluator.evaluate(everyExpr, env, typeEnv)).toBe(false);
+      expect(evalRaw(evaluator, everyExpr, env, typeEnv)).toBe(false);
     });
   });
 
@@ -1487,7 +1515,7 @@ describe("Array methods at compile time", () => {
         [lambda(["acc", "x"], binary("+", id("acc"), id("x"))), literal(0)]
       );
 
-      expect(evaluator.evaluate(reduceExpr, env, typeEnv)).toBe(6);
+      expect(evalRaw(evaluator, reduceExpr, env, typeEnv)).toBe(6);
     });
 
     test("reduces without initial value", () => {
@@ -1501,7 +1529,7 @@ describe("Array methods at compile time", () => {
         [lambda(["acc", "x"], binary("+", id("acc"), id("x")))]
       );
 
-      expect(evaluator.evaluate(reduceExpr, env, typeEnv)).toBe(10);
+      expect(evalRaw(evaluator, reduceExpr, env, typeEnv)).toBe(10);
     });
   });
 
@@ -1517,7 +1545,7 @@ describe("Array methods at compile time", () => {
         [array(literal(3), literal(4))]
       );
 
-      expect(evaluator.evaluate(concatExpr, env, typeEnv)).toEqual([1, 2, 3, 4]);
+      expect(evalRaw(evaluator, concatExpr, env, typeEnv)).toEqual([1, 2, 3, 4]);
     });
 
     test("concatenates single values", () => {
@@ -1531,7 +1559,7 @@ describe("Array methods at compile time", () => {
         [literal(3)]
       );
 
-      expect(evaluator.evaluate(concatExpr, env, typeEnv)).toEqual([1, 2, 3]);
+      expect(evalRaw(evaluator, concatExpr, env, typeEnv)).toEqual([1, 2, 3]);
     });
   });
 
@@ -1547,7 +1575,7 @@ describe("Array methods at compile time", () => {
         [literal(1), literal(4)]
       );
 
-      expect(evaluator.evaluate(sliceExpr, env, typeEnv)).toEqual([2, 3, 4]);
+      expect(evalRaw(evaluator, sliceExpr, env, typeEnv)).toEqual([2, 3, 4]);
     });
 
     test("slices with only start", () => {
@@ -1561,7 +1589,7 @@ describe("Array methods at compile time", () => {
         [literal(2)]
       );
 
-      expect(evaluator.evaluate(sliceExpr, env, typeEnv)).toEqual([3, 4, 5]);
+      expect(evalRaw(evaluator, sliceExpr, env, typeEnv)).toEqual([3, 4, 5]);
     });
   });
 
@@ -1577,7 +1605,7 @@ describe("Array methods at compile time", () => {
         [literal(2)]
       );
 
-      expect(evaluator.evaluate(indexOfExpr, env, typeEnv)).toBe(1);
+      expect(evalRaw(evaluator, indexOfExpr, env, typeEnv)).toBe(1);
     });
 
     test("returns -1 when not found", () => {
@@ -1591,7 +1619,7 @@ describe("Array methods at compile time", () => {
         [literal(5)]
       );
 
-      expect(evaluator.evaluate(indexOfExpr, env, typeEnv)).toBe(-1);
+      expect(evalRaw(evaluator, indexOfExpr, env, typeEnv)).toBe(-1);
     });
   });
 
@@ -1607,7 +1635,7 @@ describe("Array methods at compile time", () => {
         [literal("-")]
       );
 
-      expect(evaluator.evaluate(joinExpr, env, typeEnv)).toBe("a-b-c");
+      expect(evalRaw(evaluator, joinExpr, env, typeEnv)).toBe("a-b-c");
     });
 
     test("joins with default comma separator", () => {
@@ -1621,7 +1649,7 @@ describe("Array methods at compile time", () => {
         []
       );
 
-      expect(evaluator.evaluate(joinExpr, env, typeEnv)).toBe("a,b,c");
+      expect(evalRaw(evaluator, joinExpr, env, typeEnv)).toBe("a,b,c");
     });
   });
 
@@ -1632,10 +1660,10 @@ describe("Array methods at compile time", () => {
       const typeEnv = new TypeEnv();
 
       // [[1, 2], [3, 4]].flat()
-      env.defineEvaluated("nested", [[1, 2], [3, 4]]);
+      env.defineEvaluated("nested", typed([[1, 2], [3, 4]]));
       const flatExpr = call(prop(id("nested"), "flat"), []);
 
-      expect(evaluator.evaluate(flatExpr, env, typeEnv)).toEqual([1, 2, 3, 4]);
+      expect(evalRaw(evaluator, flatExpr, env, typeEnv)).toEqual([1, 2, 3, 4]);
     });
 
     test("flattens to specified depth", () => {
@@ -1644,10 +1672,10 @@ describe("Array methods at compile time", () => {
       const typeEnv = new TypeEnv();
 
       // [[[1]], [[2]]].flat(2)
-      env.defineEvaluated("nested", [[[1]], [[2]]]);
+      env.defineEvaluated("nested", typed([[[1]], [[2]]]));
       const flatExpr = call(prop(id("nested"), "flat"), [literal(2)]);
 
-      expect(evaluator.evaluate(flatExpr, env, typeEnv)).toEqual([1, 2]);
+      expect(evalRaw(evaluator, flatExpr, env, typeEnv)).toEqual([1, 2]);
     });
   });
 
@@ -1658,13 +1686,13 @@ describe("Array methods at compile time", () => {
       const typeEnv = new TypeEnv();
 
       // [1, 2, 3].flatMap(x => [x, x * 2])
-      env.defineEvaluated("arr", [1, 2, 3]);
+      env.defineEvaluated("arr", typed([1, 2, 3]));
       const flatMapExpr = call(
         prop(id("arr"), "flatMap"),
         [lambda(["x"], array(id("x"), binary("*", id("x"), literal(2))))]
       );
 
-      expect(evaluator.evaluate(flatMapExpr, env, typeEnv)).toEqual([1, 2, 2, 4, 3, 6]);
+      expect(evalRaw(evaluator, flatMapExpr, env, typeEnv)).toEqual([1, 2, 2, 4, 3, 6]);
     });
   });
 
@@ -1686,7 +1714,7 @@ describe("Array methods at compile time", () => {
         [lambda(["x"], binary(">", id("x"), literal(4)))]
       );
 
-      expect(evaluator.evaluate(chainExpr, env, typeEnv)).toEqual([6, 8]);
+      expect(evalRaw(evaluator, chainExpr, env, typeEnv)).toEqual([6, 8]);
     });
 
     test("filter then map then reduce", () => {
@@ -1708,7 +1736,7 @@ describe("Array methods at compile time", () => {
         [lambda(["a", "b"], binary("+", id("a"), id("b"))), literal(0)]
       );
 
-      expect(evaluator.evaluate(reduceExpr, env, typeEnv)).toBe(120); // (3+4+5)*10 = 120
+      expect(evalRaw(evaluator, reduceExpr, env, typeEnv)).toBe(120); // (3+4+5)*10 = 120
     });
   });
 
@@ -1751,7 +1779,8 @@ describe("Array methods at compile time", () => {
         ]
       );
 
-      const mappedFields = evaluator.evaluate(mapExpr, env, typeEnv) as ComptimeValue[];
+      const mappedFieldsResult = evaluator.evaluate(mapExpr, env, typeEnv);
+      const mappedFields = mappedFieldsResult.value as RawComptimeValue[];
       expect(Array.isArray(mappedFields)).toBe(true);
       expect(mappedFields).toHaveLength(2);
       expect((mappedFields[0] as Record<string, unknown>).optional).toBe(true);
@@ -1780,7 +1809,7 @@ describe("Array methods at compile time", () => {
       env.defineEvaluated("MyRecord", evaluator.evaluate(recTypeExpr, env, typeEnv));
 
       // Create an array of keys to pick
-      env.defineEvaluated("keys", ["x"]);
+      env.defineEvaluated("keys", typed(["x"]));
 
       // T.fields.filter(f => keys.includes(f.name))
       const filterExpr = call(
@@ -1793,7 +1822,8 @@ describe("Array methods at compile time", () => {
         ]
       );
 
-      const filteredFields = evaluator.evaluate(filterExpr, env, typeEnv) as ComptimeValue[];
+      const filteredFieldsResult = evaluator.evaluate(filterExpr, env, typeEnv);
+      const filteredFields = filteredFieldsResult.value as RawComptimeValue[];
       expect(Array.isArray(filteredFields)).toBe(true);
       expect(filteredFields).toHaveLength(1);
       expect((filteredFields[0] as Record<string, unknown>).name).toBe("x");
@@ -1849,10 +1879,11 @@ describe("Array methods at compile time", () => {
 
       // Call Partial(Person)
       const partialPersonExpr = call(id("Partial"), [id("Person")]);
-      const partialPerson = evaluator.evaluate(partialPersonExpr, env, typeEnv) as Type;
+      const partialPersonTyped = evaluator.evaluate(partialPersonExpr, env, typeEnv);
+      const partialPerson = partialPersonTyped.value as Type;
 
       // Verify it's a record type with optional fields
-      expect(isTypeValue(partialPerson)).toBe(true);
+      expect(isTypeValue(partialPersonTyped)).toBe(true);
       expect(partialPerson.kind).toBe("record");
       if (partialPerson.kind === "record") {
         expect(partialPerson.fields).toHaveLength(2);
@@ -1886,7 +1917,8 @@ describe("Array methods at compile time", () => {
       env.defineEvaluated("ClosedPerson", evaluator.evaluate(closedTypeExpr, env, typeEnv));
 
       // Verify it's closed
-      const closedPerson = env.getEvaluatedValue("ClosedPerson") as Type;
+      const closedPersonTyped = env.getEvaluatedValue("ClosedPerson");
+      const closedPerson = closedPersonTyped?.value as Type;
       expect(closedPerson.kind).toBe("record");
       if (closedPerson.kind === "record") {
         expect(closedPerson.closed).toBe(true);
@@ -1917,7 +1949,8 @@ describe("Array methods at compile time", () => {
 
       // Call Partial(ClosedPerson)
       const partialClosedExpr = call(id("Partial"), [id("ClosedPerson")]);
-      const partialClosed = evaluator.evaluate(partialClosedExpr, env, typeEnv) as Type;
+      const partialClosedTyped = evaluator.evaluate(partialClosedExpr, env, typeEnv);
+      const partialClosed = partialClosedTyped.value as Type;
 
       // Verify result is also a closed record with optional fields
       expect(partialClosed.kind).toBe("record");
@@ -1980,10 +2013,11 @@ describe("Array methods at compile time", () => {
 
       // Call Pick(Person, ["name", "email"])
       const pickExpr = call(id("Pick"), [id("Person"), array(literal("name"), literal("email"))]);
-      const pickedType = evaluator.evaluate(pickExpr, env, typeEnv) as Type;
+      const pickedTypeTyped = evaluator.evaluate(pickExpr, env, typeEnv);
+      const pickedType = pickedTypeTyped.value as Type;
 
       // Verify it's a record type with only name and email fields
-      expect(isTypeValue(pickedType)).toBe(true);
+      expect(isTypeValue(pickedTypeTyped)).toBe(true);
       expect(pickedType.kind).toBe("record");
       if (pickedType.kind === "record") {
         expect(pickedType.fields).toHaveLength(2);
@@ -2042,10 +2076,11 @@ describe("Array methods at compile time", () => {
 
       // Call Omit(User, ["password"])
       const omitExpr = call(id("Omit"), [id("User"), array(literal("password"))]);
-      const omittedType = evaluator.evaluate(omitExpr, env, typeEnv) as Type;
+      const omittedTypeTyped = evaluator.evaluate(omitExpr, env, typeEnv);
+      const omittedType = omittedTypeTyped.value as Type;
 
       // Verify it's a record type without password field
-      expect(isTypeValue(omittedType)).toBe(true);
+      expect(isTypeValue(omittedTypeTyped)).toBe(true);
       expect(omittedType.kind).toBe("record");
       if (omittedType.kind === "record") {
         expect(omittedType.fields).toHaveLength(2);
@@ -2068,7 +2103,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("default")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("matched");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("matched");
     });
 
     test("falls through to next case on no match", () => {
@@ -2082,7 +2117,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("default")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("default");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("default");
     });
 
     test("matches string literal", () => {
@@ -2097,7 +2132,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal(0)),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(1);
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe(1);
     });
 
     test("matches boolean literal", () => {
@@ -2111,7 +2146,7 @@ describe("match expression evaluation", () => {
         matchCase(literalPattern(false), literal("no")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("yes");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("yes");
     });
 
     test("matches null literal", () => {
@@ -2125,7 +2160,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("other")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("null");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("null");
     });
   });
 
@@ -2140,7 +2175,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("matched")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("matched");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("matched");
     });
 
     test("matches records", () => {
@@ -2153,7 +2188,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("matched")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("matched");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("matched");
     });
   });
 
@@ -2168,7 +2203,7 @@ describe("match expression evaluation", () => {
         matchCase(bindingPattern("n"), binary("+", id("n"), literal(1))),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(43);
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe(43);
     });
 
     test("binding is scoped to case body", () => {
@@ -2181,7 +2216,7 @@ describe("match expression evaluation", () => {
         matchCase(bindingPattern("s"), id("s")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("hello");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("hello");
     });
 
     test("multiple bindings in different cases", () => {
@@ -2195,7 +2230,7 @@ describe("match expression evaluation", () => {
         matchCase(bindingPattern("x"), binary("*", id("x"), literal(2))),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(10);
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe(10);
     });
   });
 
@@ -2213,7 +2248,7 @@ describe("match expression evaluation", () => {
         ),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(3);
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe(3);
     });
 
     test("destructure with renamed binding", () => {
@@ -2226,7 +2261,7 @@ describe("match expression evaluation", () => {
         matchCase(destructurePattern([{ name: "name", binding: "n" }]), id("n")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Alice");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Alice");
     });
 
     test("destructure fails if field missing", () => {
@@ -2241,7 +2276,7 @@ describe("match expression evaluation", () => {
       ]);
 
       // Should fall through to wildcard since 'b' doesn't exist
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(0);
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe(0);
     });
 
     test("partial destructure succeeds", () => {
@@ -2255,7 +2290,7 @@ describe("match expression evaluation", () => {
         [matchCase(destructurePattern([{ name: "x" }]), id("x"))]
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(1);
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe(1);
     });
   });
 
@@ -2275,7 +2310,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("small")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("big");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("big");
     });
 
     test("guard fails - falls through to next case", () => {
@@ -2293,7 +2328,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("small")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("small");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("small");
     });
 
     test("guard with destructured variables", () => {
@@ -2311,7 +2346,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("other")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("a < b");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("a < b");
     });
 
     test("multiple guards in sequence", () => {
@@ -2334,7 +2369,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("zero")),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("zero");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("zero");
     });
   });
 
@@ -2372,7 +2407,7 @@ describe("match expression evaluation", () => {
         matchCase(wildcardPattern(), literal("?,?")),
       ]);
 
-      expect(evaluator.evaluate(outer, env, typeEnv)).toBe("1,2");
+      expect(evalRaw(evaluator, outer, env, typeEnv)).toBe("1,2");
     });
 
     test("match result used in expression", () => {
@@ -2386,7 +2421,7 @@ describe("match expression evaluation", () => {
       ]);
       const expr = binary("*", matchResult, literal(2));
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(10);
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe(10);
     });
 
     test("match with computation in body", () => {
@@ -2402,7 +2437,7 @@ describe("match expression evaluation", () => {
         ),
       ]);
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe(10);
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe(10);
     });
   });
 });
@@ -2445,7 +2480,7 @@ describe("template literal evaluation", () => {
       // `hello world`
       const expr = template(templateStr("hello world"));
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("hello world");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("hello world");
     });
 
     test("evaluates empty template", () => {
@@ -2456,7 +2491,7 @@ describe("template literal evaluation", () => {
       // ``
       const expr = template();
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("");
     });
 
     test("evaluates template with only string parts", () => {
@@ -2471,7 +2506,7 @@ describe("template literal evaluation", () => {
         templateStr("world")
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("hello world");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("hello world");
     });
   });
 
@@ -2480,7 +2515,7 @@ describe("template literal evaluation", () => {
       const evaluator = new ComptimeEvaluator();
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
-      env.defineEvaluated("name", "Alice");
+      env.defineEvaluated("name", typed("Alice"));
 
       // `Hello, ${name}!`
       const expr = template(
@@ -2489,7 +2524,7 @@ describe("template literal evaluation", () => {
         templateStr("!")
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Hello, Alice!");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Hello, Alice!");
     });
 
     test("evaluates template with number interpolation", () => {
@@ -2503,15 +2538,15 @@ describe("template literal evaluation", () => {
         templateExpr(literal(42))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("The answer is 42");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("The answer is 42");
     });
 
     test("evaluates template with multiple interpolations", () => {
       const evaluator = new ComptimeEvaluator();
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
-      env.defineEvaluated("a", 1);
-      env.defineEvaluated("b", 2);
+      env.defineEvaluated("a", typed(1));
+      env.defineEvaluated("b", typed(2));
 
       // `${a} + ${b} = ${a + b}`
       const expr = template(
@@ -2522,7 +2557,7 @@ describe("template literal evaluation", () => {
         templateExpr(binary("+", id("a"), id("b")))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("1 + 2 = 3");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("1 + 2 = 3");
     });
 
     test("evaluates template with boolean interpolation", () => {
@@ -2536,7 +2571,7 @@ describe("template literal evaluation", () => {
         templateExpr(literal(true))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Flag is true");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Flag is true");
     });
 
     test("evaluates template with null interpolation", () => {
@@ -2550,7 +2585,7 @@ describe("template literal evaluation", () => {
         templateExpr(literal(null))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Value: null");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Value: null");
     });
 
     test("evaluates template with undefined interpolation", () => {
@@ -2564,7 +2599,7 @@ describe("template literal evaluation", () => {
         templateExpr(literal(undefined))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Value: undefined");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Value: undefined");
     });
   });
 
@@ -2580,7 +2615,7 @@ describe("template literal evaluation", () => {
         templateExpr(binary("*", literal(5), literal(2)))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Double: 10");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Double: 10");
     });
 
     test("evaluates template with comparison expression", () => {
@@ -2594,14 +2629,14 @@ describe("template literal evaluation", () => {
         templateExpr(binary(">", literal(5), literal(3)))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Is greater: true");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Is greater: true");
     });
 
     test("evaluates template with property access", () => {
       const evaluator = new ComptimeEvaluator();
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
-      env.defineEvaluated("person", { name: "Bob", age: 30 });
+      env.defineEvaluated("person", typed({ name: "Bob", age: 30 }));
 
       // `${person.name} is ${person.age} years old`
       const expr = template(
@@ -2611,14 +2646,14 @@ describe("template literal evaluation", () => {
         templateStr(" years old")
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Bob is 30 years old");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Bob is 30 years old");
     });
 
     test("evaluates template with array access", () => {
       const evaluator = new ComptimeEvaluator();
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
-      env.defineEvaluated("items", ["a", "b", "c"]);
+      env.defineEvaluated("items", typed(["a", "b", "c"]));
 
       // `First: ${items[0]}, Last: ${items[2]}`
       const indexExpr = (arr: CoreExpr, idx: number): CoreExpr =>
@@ -2631,7 +2666,7 @@ describe("template literal evaluation", () => {
         templateExpr(indexExpr(id("items"), 2))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("First: a, Last: c");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("First: a, Last: c");
     });
 
     test("evaluates template with function call", () => {
@@ -2649,7 +2684,7 @@ describe("template literal evaluation", () => {
         templateExpr(call(id("double"), [literal(5)]))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Result: 10");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Result: 10");
     });
   });
 
@@ -2658,7 +2693,7 @@ describe("template literal evaluation", () => {
       const evaluator = new ComptimeEvaluator();
       const env = new ComptimeEnv();
       const typeEnv = new TypeEnv();
-      env.defineEvaluated("inner", "world");
+      env.defineEvaluated("inner", typed("world"));
 
       // `Hello, ${`dear ${inner}`}!`
       const innerTemplate = template(
@@ -2672,7 +2707,7 @@ describe("template literal evaluation", () => {
         templateStr("!")
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Hello, dear world!");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Hello, dear world!");
     });
   });
 
@@ -2688,7 +2723,7 @@ describe("template literal evaluation", () => {
         templateStr(" is the answer")
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("42 is the answer");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("42 is the answer");
     });
 
     test("evaluates template ending with interpolation", () => {
@@ -2702,7 +2737,7 @@ describe("template literal evaluation", () => {
         templateExpr(literal(42))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("The answer is 42");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("The answer is 42");
     });
 
     test("evaluates template with only interpolation", () => {
@@ -2713,7 +2748,7 @@ describe("template literal evaluation", () => {
       // `${42}`
       const expr = template(templateExpr(literal(42)));
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("42");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("42");
     });
 
     test("evaluates template with consecutive interpolations", () => {
@@ -2728,7 +2763,7 @@ describe("template literal evaluation", () => {
         templateExpr(literal(3))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("123");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("123");
     });
 
     test("evaluates template with float interpolation", () => {
@@ -2742,7 +2777,7 @@ describe("template literal evaluation", () => {
         templateExpr(literal(3.14159))
       );
 
-      expect(evaluator.evaluate(expr, env, typeEnv)).toBe("Pi is approximately 3.14159");
+      expect(evalRaw(evaluator, expr, env, typeEnv)).toBe("Pi is approximately 3.14159");
     });
   });
 });

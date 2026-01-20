@@ -41,7 +41,7 @@ import {
   SourceLocation,
 } from "../ast/core-ast";
 import { TypeEnv, TypeBinding, ComptimeStatus } from "./type-env";
-import { ComptimeEnv, ComptimeValue, isTypeValue, isClosureValue, isBuiltinValue } from "./comptime-env";
+import { ComptimeEnv, TypedComptimeValue, isTypeValue, isClosureValue, isBuiltinValue } from "./comptime-env";
 import { ComptimeEvaluator } from "./comptime-eval";
 import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
 import { isComptimeOnlyProperty, getTypePropertyType } from "./type-properties";
@@ -127,13 +127,13 @@ class TypeChecker {
 
       if (!isTypeValue(typeValue)) {
         throw new CompileError(
-          `Type annotation must evaluate to a Type, got ${typeof typeValue}`,
+          `Type annotation must evaluate to a Type, got ${typeof typeValue.value}`,
           "typecheck",
           decl.type.loc
         );
       }
 
-      declaredType = typeValue;
+      declaredType = typeValue.value as Type;
     }
 
     // 2. Type check the initializer with contextual typing
@@ -1242,7 +1242,7 @@ class TypeChecker {
             param.type.loc
           );
         }
-        paramType = typeValue;
+        paramType = typeValue.value as Type;
       } else if (contextParams && i < contextParams.length) {
         // Infer from context
         paramType = contextParams[i].type;
@@ -1314,7 +1314,7 @@ class TypeChecker {
           expr.returnType.loc
         );
       }
-      returnType = typeValue;
+      returnType = typeValue.value as Type;
     }
 
     // Check body

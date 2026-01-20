@@ -13,9 +13,10 @@ import {
   createInitialTypeEnv,
 } from "./typecheck/builtins";
 import {
-  ComptimeValue,
+  RawComptimeValue,
+  TypedComptimeValue,
   ComptimeEnv,
-  isTypeValue,
+  isRawTypeValue,
   isClosureValue,
   isBuiltinValue,
   isRecordValue,
@@ -39,13 +40,13 @@ const colors = {
 /**
  * Format a comptime value for display.
  */
-function formatValue(value: ComptimeValue, indent = 0): string {
+function formatValue(value: RawComptimeValue, indent = 0): string {
   const pad = "  ".repeat(indent);
 
   if (value === undefined) return colors.dim + "undefined" + colors.reset;
   if (value === null) return colors.dim + "null" + colors.reset;
 
-  if (isTypeValue(value)) {
+  if (isRawTypeValue(value)) {
     return colors.cyan + formatType(value) + colors.reset;
   }
 
@@ -206,28 +207,26 @@ function processDeclarations(
 
     switch (decl.kind) {
       case "const": {
-        const value = evaluator.evaluate(decl.init, comptimeEnv, typeEnv);
-        comptimeEnv.defineEvaluated(decl.name, value);
+        const typed = evaluator.evaluate(decl.init, comptimeEnv, typeEnv);
+        comptimeEnv.defineEvaluated(decl.name, typed);
 
-        // Also register in type env (simplified - just mark as available)
+        // Also register in type env (use the type from the typed value)
         typeEnv.define(decl.name, {
-          type: isTypeValue(value)
-            ? { kind: "primitive", name: "Type" }
-            : { kind: "primitive", name: "Unknown" },
+          type: typed.type,
           comptimeStatus: "comptimeOnly",
           mutable: false,
         });
 
         results.push(
-          colors.dim + decl.name + " = " + colors.reset + formatValue(value)
+          colors.dim + decl.name + " = " + colors.reset + formatValue(typed.value)
         );
         break;
       }
 
       case "expr": {
-        const value = evaluator.evaluate(decl.expr, comptimeEnv, typeEnv);
-        if (value !== undefined) {
-          results.push(formatValue(value));
+        const typed = evaluator.evaluate(decl.expr, comptimeEnv, typeEnv);
+        if (typed.value !== undefined) {
+          results.push(formatValue(typed.value));
         }
         break;
       }
