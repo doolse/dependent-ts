@@ -512,6 +512,51 @@ Not yet implemented:
 ### String Methods
 No string methods implemented yet. Need to decide which are built-in vs imported from JS.
 
+### Type Checker: Comptime Value Propagation
+The type checker doesn't yet set `comptimeValue` on `TypedExpr` nodes. This field exists in the AST types but is never populated during type checking. This affects:
+
+- **Value inlining during erasure**: Comptime-evaluated expressions (like `Person.name` or `Person.fieldNames`) should have their values inlined as literals in the erased output. Currently they remain as property access expressions.
+- **Conditional branch elimination**: When a conditional's condition is comptime-known (e.g., `T.extends(Number) ? X : Y`), erasure should eliminate the dead branch. Currently both branches are preserved.
+- **Comptime expression identification**: The `comptimeValue` field should be set when:
+  - Accessing runtime-usable properties on Type values (`.name`, `.fieldNames`, `.length`, `.isFixed`, `.brand`)
+  - Evaluating comptime-only expressions that produce runtime-usable results
+  - Literals and constant folding results
+
+The erasure implementation is ready to use `comptimeValue` once the type checker populates it. See `src/erasure/erasure.test.ts` for skipped tests that will pass once this is implemented.
+
+### Generic Function Expressions
+Generic arrow function syntax in expression position is not yet supported:
+```
+// NOT YET SUPPORTED:
+const identity = <T>(x: T): T => x;
+
+// WORKS (type-level only):
+type Identity = <T>(x: T) => T;
+```
+
+Generic types work at the type level (`type Box<T> = ...`), but generic lambda expressions require additional parser/type checker work.
+
+### Block Expressions Outside Lambdas
+Block expressions (`{ statements; result }`) are only supported inside arrow function bodies:
+```
+// WORKS:
+const f = () => { const x = 1; x + 1 };
+
+// NOT YET SUPPORTED:
+const x = { const y = 1; y + 1 };
+```
+
+### Type Declarations in Blocks
+Type declarations inside block expressions are not yet supported:
+```
+// NOT YET SUPPORTED:
+const f = () => {
+  type T = Int;
+  const x: T = 42;
+  x
+};
+```
+
 ## Deferred to Future Versions
 
 - **Refinement types**: Predicate-constrained types like `Int where this > 0`. Deferred due to complexity (decidability, runtime vs compile-time checking). Use branded types or runtime validation for now.
