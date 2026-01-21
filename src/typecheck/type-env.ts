@@ -66,6 +66,18 @@ export class TypeEnv {
   }
 
   /**
+   * Update an existing binding in this scope.
+   * Used for recursive functions where we pre-register with the declared type
+   * and then update with final comptime status after type checking.
+   */
+  update(name: string, binding: TypeBinding): void {
+    if (!this.bindings.has(name)) {
+      throw new CompileError(`Cannot update '${name}': not defined in this scope`);
+    }
+    this.bindings.set(name, binding);
+  }
+
+  /**
    * Check if a name is defined in this exact scope (not parent).
    */
   hasOwn(name: string): boolean {

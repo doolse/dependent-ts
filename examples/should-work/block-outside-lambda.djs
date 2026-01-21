@@ -1,7 +1,7 @@
 // Block expressions outside lambda bodies
-// Per spec: blocks should work in any expression position
+// Use 'do { }' syntax for block expressions in expression position
 
-const result = {
+const result = do {
   const x = 10;
   const y = 20;
   x + y

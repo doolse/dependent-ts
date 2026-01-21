@@ -22,6 +22,7 @@ import {
   arrayType,
   arrayTypeFromElements,
   unionType,
+  typeVarType,
   FieldInfo,
   ParamInfo,
   substituteThis,
@@ -120,6 +121,9 @@ class TypeChecker {
     let declaredType: Type | undefined;
     let comptimeStatus: ComptimeStatus = "runtime";
 
+    // Track whether we pre-registered for recursive function support
+    let preRegistered = false;
+
     if (decl.type) {
       // Type annotation must evaluate to a Type
       const typeValue = this.evaluator.evaluate(
@@ -137,6 +141,73 @@ class TypeChecker {
       }
 
       declaredType = typeValue.value as Type;
+
+      // Pre-register binding to enable recursive function references.
+      // This allows the initializer to reference the binding being defined.
+      // The binding will be updated with final comptime status after type checking.
+      this.typeEnv.define(decl.name, {
+        type: declaredType,
+        comptimeStatus: "runtime", // Tentative, updated below
+        mutable: false,
+      });
+      preRegistered = true;
+    } else if (
+      decl.init.kind === "lambda" &&
+      decl.init.returnType &&
+      decl.init.params.every((p) => p.type) &&
+      // Exclude generic lambdas - they need special handling in checkLambda
+      !decl.init.params.some((p) => this.isTypeParam(p))
+    ) {
+      // Lambda with explicit return type and all params typed - compute function type
+      // This enables recursive functions like: const f = (n: Int): Int => f(n-1)
+      const paramInfos: ParamInfo[] = [];
+      for (const p of decl.init.params) {
+        const paramTypeValue = this.evaluator.evaluate(
+          p.type!,
+          this.comptimeEnv,
+          this.typeEnv
+        );
+        if (!isTypeValue(paramTypeValue)) {
+          throw new CompileError(
+            `Parameter type must evaluate to a Type`,
+            "typecheck",
+            p.type!.loc
+          );
+        }
+        paramInfos.push({
+          name: p.name,
+          type: paramTypeValue.value as Type,
+          optional: p.defaultValue !== undefined,
+          rest: p.rest,
+        });
+      }
+
+      const returnTypeValue = this.evaluator.evaluate(
+        decl.init.returnType,
+        this.comptimeEnv,
+        this.typeEnv
+      );
+      if (!isTypeValue(returnTypeValue)) {
+        throw new CompileError(
+          `Return type must evaluate to a Type`,
+          "typecheck",
+          decl.init.returnType.loc
+        );
+      }
+
+      declaredType = {
+        kind: "function",
+        params: paramInfos,
+        returnType: returnTypeValue.value as Type,
+        async: decl.init.async,
+      };
+
+      this.typeEnv.define(decl.name, {
+        type: declaredType,
+        comptimeStatus: "runtime",
+        mutable: false,
+      });
+      preRegistered = true;
     }
 
     // 2. Type check the initializer with contextual typing
@@ -164,11 +235,17 @@ class TypeChecker {
     }
 
     // 6. Register in environments
-    this.typeEnv.define(decl.name, {
+    // If we pre-registered (for recursive function support), update instead of define
+    const typeBinding = {
       type: finalType,
       comptimeStatus,
-      mutable: false,
-    });
+      mutable: false as const,
+    };
+    if (preRegistered) {
+      this.typeEnv.update(decl.name, typeBinding);
+    } else {
+      this.typeEnv.define(decl.name, typeBinding);
+    }
 
     // Register in comptime env
     if (comptimeStatus === "comptimeOnly" || decl.comptime) {
@@ -1271,6 +1348,34 @@ class TypeChecker {
     const childTypeEnv = this.typeEnv.extend();
     const childComptimeEnv = this.comptimeEnv.extend();
 
+    // Pre-register type params (those with Type or Type<Constraint> type annotation)
+    // This allows value params to reference type params that come later in the list
+    // e.g., <T>(x: T) desugars to (x: T, T: Type) - x's type T must be available
+    for (const param of expr.params) {
+      if (this.isTypeParam(param)) {
+        // Extract constraint if present (Type<Constraint> call)
+        let bound: Type | undefined;
+        if (param.type?.kind === "call" && param.type.fn.kind === "identifier" && param.type.fn.name === "Type") {
+          // Has constraint - evaluate it
+          const firstArg = param.type.args[0];
+          if (firstArg && firstArg.kind === "element") {
+            const constraintExpr = firstArg.value;
+            const constraintValue = this.evaluator.evaluate(constraintExpr, childComptimeEnv, childTypeEnv);
+            if (isTypeValue(constraintValue)) {
+              bound = constraintValue.value as Type;
+            }
+          }
+        }
+        // Create type variable
+        const typeVar = typeVarType(param.name, bound);
+        // Register in comptime env as a Type value
+        childComptimeEnv.defineEvaluated(param.name, {
+          value: typeVar,
+          type: primitiveType("Type"),
+        });
+      }
+    }
+
     // Process parameters
     const paramTypes: ParamInfo[] = [];
 
@@ -1279,11 +1384,11 @@ class TypeChecker {
       let paramType: Type;
 
       if (param.type) {
-        // Explicit type annotation - evaluate it
+        // Explicit type annotation - evaluate it (using child env which has type params)
         const typeValue = this.evaluator.evaluate(
           param.type,
-          this.comptimeEnv,
-          this.typeEnv
+          childComptimeEnv,
+          childTypeEnv
         );
         if (!isTypeValue(typeValue)) {
           throw new CompileError(
@@ -1340,7 +1445,10 @@ class TypeChecker {
         comptimeStatus: "runtime",
         mutable: false,
       });
-      childComptimeEnv.defineUnavailable(param.name);
+      // Type params are already defined as evaluated, don't mark them unavailable
+      if (!this.isTypeParam(param)) {
+        childComptimeEnv.defineUnavailable(param.name);
+      }
     }
 
     // Save current environments and use child environments
@@ -1350,12 +1458,13 @@ class TypeChecker {
     this.comptimeEnv = childComptimeEnv;
 
     // Check return type annotation if present
+    // Use child environments since return type may reference type params
     let returnType: Type | undefined;
     if (expr.returnType) {
       const typeValue = this.evaluator.evaluate(
         expr.returnType,
-        savedComptimeEnv,
-        savedTypeEnv
+        childComptimeEnv,
+        childTypeEnv
       );
       if (!isTypeValue(typeValue)) {
         throw new CompileError(
@@ -1394,6 +1503,40 @@ class TypeChecker {
       type: fnType,
       comptimeOnly: false, // Lambdas themselves aren't comptimeOnly
     };
+  }
+
+  /**
+   * Check if a parameter is a desugared type parameter (from generic syntax <T>).
+   * Type params are identified by:
+   * - Type annotation being Type or Type<Constraint>
+   * - Having a default value that calls typeOf (e.g., typeOf(x))
+   *
+   * This distinguishes from regular Type value parameters like (T: Type) which
+   * don't have a typeOf default.
+   */
+  private isTypeParam(param: CoreParam): boolean {
+    if (!param.type) return false;
+
+    // Check for typeOf default value - this distinguishes desugared type params
+    // from regular Type value parameters
+    const hasTypeOfDefault =
+      param.defaultValue?.kind === "call" &&
+      param.defaultValue.fn.kind === "identifier" &&
+      param.defaultValue.fn.name === "typeOf";
+
+    if (!hasTypeOfDefault) return false;
+
+    // Plain Type
+    if (param.type.kind === "identifier" && param.type.name === "Type") {
+      return true;
+    }
+    // Type<Constraint>
+    if (param.type.kind === "call" &&
+        param.type.fn.kind === "identifier" &&
+        param.type.fn.name === "Type") {
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -1621,8 +1764,20 @@ class TypeChecker {
       const savedTypeEnv = this.typeEnv;
       this.typeEnv = childTypeEnv;
 
-      // Add pattern bindings to environment
-      this.addPatternBindings(c.pattern, matchExpr.type);
+      // Compute narrowed type for this case
+      const narrowedType = this.narrowTypeByPattern(matchExpr.type, c.pattern);
+
+      // If the scrutinee is an identifier, shadow it with the narrowed type
+      if (expr.expr.kind === "identifier") {
+        this.typeEnv.define(expr.expr.name, {
+          type: narrowedType,
+          comptimeStatus: "runtime",
+          mutable: false,
+        });
+      }
+
+      // Add pattern bindings to environment (using narrowed type)
+      this.addPatternBindings(c.pattern, narrowedType);
 
       // Check guard if present
       if (c.guard) {
@@ -1688,6 +1843,10 @@ class TypeChecker {
         }
         break;
       case "destructure":
+        // Unwrap metadata if present
+        if (matchType.kind === "withMetadata") {
+          matchType = matchType.baseType;
+        }
         // Process each field
         if (matchType.kind === "record") {
           for (const field of pattern.fields) {
@@ -1706,6 +1865,102 @@ class TypeChecker {
         }
         break;
     }
+  }
+
+  /**
+   * Narrow a type based on a pattern match.
+   * For union types, filters to only the variants that could match the pattern.
+   */
+  private narrowTypeByPattern(matchType: Type, pattern: CorePattern): Type {
+    // Unwrap metadata
+    if (matchType.kind === "withMetadata") {
+      matchType = matchType.baseType;
+    }
+
+    switch (pattern.kind) {
+      case "wildcard":
+        // Wildcard matches everything, no narrowing
+        return matchType;
+
+      case "literal":
+        // Literal pattern narrows to the literal type
+        return literalType(pattern.value);
+
+      case "type":
+        // Type patterns would narrow to that type (but we'd need to evaluate it)
+        // For now, return the match type unchanged
+        return matchType;
+
+      case "binding":
+        // Binding with nested pattern narrows based on the nested pattern
+        if (pattern.pattern) {
+          return this.narrowTypeByPattern(matchType, pattern.pattern);
+        }
+        return matchType;
+
+      case "destructure":
+        // For destructure patterns, filter union variants
+        if (matchType.kind === "union") {
+          const matchingVariants = matchType.types.filter((variant) =>
+            this.variantMatchesDestructure(variant, pattern)
+          );
+          if (matchingVariants.length === 0) {
+            return matchType; // No narrowing possible
+          }
+          if (matchingVariants.length === 1) {
+            return matchingVariants[0];
+          }
+          return unionType(matchingVariants);
+        }
+        // Non-union, return as-is
+        return matchType;
+    }
+  }
+
+  /**
+   * Check if a type variant could match a destructure pattern.
+   * A variant matches if all literal fields in the pattern are compatible.
+   */
+  private variantMatchesDestructure(
+    variant: Type,
+    pattern: CorePattern & { kind: "destructure" }
+  ): boolean {
+    // Unwrap metadata
+    if (variant.kind === "withMetadata") {
+      variant = variant.baseType;
+    }
+
+    if (variant.kind !== "record") {
+      return false;
+    }
+
+    // Check each field in the pattern
+    for (const patternField of pattern.fields) {
+      const recordField = variant.fields.find((f) => f.name === patternField.name);
+      if (!recordField) {
+        // Record doesn't have this field - doesn't match
+        return false;
+      }
+
+      // If the pattern field has a nested literal pattern, check compatibility
+      if (patternField.pattern?.kind === "literal") {
+        const literalValue = patternField.pattern.value;
+        const literalKind = patternField.pattern.literalKind;
+        // Map literalKind to LiteralBaseType
+        const baseType = literalKind === "int" ? "Int"
+          : literalKind === "float" ? "Float"
+          : literalKind === "boolean" ? "Boolean"
+          : "String";
+        const literalT = literalType(literalValue as string | number | boolean, baseType);
+        // Check if the record field type is compatible with the literal
+        // The field type should be a supertype of the literal, or equal to it
+        if (!isSubtype(literalT, recordField.type)) {
+          return false;
+        }
+      }
+    }
+
+    return true;
   }
 
   /**

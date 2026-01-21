@@ -687,6 +687,7 @@ function desugarArrowFn(cursor: TreeCursor, source: string): CoreExpr {
   const fnLoc = loc(cursor);
   let async = false;
   let params: CoreParam[] = [];
+  let typeParams: { name: string; constraint?: CoreExpr; defaultValue?: CoreExpr; annotations?: CoreExpr[] }[] = [];
   let returnType: CoreExpr | undefined;
   let body: CoreExpr | undefined;
 
@@ -695,6 +696,9 @@ function desugarArrowFn(cursor: TreeCursor, source: string): CoreExpr {
       switch (cursor.name) {
         case "async":
           async = true;
+          break;
+        case "TypeParams":
+          typeParams = desugarTypeParams(cursor, source);
           break;
         case "ArrowParams":
           ({ params, returnType } = desugarArrowParams(cursor, source));
@@ -716,6 +720,47 @@ function desugarArrowFn(cursor: TreeCursor, source: string): CoreExpr {
 
   if (!body) {
     error("arrow function missing body", cursor);
+  }
+
+  // Convert type params to value params with Type type (per spec: "Generics as Type Parameters with Defaults")
+  // <T>(x: T) desugars to (x: T, T: Type = typeOf(x))
+  // For each type param, find the first value param that uses it and generate typeOf(paramName) as default
+  for (const typeParam of typeParams) {
+    // Find first param that uses this type param as its type
+    const matchingParam = params.find(p =>
+      p.type?.kind === "identifier" && p.type.name === typeParam.name
+    );
+
+    // Create type expression: Type or Type<Constraint>
+    let typeExpr: CoreExpr;
+    if (typeParam.constraint) {
+      typeExpr = {
+        kind: "call",
+        fn: { kind: "identifier", name: "Type", loc: fnLoc },
+        args: [typeParam.constraint],
+        loc: fnLoc,
+      };
+    } else {
+      typeExpr = { kind: "identifier", name: "Type", loc: fnLoc };
+    }
+
+    // Create default: typeOf(paramName) if we found a matching param
+    let defaultValue: CoreExpr | undefined = typeParam.defaultValue;
+    if (!defaultValue && matchingParam) {
+      defaultValue = {
+        kind: "call",
+        fn: { kind: "identifier", name: "typeOf", loc: fnLoc },
+        args: [{ kind: "element", value: { kind: "identifier", name: matchingParam.name, loc: fnLoc } }],
+        loc: fnLoc,
+      };
+    }
+
+    params.push({
+      name: typeParam.name,
+      type: typeExpr,
+      defaultValue,
+      annotations: typeParam.annotations ?? [],
+    });
   }
 
   return {

@@ -126,6 +126,16 @@ export function isSubtype(sub: Type, sup: Type): boolean {
     return isSubtype(subBase.bound, supBase);
   }
 
+  // Concrete type <: typeVar: any type satisfies an unbounded type variable
+  // If the typeVar has a bound, the concrete type must be a subtype of the bound
+  // This enables generic function calls like identity(42) where 42 <: T
+  if (supBase.kind === "typeVar") {
+    if (!supBase.bound) {
+      return true; // Unbounded typeVar accepts any type
+    }
+    return isSubtype(subBase, supBase.bound);
+  }
+
   // Bounded type (Type<Bound>) - used for generic constraints
   // Type<A> <: Type<B> iff A <: B (covariant in bound)
   if (supBase.kind === "boundedType") {

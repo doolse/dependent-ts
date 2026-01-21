@@ -68,7 +68,7 @@ expression {
 
 // Arrow function with high dynamic precedence to prefer over parenthesized expressions
 ArrowFn[@dynamicPrecedence=2] {
-  kw<"async">? ArrowParams "=>" ArrowBody
+  kw<"async">? ArrowTypeParams? ArrowParams "=>" ArrowBody
 }
 
 // Arrow params: either single identifier or parenthesized list
@@ -89,8 +89,8 @@ ArrowParam {
 DefaultValue { "=" expressionNoComma }
 
 ArrowBody {
-  expressionNoComma |
-  Block
+  Block |
+  expressionNoComma
 }
 
 // Expression without comma operator (for arrow bodies, ternary branches, etc.)
@@ -141,6 +141,7 @@ atomExpr {
   TemplateExpr |
   ArrayExpr { "[" ListOf<ArrayElement>? "]" } |
   RecordExpr { "{" ListOf<RecordField>? "}" } |
+  DoBlock |
   MatchExpr |
   ThrowExpr { kw<"throw"> unaryExpr } |
   ParenExpr { "(" expression ")" }
@@ -168,6 +169,9 @@ BlockContent {
   statement+ expression? |
   expression
 }
+
+// Block expression outside arrow body - uses 'do' keyword for disambiguation
+DoBlock[@name="Block"] { kw<"do"> "{" BlockContent "}" }
 
 MatchExpr {
   kw<"match"> "(" expression ")" "{" MatchCase* "}"
@@ -254,6 +258,12 @@ TypeParams {
 // FunctionTypeParams allows < with or without preceding space
 // This handles cases like `type Identity = <T>(x: T) => T` where space precedes <
 FunctionTypeParams[@name="TypeParams"] {
+  (ltType | ltCompare) ListOf1<TypeParam> ">"
+}
+
+// ArrowTypeParams allows < with or without preceding space for arrow functions
+// This handles cases like `const id = <T>(x: T): T => x`
+ArrowTypeParams[@name="TypeParams"] {
   (ltType | ltCompare) ListOf1<TypeParam> ">"
 }
 
