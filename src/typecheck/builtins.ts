@@ -94,6 +94,18 @@ const TypeMetadataType: Type = recordType(
 );
 
 /**
+ * Error: { message: String, name: String }
+ * Represents JavaScript Error objects
+ */
+const ErrorType: Type = recordType(
+  [
+    { name: "message", type: primitiveType("String"), optional: false, annotations: [] },
+    { name: "name", type: primitiveType("String"), optional: false, annotations: [] },
+  ],
+  { closed: false }
+);
+
+/**
  * Create the initial comptime environment with all builtins.
  * All values are wrapped as TypedComptimeValue.
  */
@@ -125,9 +137,11 @@ export function createInitialComptimeEnv(): ComptimeEnv {
   env.defineEvaluated("ParamInfo", wrapTypeValue(ParamInfoType));
   env.defineEvaluated("ArrayElementInfo", wrapTypeValue(ArrayElementInfoType));
   env.defineEvaluated("TypeMetadata", wrapTypeValue(TypeMetadataType));
+  env.defineEvaluated("Error", wrapTypeValue(ErrorType));
 
   // Type constructors - wrapped as TypedComptimeValue with function type Unknown (for simplicity)
   env.defineEvaluated("RecordType", wrapBuiltinValue(builtinRecordType));
+  env.defineEvaluated("TryResult", wrapBuiltinValue(builtinTryResult));
   env.defineEvaluated("Union", wrapBuiltinValue(builtinUnion));
   env.defineEvaluated("Intersection", wrapBuiltinValue(builtinIntersection));
   env.defineEvaluated("FunctionType", wrapBuiltinValue(builtinFunctionType));
@@ -186,7 +200,7 @@ export function createInitialTypeEnv(): TypeEnv {
   }
 
   // Built-in record types (all are Type values)
-  const builtinRecordTypes = ["FieldInfo", "ParamInfo", "ArrayElementInfo", "TypeMetadata"];
+  const builtinRecordTypes = ["FieldInfo", "ParamInfo", "ArrayElementInfo", "TypeMetadata", "Error"];
   for (const name of builtinRecordTypes) {
     env.define(name, {
       type: typeType,
@@ -287,6 +301,16 @@ export function createInitialTypeEnv(): TypeEnv {
     mutable: false,
   });
 
+  // TryResult: (T: Type) => Type - creates { ok: true, value: T } | { ok: false, error: Error }
+  env.define("TryResult", {
+    type: functionType(
+      [{ name: "T", type: typeType, optional: false }],
+      typeType
+    ),
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
   // typeOf and assert have special handling in the type checker
   env.define("typeOf", {
     type: functionType(
@@ -365,6 +389,43 @@ export function createInitialTypeEnv(): TypeEnv {
 
   env.define("console", {
     type: consoleType,
+    comptimeStatus: "runtime",
+    mutable: false,
+  });
+
+  // toInt: (value: Number) => Int - truncates to integer
+  env.define("toInt", {
+    type: functionType(
+      [{ name: "value", type: primitiveType("Number"), optional: false }],
+      primitiveType("Int")
+    ),
+    comptimeStatus: "runtime",
+    mutable: false,
+  });
+
+  // toFloat: (value: Int) => Float - converts to floating point
+  env.define("toFloat", {
+    type: functionType(
+      [{ name: "value", type: primitiveType("Int"), optional: false }],
+      primitiveType("Float")
+    ),
+    comptimeStatus: "runtime",
+    mutable: false,
+  });
+
+  // Try: <T>(thunk: () => T) => TryResult<T> - catches exceptions
+  // The return type is computed based on the thunk's return type
+  env.define("Try", {
+    type: functionType(
+      [
+        {
+          name: "thunk",
+          type: functionType([], primitiveType("Unknown")),
+          optional: false,
+        },
+      ],
+      primitiveType("Unknown") // Return type is TryResult<T>, computed at call site
+    ),
     comptimeStatus: "runtime",
     mutable: false,
   });
@@ -812,5 +873,56 @@ const builtinType: ComptimeBuiltin = {
 
     // Type(Bound) creates a bounded type constraint
     return wrapTypeValue(boundedType(bound));
+  },
+};
+
+/**
+ * TryResult builtin - creates the discriminated union type for Try results.
+ * TryResult<T> = { ok: true, value: T } | { ok: false, error: Error }
+ */
+const builtinTryResult: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "TryResult",
+  impl: (args, _evaluator, loc) => {
+    if (args.length !== 1) {
+      throw new CompileError(
+        "TryResult expects exactly 1 type argument",
+        "typecheck",
+        loc
+      );
+    }
+
+    if (!isTypeValue(args[0])) {
+      throw new CompileError(
+        "TryResult argument must be a Type",
+        "typecheck",
+        loc
+      );
+    }
+    const valueType = args[0].value as Type;
+
+    // Create the success branch: { ok: true, value: T }
+    const successType = recordType(
+      [
+        { name: "ok", type: literalType(true, "Boolean"), optional: false, annotations: [] },
+        { name: "value", type: valueType, optional: false, annotations: [] },
+      ],
+      { closed: false }
+    );
+
+    // Create the failure branch: { ok: false, error: Error }
+    const failureType = recordType(
+      [
+        { name: "ok", type: literalType(false, "Boolean"), optional: false, annotations: [] },
+        { name: "error", type: ErrorType, optional: false, annotations: [] },
+      ],
+      { closed: false }
+    );
+
+    // Return the union with metadata
+    const resultType = unionType([successType, failureType]);
+    return wrapTypeValue(
+      withMetadata(resultType, { name: "TryResult", typeArgs: [valueType] })
+    );
   },
 };

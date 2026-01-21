@@ -465,10 +465,8 @@ Create additional spec files as topics are discussed and decided. Don't create p
 These need to be resolved before or during implementation:
 
 ### Grammar / Syntax Formalization
-- Complete operator precedence table
 - Reserved keywords list
-- Comments syntax (`//` and `/* */`?)
-- String interpolation / template literals syntax
+- String interpolation / template literals syntax (template literals with `${...}` are implemented)
 
 ### Standard Library / Builtins
 - Array methods: Which are built-in? (map, filter, reduce, forEach, find, findIndex, some, every, includes, indexOf, slice, concat, flat, flatMap, etc.)
@@ -497,12 +495,6 @@ These need to be resolved before or during implementation:
 
 These features are documented in the spec but not yet implemented in the codebase:
 
-### Builtins
-- **`Try` builtin**: Catches exceptions and returns `TryResult<T>` discriminated union (see Error Handling section)
-- **`TryResult` type**: `{ ok: true, value: T } | { ok: false, error: Error }`
-- **`toInt(value)`**: Convert Float/Number to Int
-- **`toFloat(value)`**: Convert Int to Float
-
 ### Array Methods
 Currently implemented: `map`, `filter`, `find`, `findIndex`, `some`, `every`, `reduce`, `flat`, `flatMap`, `concat`, `slice`, `indexOf`, `includes`, `join`
 
@@ -512,38 +504,14 @@ Not yet implemented:
 ### String Methods
 No string methods implemented yet. Need to decide which are built-in vs imported from JS.
 
-### Type Checker: Comptime Value Propagation
-The type checker doesn't yet set `comptimeValue` on `TypedExpr` nodes. This field exists in the AST types but is never populated during type checking. This affects:
-
-- **Value inlining during erasure**: Comptime-evaluated expressions (like `Person.name` or `Person.fieldNames`) should have their values inlined as literals in the erased output. Currently they remain as property access expressions.
-- **Conditional branch elimination**: When a conditional's condition is comptime-known (e.g., `T.extends(Number) ? X : Y`), erasure should eliminate the dead branch. Currently both branches are preserved.
-- **Comptime expression identification**: The `comptimeValue` field should be set when:
-  - Accessing runtime-usable properties on Type values (`.name`, `.fieldNames`, `.length`, `.isFixed`, `.brand`)
-  - Evaluating comptime-only expressions that produce runtime-usable results
-  - Literals and constant folding results
-
-The erasure implementation is ready to use `comptimeValue` once the type checker populates it. See `src/erasure/erasure.test.ts` for skipped tests that will pass once this is implemented.
-
-### Generic Function Expressions
-Generic arrow function syntax in expression position is not yet supported:
-```
-// NOT YET SUPPORTED:
-const identity = <T>(x: T): T => x;
-
-// WORKS (type-level only):
-type Identity = <T>(x: T) => T;
-```
-
-Generic types work at the type level (`type Box<T> = ...`), but generic lambda expressions require additional parser/type checker work.
-
 ### Block Expressions Outside Lambdas
-Block expressions (`{ statements; result }`) are only supported inside arrow function bodies:
+Block expressions outside arrow function bodies require the `do` keyword for disambiguation from record literals:
 ```
-// WORKS:
+// WORKS (arrow body - no keyword needed):
 const f = () => { const x = 1; x + 1 };
 
-// NOT YET SUPPORTED:
-const x = { const y = 1; y + 1 };
+// WORKS (standalone - requires 'do' keyword):
+const x = do { const y = 1; y + 1 };
 ```
 
 ### Type Declarations in Blocks
@@ -557,74 +525,10 @@ const f = () => {
 };
 ```
 
-## Implementation Bugs (Should Work But Don't)
-
-These are bugs in the current implementation where the spec says something should work but it doesn't. Each has a corresponding test file in `examples/should-work/`.
-
-### Parser: Operator Precedence (BUG)
-**Test file**: `examples/should-work/operator-precedence.djs`
-
-Standard mathematical operator precedence is not implemented correctly. The parser treats operators left-to-right without proper precedence:
-
-```
-const a = 1 + 2 * 3;  // Should be 7 (1 + (2*3))
-                       // Actually computes 9 ((1+2) * 3)
-```
-
-**Impact**: High - basic arithmetic doesn't work correctly.
-**Type**: Implementation bug in parser (Lezer grammar likely needs precedence annotations).
-
-### Type Checker: Recursive Functions (BUG)
-**Test file**: `examples/should-work/recursive-function.djs`
-
-Recursive function definitions don't work even with explicit return type annotations (which the spec says should enable recursion):
-
-```
-const factorial = (n: Int): Int => n <= 1 ? 1 : n * factorial(n - 1);
-// Error: 'factorial' is not defined
-```
-
-**Impact**: High - recursion is the only way to iterate in a functional language without loops.
-**Type**: Implementation bug - the binding should be visible within its own initializer when it has a type annotation.
-
-### Type Checker: Pattern Match Destructure Bindings (BUG)
-**Test file**: `examples/should-work/destructure-binding.djs`
-
-Destructure patterns in match expressions don't introduce bindings into the case body scope:
-
-```
-const greet = (p: Person): String => match (p) {
-  case { name, age }: name;  // Error: 'name' is not defined
-};
-```
-
-The codegen correctly extracts bindings (`const name = _match.name;`) but the type checker doesn't add them to scope.
-
-**Impact**: High - destructuring is a core pattern matching feature.
-**Type**: Implementation bug in type checker - bindings from patterns aren't added to the type environment for the case body.
-
-### Type Checker: Type Narrowing in Pattern Match (BUG/DESIGN?)
-**Test file**: `examples/should-work/type-narrowing.djs`
-
-After matching a discriminant in a pattern, the scrutinee's type is not narrowed in the case body:
-
-```
-type Shape = { kind: "circle", radius: Int } | { kind: "rectangle", width: Int, height: Int };
-
-const area = (s: Shape): Int => match (s) {
-  case { kind: "circle" }: s.radius * s.radius;  // Error: Cannot access 'radius' on 'Shape'
-};
-```
-
-The type of `s` should be narrowed to `{ kind: "circle", radius: Int }` inside this case.
-
-**Impact**: High - discriminated unions are unusable without narrowing.
-**Type**: Could be implementation bug OR design decision. The spec mentions "Type narrowing: Inside case body, matched expression's type is narrowed" so this seems like a bug.
-
 ## Examples Directory
 
 - `examples/` - Working examples demonstrating current capabilities
-- `examples/should-work/` - Examples that SHOULD work per spec but currently fail due to bugs
+- `examples/should-work/` - Examples demonstrating features that were previously broken but are now fixed
 
 ## Deferred to Future Versions
 

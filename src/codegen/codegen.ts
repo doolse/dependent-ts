@@ -21,9 +21,12 @@ export type CodegenOptions = {
 };
 
 /**
- * Runtime preamble - defines helpers like print.
+ * Runtime preamble - defines helpers like print, toInt, toFloat, Try.
  */
 const RUNTIME_PREAMBLE = `const print = (...args) => console.log(...args);
+const toInt = (value) => Math.trunc(value);
+const toFloat = (value) => value;
+const Try = (thunk) => { try { return { ok: true, value: thunk() }; } catch (e) { return { ok: false, error: e instanceof Error ? e : new Error(String(e)) }; } };
 `;
 
 /**

@@ -2404,4 +2404,84 @@ describe("Type Checker", () => {
       });
     });
   });
+
+  describe("numeric conversion builtins", () => {
+    test("toInt converts Float to Int", () => {
+      const type = getConstType("const x = toInt(3.14);", "x");
+      expect(type).toEqual(primitiveType("Int"));
+    });
+
+    test("toInt converts Number to Int", () => {
+      const type = getConstType("const n: Number = 42; const x = toInt(n);", "x");
+      expect(type).toEqual(primitiveType("Int"));
+    });
+
+    test("toInt accepts Int (subtype of Number)", () => {
+      const type = getConstType("const x = toInt(42);", "x");
+      expect(type).toEqual(primitiveType("Int"));
+    });
+
+    test("toFloat converts Int to Float", () => {
+      const type = getConstType("const x = toFloat(42);", "x");
+      expect(type).toEqual(primitiveType("Float"));
+    });
+
+    test("toInt rejects String argument", () => {
+      expect(() => check('const x = toInt("hello");')).toThrow(/not assignable/);
+    });
+
+    test("toFloat rejects Float argument", () => {
+      // toFloat only accepts Int, not Float or Number
+      expect(() => check("const x = toFloat(3.14);")).toThrow(/not assignable/);
+    });
+  });
+
+  describe("Try builtin and TryResult type", () => {
+    test("TryResult type can be used directly in annotation", () => {
+      // TryResult<Int> should work as a type annotation
+      const result = check(`
+        const success: TryResult<Int> = { ok: true, value: 42 };
+      `);
+      expect(result.decls).toHaveLength(1);
+    });
+
+    test("Try returns TryResult with inferred type parameter", () => {
+      const type = getConstType("const x = Try(() => 42);", "x");
+      const unwrapped = unwrapMetadata(type);
+      expect(unwrapped.kind).toBe("union");
+      // Should be { ok: true, value: 42 } | { ok: false, error: Error }
+      const union = unwrapped as Type & { kind: "union" };
+      expect(union.types.length).toBe(2);
+    });
+
+    test("Try result can be matched", () => {
+      // This tests that the discriminated union is well-formed
+      const result = check(`
+        const result = Try(() => 42);
+        const value = match (result) {
+          case { ok: true, value }: value;
+          case { ok: false, error }: 0;
+        };
+      `);
+      const valueDecl = result.decls.find(d => d.kind === "const" && d.name === "value") as TypedDecl & { kind: "const" };
+      expect(valueDecl).toBeDefined();
+    });
+
+    test("Try with string-returning thunk", () => {
+      const type = getConstType('const x = Try(() => "hello");', "x");
+      const unwrapped = unwrapMetadata(type);
+      expect(unwrapped.kind).toBe("union");
+    });
+
+    test("Try requires thunk argument", () => {
+      expect(() => check("const x = Try(42);")).toThrow(/not assignable/);
+    });
+
+    test("Error type can be used in annotation", () => {
+      // Error should work as a type annotation
+      const result = check('const e: Error = { message: "test", name: "Error" };');
+      const constDecl = result.decls[0] as TypedDecl & { kind: "const" };
+      expect(constDecl.declType.kind).toBe("record");
+    });
+  });
 });

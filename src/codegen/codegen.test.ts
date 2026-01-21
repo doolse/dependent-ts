@@ -498,6 +498,45 @@ describe("Codegen", () => {
       expect(result).toBe(7);
     });
   });
+
+  describe("numeric conversion builtins", () => {
+    test("toInt truncates to integer", () => {
+      const js = compile("const result = toInt(3.7);");
+      expect(js).toContain("toInt");
+      const result = evalLastConst(js);
+      expect(result).toBe(3);
+    });
+
+    test("toInt truncates negative numbers toward zero", () => {
+      const js = compile("const result = toInt(-3.7);");
+      const result = evalLastConst(js);
+      expect(result).toBe(-3);
+    });
+
+    test("toFloat preserves integer value", () => {
+      const js = compile("const result = toFloat(42);");
+      expect(js).toContain("toFloat");
+      const result = evalLastConst(js);
+      expect(result).toBe(42);
+    });
+  });
+
+  describe("Try builtin", () => {
+    test("Try catches successful execution", () => {
+      const js = compile("const result = Try(() => 42);");
+      expect(js).toContain("Try");
+      const result = evalLastConst(js) as { ok: boolean; value?: number };
+      expect(result.ok).toBe(true);
+      expect(result.value).toBe(42);
+    });
+
+    test("Try catches thrown errors", () => {
+      // Note: We can't easily test this without a throw statement in DepJS
+      // but we can verify the runtime preamble includes Try
+      const js = compile("const result = Try(() => 1);");
+      expect(js).toContain("const Try = ");
+    });
+  });
 });
 
 // Helper to evaluate JS and extract the last const value

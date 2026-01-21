@@ -23,6 +23,7 @@ import {
   arrayTypeFromElements,
   unionType,
   typeVarType,
+  withMetadata,
   FieldInfo,
   ParamInfo,
   substituteThis,
@@ -803,6 +804,18 @@ class TypeChecker {
       );
     }
 
+    // Handle Try builtin - compute TryResult<T> from the thunk's return type
+    if (expr.fn.kind === "identifier" && expr.fn.name === "Try" && typedArgs.length > 0) {
+      const thunkArg = typedArgs[0];
+      const thunkType = thunkArg.kind === "element" ? thunkArg.value.type : thunkArg.expr.type;
+      if (thunkType.kind === "function") {
+        // Get T from () => T
+        const valueType = thunkType.returnType;
+        // Construct TryResult<T>
+        returnType = this.constructTryResultType(valueType);
+      }
+    }
+
     // A call is comptimeOnly if:
     // 1. The result type cannot exist at runtime (like Type), OR
     // 2. The function itself is comptimeOnly (like assert - it shouldn't emit code)
@@ -1127,6 +1140,41 @@ class TypeChecker {
       default:
         return defaultReturnType;
     }
+  }
+
+  /**
+   * Construct the TryResult<T> type for a given value type T.
+   * TryResult<T> = { ok: true, value: T } | { ok: false, error: Error }
+   */
+  private constructTryResultType(valueType: Type): Type {
+    // Create the success branch: { ok: true, value: T }
+    const successType = recordType(
+      [
+        { name: "ok", type: literalType(true, "Boolean"), optional: false, annotations: [] },
+        { name: "value", type: valueType, optional: false, annotations: [] },
+      ],
+      { closed: false }
+    );
+
+    // Create the failure branch: { ok: false, error: Error }
+    const errorType = recordType(
+      [
+        { name: "message", type: primitiveType("String"), optional: false, annotations: [] },
+        { name: "name", type: primitiveType("String"), optional: false, annotations: [] },
+      ],
+      { closed: false }
+    );
+    const failureType = recordType(
+      [
+        { name: "ok", type: literalType(false, "Boolean"), optional: false, annotations: [] },
+        { name: "error", type: errorType, optional: false, annotations: [] },
+      ],
+      { closed: false }
+    );
+
+    // Return the union with metadata
+    const resultType = unionType([successType, failureType]);
+    return withMetadata(resultType, { name: "TryResult", typeArgs: [valueType] });
   }
 
   /**
