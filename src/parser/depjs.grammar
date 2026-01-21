@@ -401,25 +401,25 @@ PropertyName {
 
 @skip { whitespace | LineComment | BlockComment }
 
-// Operator precedence (low to high)
+// Operator precedence (high to low, matching Lezer convention)
 @precedence {
-  ternary @right,
-  or @left,
-  and @left,
-  bitor @left,
-  bitxor @left,
-  bitand @left,
-  equality @left,
-  compare @left,
-  add @left,
-  mult @left,
-  unary @right,
-  await @right,
-  typeCall @left,
-  call @left,
-  member @left,
+  intersection @left,
   union @left,
-  intersection @left
+  member @left,
+  call @left,
+  typeCall @left,
+  await @right,
+  unary @right,
+  mult @left,
+  add @left,
+  compare @left,
+  equality @left,
+  bitand @left,
+  bitxor @left,
+  bitor @left,
+  and @left,
+  or @left,
+  ternary @right
 }
 
 @external propSource highlighting from "./highlight"
