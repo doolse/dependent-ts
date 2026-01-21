@@ -585,5 +585,8 @@ function isRuntimeUsable(type: Type): boolean {
  * Check if a type is a Type value (comptime-only).
  */
 function isTypeValue(type: Type): boolean {
-  return isTypeType(type) || type.kind === "typeVar" || type.kind === "boundedType";
+  // Note: typeVar is NOT comptime-only - it represents a type parameter that gets
+  // instantiated at call sites. Values of type T exist at runtime.
+  // boundedType (Type<Bound>) IS comptime-only as it's a constraint on types.
+  return isTypeType(type) || type.kind === "boundedType";
 }
