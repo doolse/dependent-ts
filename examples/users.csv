@@ -1,4 +1,4 @@
-name,email,role
-Alice,alice@example.com,admin
-Bob,bob@example.com,user
-Charlie,charlie@example.com,user
+name,email,role,ageI
+Alice,alice@example.com,admin,30
+Bob,bob@example.com,user,25
+Charlie,charlie@example.com,user,35
