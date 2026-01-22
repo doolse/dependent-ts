@@ -1565,6 +1565,70 @@ someRuntimeArray.push(getter);  // getter escapes to runtime context
 
 If the compiler can fully evaluate the closure at compile time (i.e., it never escapes), it's allowed. The error only occurs when comptime-only code would need to exist at runtime.
 
+### The `comptime` Namespace
+
+Compile-time effect functions are grouped under the `comptime` namespace. This makes them discoverable and explicitly marks them as comptime-only operations.
+
+```
+comptime const content = comptime.readFile("config.json");
+```
+
+**Available functions:**
+
+- `comptime.readFile(path: String): String` — Read a file's contents at compile time
+
+The `comptime.` prefix clearly distinguishes these from runtime operations. Functions in this namespace:
+- Can only be called in comptime contexts
+- Are evaluated during compilation, not at runtime
+- May perform effects (like file I/O) that are resolved before the program runs
+
+### Motivating Example: Type-Safe CSV Loading
+
+A key goal of DepJS's compile-time system is enabling powerful userland libraries. This example demonstrates reading a CSV file at compile time and generating fully typed data:
+
+```
+// csv.djs - userland CSV library
+
+const parseCsvHeaders = (content: String): Array<String> =>
+  content.split("\n")[0].split(",").map(h => h.trim());
+
+const parseCsvRows = (content: String, headers: Array<String>): Array<Record<String, String>> =>
+  content.split("\n").slice(1).filter(line => line.length > 0).map(line => {
+    const values = line.split(",");
+    headers.reduce((acc, h, i) => ({ ...acc, [h]: values[i].trim() }), {})
+  });
+
+// Usage - given users.csv:
+// name,email,role
+// Alice,alice@example.com,admin
+// Bob,bob@example.com,user
+
+comptime const content = comptime.readFile("users.csv");
+comptime const headers = parseCsvHeaders(content);
+comptime const rows = parseCsvRows(content, headers);
+
+// Build the Row type from the actual CSV headers
+type User = RecordType(headers.map(h => ({ name: h, type: String, optional: false })));
+// User = { name: String, email: String, role: String }
+
+// rows has literal types like [{ name: "Alice", email: "alice@example.com", ... }, ...]
+// Each element is a subtype of User due to structural subtyping
+const users: Array<User> = rows;
+
+// Fully typed access - typos are compile errors!
+users[0].name;   // OK
+users[0].email;  // OK
+users[0].nmae;   // Compile error: property 'nmae' does not exist on type User
+```
+
+This demonstrates several DepJS features working together:
+- **Compile-time file reading** via `comptime.readFile()`
+- **Literal type preservation** for comptime-evaluated values
+- **First-class types** with `RecordType()` to build types from data
+- **Structural subtyping** allowing literal-typed values to satisfy widened types
+
+The type is derived from the actual CSV file, so if the CSV structure changes, the types update automatically and any code using invalid field names becomes a compile error.
+
 ## Type Introspection
 
 ### `typeOf(x)`
