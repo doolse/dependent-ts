@@ -44,33 +44,52 @@ function elementArgs(exprs: CoreExpr[]): CoreArgument[] {
 }
 
 /**
+ * Parse options including optional file path for source locations.
+ */
+export interface ParseOptions {
+  filePath?: string;
+}
+
+// Module-level context for current file path (safe since parsing is synchronous)
+let currentFilePath: string | undefined;
+
+/**
  * Parse source code and desugar to CoreAST.
  */
-export function parse(source: string): CoreDecl[] {
+export function parse(source: string, options?: ParseOptions): CoreDecl[] {
   const tree = parser.parse(source);
-  return desugar(tree, source);
+  return desugar(tree, source, options);
 }
 
 /**
  * Desugar a Lezer tree to CoreAST declarations.
  */
-export function desugar(tree: Tree, source: string): CoreDecl[] {
+export function desugar(tree: Tree, source: string, options?: ParseOptions): CoreDecl[] {
   const cursor = tree.cursor();
   const decls: CoreDecl[] = [];
 
-  // Skip to Program's children
-  if (cursor.name === "Program" && cursor.firstChild()) {
-    do {
-      const decl = desugarStatement(cursor, source);
-      if (decl) decls.push(decl);
-    } while (cursor.nextSibling());
-  }
+  // Set module-level file path for loc() helper
+  const previousFilePath = currentFilePath;
+  currentFilePath = options?.filePath;
 
-  return decls;
+  try {
+    // Skip to Program's children
+    if (cursor.name === "Program" && cursor.firstChild()) {
+      do {
+        const decl = desugarStatement(cursor, source);
+        if (decl) decls.push(decl);
+      } while (cursor.nextSibling());
+    }
+
+    return decls;
+  } finally {
+    // Restore previous file path
+    currentFilePath = previousFilePath;
+  }
 }
 
 function loc(cursor: TreeCursor): SourceLocation {
-  return { from: cursor.from, to: cursor.to };
+  return { from: cursor.from, to: cursor.to, file: currentFilePath };
 }
 
 function text(cursor: TreeCursor, source: string): string {

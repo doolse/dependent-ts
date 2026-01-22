@@ -14,6 +14,7 @@ import { Type } from "../types/types";
 export type SourceLocation = {
   from: number; // Start offset in source
   to: number; // End offset in source
+  file?: string; // Source file path (for comptime file operations)
 };
 
 export type Located<T> = T & { loc: SourceLocation };

@@ -131,8 +131,8 @@ function parseArgs(args: string[]): Options {
 }
 
 function compile(source: string, filename: string): string {
-  // Parse
-  const decls = parse(source);
+  // Parse with file path for source locations
+  const decls = parse(source, { filePath: filename });
 
   // Type check
   const typed = typecheck(decls);
@@ -172,7 +172,7 @@ function main(): void {
     switch (options.command) {
       case "check": {
         // Just parse and type check
-        const decls = parse(source);
+        const decls = parse(source, { filePath: inputPath });
         typecheck(decls);
         if (!options.quiet) {
           console.log(colors.green + "✓ No errors" + colors.reset);

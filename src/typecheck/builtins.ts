@@ -157,6 +157,10 @@ export function createInitialComptimeEnv(): ComptimeEnv {
   // This type
   env.defineEvaluated("This", wrapTypeValue({ kind: "this" } as Type));
 
+  // Comptime namespace with comptime-only functions (e.g., readFile)
+  // Named "Comptime" (capitalized) to avoid conflict with "comptime" keyword
+  env.defineEvaluated("Comptime", wrapValue(createComptimeNamespace(), getComptimeNamespaceType()));
+
   return env;
 }
 
@@ -335,6 +339,14 @@ export function createInitialTypeEnv(): TypeEnv {
 
   env.define("This", {
     type: typeType,
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
+  // Comptime namespace with comptime-only functions (e.g., readFile)
+  // Named "Comptime" (capitalized) to avoid conflict with "comptime" keyword
+  env.define("Comptime", {
+    type: getComptimeNamespaceType(),
     comptimeStatus: "comptimeOnly",
     mutable: false,
   });
@@ -926,3 +938,83 @@ const builtinTryResult: ComptimeBuiltin = {
     );
   },
 };
+
+// ============================================
+// Comptime namespace and readFile builtin
+// ============================================
+
+import * as fs from "fs";
+import * as nodePath from "path";
+
+/**
+ * comptime.readFile builtin - reads a file at compile time.
+ * Path is resolved relative to the source file location.
+ */
+const builtinComptimeReadFile: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "comptime.readFile",
+  impl: (args, _evaluator, loc) => {
+    if (args.length < 1) {
+      throw new CompileError(
+        "comptime.readFile requires a path argument",
+        "typecheck",
+        loc
+      );
+    }
+    const pathValue = args[0].value;
+    if (typeof pathValue !== "string") {
+      throw new CompileError(
+        "comptime.readFile path must be a string",
+        "typecheck",
+        loc
+      );
+    }
+
+    // Resolve relative to source file location
+    const sourceDir = loc?.file ? nodePath.dirname(loc.file) : process.cwd();
+    const resolvedPath = nodePath.resolve(sourceDir, pathValue);
+
+    try {
+      const content = fs.readFileSync(resolvedPath, "utf-8");
+      return wrapValue(content, primitiveType("String"));
+    } catch (e) {
+      const errorMsg = e instanceof Error ? e.message : String(e);
+      throw new CompileError(
+        `Failed to read file '${pathValue}' (resolved to '${resolvedPath}'): ${errorMsg}`,
+        "typecheck",
+        loc
+      );
+    }
+  },
+};
+
+/**
+ * Create the comptime namespace record containing comptime-only functions.
+ * This is stored as a record value where each field is a builtin function.
+ */
+function createComptimeNamespace(): RawComptimeRecord {
+  return {
+    readFile: builtinComptimeReadFile,
+  };
+}
+
+/**
+ * Type for the comptime namespace.
+ * comptime: { readFile: (path: String) => String }
+ */
+function getComptimeNamespaceType(): Type {
+  return recordType(
+    [
+      {
+        name: "readFile",
+        type: functionType(
+          [{ name: "path", type: primitiveType("String"), optional: false }],
+          primitiveType("String")
+        ),
+        optional: false,
+        annotations: [],
+      },
+    ],
+    { closed: false }
+  );
+}

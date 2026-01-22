@@ -74,7 +74,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **Demand-driven comptime**: Certain positions/builtins implicitly require compile-time evaluation (e.g., type annotations, `assert`). The compiler propagates these requirements backwards.
 - **Explicit `comptime` keyword**: Programmers can optionally mark bindings as `comptime` to explicitly require compile-time evaluation
 - **Comptime-only code cannot exist at runtime**: Code that uses comptime-only operations (e.g., `.fields`, `.variants`) can only be evaluated at compile time. If such code would need to run at runtime (e.g., escaping into a runtime context), it's a compile error.
-- **`comptime` namespace for effects**: Compile-time effect functions live under the `comptime` namespace (e.g., `comptime.readFile(path)`). This makes them discoverable and explicitly marks them as comptime-only.
+- **`Comptime` namespace for effects**: Compile-time effect functions live under the `Comptime` namespace (e.g., `Comptime.readFile(path)`). Named with capital C to avoid conflict with the `comptime` keyword. This makes them discoverable and explicitly marks them as comptime-only.
 
 ### Reserved Keywords / Naming
 
