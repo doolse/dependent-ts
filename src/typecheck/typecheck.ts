@@ -1964,9 +1964,18 @@ class TypeChecker {
         // Wildcard matches everything, no narrowing
         return matchType;
 
-      case "literal":
+      case "literal": {
         // Literal pattern narrows to the literal type
-        return literalType(pattern.value);
+        const baseType =
+          pattern.literalKind === "int" ? "Int" :
+          pattern.literalKind === "float" ? "Float" :
+          pattern.literalKind === "string" ? "String" :
+          pattern.literalKind === "boolean" ? "Boolean" : null;
+        if (baseType && pattern.value !== null && pattern.value !== undefined) {
+          return literalType(pattern.value as string | number | boolean, baseType);
+        }
+        return matchType;
+      }
 
       case "type":
         // Type patterns would narrow to that type (but we'd need to evaluate it)

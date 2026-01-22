@@ -737,7 +737,7 @@ function desugarArrowFn(cursor: TreeCursor, source: string): CoreExpr {
       typeExpr = {
         kind: "call",
         fn: { kind: "identifier", name: "Type", loc: fnLoc },
-        args: [typeParam.constraint],
+        args: [{ kind: "element", value: typeParam.constraint }],
         loc: fnLoc,
       };
     } else {
