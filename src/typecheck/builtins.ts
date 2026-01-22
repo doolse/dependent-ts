@@ -153,6 +153,10 @@ export function createInitialComptimeEnv(): ComptimeEnv {
   // Special builtins
   env.defineEvaluated("typeOf", wrapBuiltinValue(builtinTypeOf));
   env.defineEvaluated("assert", wrapBuiltinValue(builtinAssert));
+  env.defineEvaluated("fromEntries", wrapBuiltinValue(builtinFromEntries));
+  env.defineEvaluated("buildRecord", wrapBuiltinValue(builtinBuildRecord));
+  env.defineEvaluated("parseInt", wrapBuiltinValue(builtinParseInt));
+  env.defineEvaluated("parseFloat", wrapBuiltinValue(builtinParseFloat));
 
   // This type
   env.defineEvaluated("This", wrapTypeValue({ kind: "this" } as Type));
@@ -422,6 +426,69 @@ export function createInitialTypeEnv(): TypeEnv {
       primitiveType("Float")
     ),
     comptimeStatus: "runtime",
+    mutable: false,
+  });
+
+  // parseInt: (value: String) => Int - parses string to integer
+  env.define("parseInt", {
+    type: functionType(
+      [{ name: "value", type: primitiveType("String"), optional: false }],
+      primitiveType("Int")
+    ),
+    comptimeStatus: "runtime",
+    mutable: false,
+  });
+
+  // parseFloat: (value: String) => Float - parses string to float
+  env.define("parseFloat", {
+    type: functionType(
+      [{ name: "value", type: primitiveType("String"), optional: false }],
+      primitiveType("Float")
+    ),
+    comptimeStatus: "runtime",
+    mutable: false,
+  });
+
+  // fromEntries: (entries: Array<[String, Unknown]>) => { [key: String]: Unknown }
+  // Creates a record from an array of key-value pairs (like Object.fromEntries)
+  // Accepts any value type; the actual runtime types are preserved
+  env.define("fromEntries", {
+    type: functionType(
+      [{
+        name: "entries",
+        type: arrayType([
+          arrayType([primitiveType("String"), primitiveType("Unknown")], false)
+        ], true),
+        optional: false
+      }],
+      recordType([], { indexType: primitiveType("Unknown") })
+    ),
+    comptimeStatus: "runtime",
+    mutable: false,
+  });
+
+  // buildRecord: (entries: Array<[String, Unknown]>, targetType: Type) => targetType
+  // Like fromEntries but validates against and returns the specific target type
+  // Comptime-only: validates entries match the target record type at compile time
+  env.define("buildRecord", {
+    type: functionType(
+      [
+        {
+          name: "entries",
+          type: arrayType([
+            arrayType([primitiveType("String"), primitiveType("Unknown")], false)
+          ], true),
+          optional: false
+        },
+        {
+          name: "targetType",
+          type: primitiveType("Type"),
+          optional: false
+        }
+      ],
+      primitiveType("Unknown") // Return type is the targetType, computed at comptime
+    ),
+    comptimeStatus: "comptimeOnly",
     mutable: false,
   });
 
@@ -857,6 +924,213 @@ const builtinAssert: ComptimeBuiltin = {
     }
 
     return wrapValue(undefined, primitiveType("Void"));
+  },
+};
+
+/**
+ * fromEntries builtin - creates a record from an array of [key, value] pairs.
+ * Like JavaScript's Object.fromEntries.
+ * Infers the value type from the input array's element type.
+ */
+const builtinFromEntries: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "fromEntries",
+  impl: (args, _evaluator, loc) => {
+    if (args.length < 1) {
+      throw new CompileError(
+        "fromEntries requires 1 argument (entries array)",
+        "typecheck",
+        loc
+      );
+    }
+
+    const entries = args[0].value;
+    if (!Array.isArray(entries)) {
+      throw new CompileError(
+        "fromEntries argument must be an array of [key, value] pairs",
+        "typecheck",
+        loc
+      );
+    }
+
+    // Infer value type from the input array type
+    let valueType: Type = primitiveType("Unknown");
+    const inputType = args[0].type;
+    if (inputType.kind === "array") {
+      // Get the element type of the array
+      const elemTypes = getArrayElementTypes(inputType);
+      if (elemTypes.length > 0) {
+        const entryType = elemTypes[0];
+        // Entry type should be a tuple/array like [String, V]
+        if (entryType.kind === "array") {
+          const entryElemTypes = getArrayElementTypes(entryType);
+          if (entryElemTypes.length >= 2) {
+            valueType = entryElemTypes[1]; // Second element is the value type
+          }
+        }
+      }
+    }
+
+    // Build the record from entries
+    const result: RawComptimeRecord = {};
+    for (const entry of entries) {
+      if (!Array.isArray(entry) || entry.length < 2) {
+        throw new CompileError(
+          "Each entry must be a [key, value] pair",
+          "typecheck",
+          loc
+        );
+      }
+      const key = entry[0];
+      const value = entry[1];
+      if (typeof key !== "string") {
+        throw new CompileError(
+          "Entry keys must be strings",
+          "typecheck",
+          loc
+        );
+      }
+      result[key] = value;
+    }
+
+    // Return as indexed record type with inferred value type
+    return wrapValue(result, recordType([], { indexType: valueType }));
+  },
+};
+
+/**
+ * parseInt builtin - parses a string to an integer.
+ */
+const builtinParseInt: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "parseInt",
+  impl: (args, _evaluator, loc) => {
+    if (args.length < 1) {
+      throw new CompileError("parseInt requires 1 argument", "typecheck", loc);
+    }
+    const value = args[0].value;
+    if (typeof value !== "string") {
+      throw new CompileError("parseInt argument must be a String", "typecheck", loc);
+    }
+    const result = parseInt(value, 10);
+    if (isNaN(result)) {
+      throw new CompileError(`Cannot parse "${value}" as integer`, "typecheck", loc);
+    }
+    return wrapValue(result, primitiveType("Int"));
+  },
+};
+
+/**
+ * parseFloat builtin - parses a string to a float.
+ */
+const builtinParseFloat: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "parseFloat",
+  impl: (args, _evaluator, loc) => {
+    if (args.length < 1) {
+      throw new CompileError("parseFloat requires 1 argument", "typecheck", loc);
+    }
+    const value = args[0].value;
+    if (typeof value !== "string") {
+      throw new CompileError("parseFloat argument must be a String", "typecheck", loc);
+    }
+    const result = parseFloat(value);
+    if (isNaN(result)) {
+      throw new CompileError(`Cannot parse "${value}" as float`, "typecheck", loc);
+    }
+    return wrapValue(result, primitiveType("Float"));
+  },
+};
+
+/**
+ * buildRecord builtin - creates a typed record from an array of [key, value] pairs.
+ * Unlike fromEntries which returns { [key: String]: T }, this validates against
+ * a specific target type and returns that type.
+ *
+ * buildRecord(entries: Array<[String, Unknown]>, targetType: Type): targetType
+ */
+const builtinBuildRecord: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "buildRecord",
+  impl: (args, _evaluator, loc) => {
+    if (args.length < 2) {
+      throw new CompileError(
+        "buildRecord requires 2 arguments (entries, targetType)",
+        "typecheck",
+        loc
+      );
+    }
+
+    const entries = args[0].value;
+    if (!Array.isArray(entries)) {
+      throw new CompileError(
+        "buildRecord first argument must be an array of [key, value] pairs",
+        "typecheck",
+        loc
+      );
+    }
+
+    if (!isTypeValue(args[1])) {
+      throw new CompileError(
+        "buildRecord second argument must be a Type",
+        "typecheck",
+        loc
+      );
+    }
+    const targetType = args[1].value as Type;
+
+    if (targetType.kind !== "record") {
+      throw new CompileError(
+        `buildRecord target must be a record type, got ${targetType.kind}`,
+        "typecheck",
+        loc
+      );
+    }
+
+    // Build the record from entries
+    const result: RawComptimeRecord = {};
+    for (const entry of entries) {
+      if (!Array.isArray(entry) || entry.length < 2) {
+        throw new CompileError(
+          "Each entry must be a [key, value] pair",
+          "typecheck",
+          loc
+        );
+      }
+      const key = entry[0];
+      const value = entry[1];
+      if (typeof key !== "string") {
+        throw new CompileError(
+          "Entry keys must be strings",
+          "typecheck",
+          loc
+        );
+      }
+      // Validate that the key exists in the target type
+      const field = targetType.fields.find(f => f.name === key);
+      if (!field && !targetType.indexType) {
+        throw new CompileError(
+          `Field '${key}' does not exist on target type`,
+          "typecheck",
+          loc
+        );
+      }
+      result[key] = value;
+    }
+
+    // Validate that all required fields are present
+    for (const field of targetType.fields) {
+      if (!field.optional && !(field.name in result)) {
+        throw new CompileError(
+          `Required field '${field.name}' missing from entries`,
+          "typecheck",
+          loc
+        );
+      }
+    }
+
+    // Return with the target type
+    return wrapValue(result, targetType);
   },
 };
 

@@ -817,6 +817,17 @@ class TypeChecker {
       }
     }
 
+    // Handle buildRecord builtin - return type is the second argument (the target type)
+    if (expr.fn.kind === "identifier" && expr.fn.name === "buildRecord" && typedArgs.length >= 2) {
+      const targetTypeArg = typedArgs[1];
+      const targetTypeExpr = targetTypeArg.kind === "element" ? targetTypeArg.value : targetTypeArg.expr;
+      // The second argument should be a Type value - get its comptime value
+      const targetType = targetTypeExpr.comptimeValue;
+      if (targetType !== undefined && typeof targetType === "object" && targetType !== null && "kind" in targetType) {
+        returnType = targetType as Type;
+      }
+    }
+
     // A call is comptimeOnly if:
     // 1. The result type cannot exist at runtime (like Type), OR
     // 2. The function itself is comptimeOnly (like assert - it shouldn't emit code)

@@ -178,7 +178,14 @@ function isRecordSubtype(sub: RecordType, sup: RecordType): boolean {
     const subField = sub.fields.find((f) => f.name === supField.name);
 
     if (!subField) {
-      // Missing field - only OK if sup's field is optional
+      // Missing field - check if sub has an index type that covers it
+      if (sub.indexType) {
+        // Index type must be subtype of the required field type
+        if (!isSubtype(sub.indexType, supField.type)) return false;
+        // Index types can't express optionality, so if sup field is required, it's OK
+        continue;
+      }
+      // No index type - only OK if sup's field is optional
       if (!supField.optional) return false;
       continue;
     }

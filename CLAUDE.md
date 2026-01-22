@@ -24,6 +24,7 @@ DepJS is a new programming language with these known design goals (from initial-
 2. **Ask before assuming**: When a design decision is unclear, ask the user rather than guessing
 3. **Show examples**: Use concrete code examples to illustrate features
 4. **Track unknowns**: Clearly mark open questions and unresolved decisions
+5. **NEVER compromise or hide limitations**: If something can't be implemented properly, say so clearly. Never present a hardcoded/fake solution as working. If an example requires features that don't exist yet, either implement those features properly or acknowledge the limitation and ask how to proceed. Hiding compromises wastes time and erodes trust.
 
 ### When Writing Spec Sections
 
