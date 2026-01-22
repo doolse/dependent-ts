@@ -51,6 +51,7 @@ import { ComptimeEvaluator } from "./comptime-eval";
 import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
 import { isComptimeOnlyProperty, getTypePropertyType, getTypeProperty } from "./type-properties";
 import { getArrayMethodType, getArrayElementType } from "./array-methods";
+import { getStringMethodType } from "./string-methods";
 
 /**
  * Type checker configuration.
@@ -1255,6 +1256,39 @@ class TypeChecker {
 
       throw new CompileError(
         `Array has no method '${expr.name}'`,
+        "typecheck",
+        expr.loc
+      );
+    }
+
+    // Handle string property/method access
+    const isStringType =
+      (objType.kind === "primitive" && objType.name === "String") ||
+      (objType.kind === "literal" && objType.baseType === "String");
+    if (isStringType) {
+      // Handle .length property
+      if (expr.name === "length") {
+        return {
+          ...expr,
+          object,
+          type: primitiveType("Int"),
+          comptimeOnly: object.comptimeOnly,
+        };
+      }
+
+      // Handle string methods
+      const methodType = getStringMethodType(expr.name);
+      if (methodType) {
+        return {
+          ...expr,
+          object,
+          type: methodType,
+          comptimeOnly: object.comptimeOnly,
+        };
+      }
+
+      throw new CompileError(
+        `String has no method '${expr.name}'`,
         "typecheck",
         expr.loc
       );

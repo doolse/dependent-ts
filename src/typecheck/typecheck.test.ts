@@ -1658,6 +1658,119 @@ describe("Type Checker", () => {
       const lenDecl = result.decls[1] as TypedDecl & { kind: "const" };
       expect(lenDecl.init.type.kind).toBe("primitive");
     });
+
+    // String method type checking
+    test("string .length property", () => {
+      const result = check(`
+        const str: String = "hello";
+        const len = str.length;
+      `);
+      expect(result.decls).toHaveLength(2);
+      const lenDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(lenDecl.init.type.kind).toBe("primitive");
+      expect((lenDecl.init.type as any).name).toBe("Int");
+    });
+
+    test("string .toUpperCase and .toLowerCase", () => {
+      const result = check(`
+        const str: String = "Hello";
+        const upper = str.toUpperCase();
+        const lower = str.toLowerCase();
+      `);
+      expect(result.decls).toHaveLength(3);
+      const upperDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(upperDecl.init.type.kind).toBe("primitive");
+      expect((upperDecl.init.type as any).name).toBe("String");
+    });
+
+    test("string .split method", () => {
+      const result = check(`
+        const str: String = "a,b,c";
+        const parts = str.split(",");
+      `);
+      expect(result.decls).toHaveLength(2);
+      const partsDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(partsDecl.init.type.kind).toBe("array");
+    });
+
+    test("string .includes and search methods", () => {
+      const result = check(`
+        const str: String = "hello world";
+        const has = str.includes("world");
+        const idx = str.indexOf("o");
+        const starts = str.startsWith("hello");
+        const ends = str.endsWith("world");
+      `);
+      expect(result.decls).toHaveLength(5);
+      const hasDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(hasDecl.init.type.kind).toBe("primitive");
+      expect((hasDecl.init.type as any).name).toBe("Boolean");
+      const idxDecl = result.decls[2] as TypedDecl & { kind: "const" };
+      expect((idxDecl.init.type as any).name).toBe("Int");
+    });
+
+    test("string .substring and .slice", () => {
+      const result = check(`
+        const str: String = "hello";
+        const sub = str.substring(1, 3);
+        const sliced = str.slice(1, 3);
+      `);
+      expect(result.decls).toHaveLength(3);
+      const subDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(subDecl.init.type.kind).toBe("primitive");
+      expect((subDecl.init.type as any).name).toBe("String");
+    });
+
+    test("string .trim methods", () => {
+      const result = check(`
+        const str: String = "  hello  ";
+        const trimmed = str.trim();
+        const trimStart = str.trimStart();
+        const trimEnd = str.trimEnd();
+      `);
+      expect(result.decls).toHaveLength(4);
+    });
+
+    test("string .replace and .replaceAll", () => {
+      const result = check(`
+        const str: String = "hello world";
+        const replaced = str.replace("world", "there");
+        const allReplaced = str.replaceAll("l", "L");
+      `);
+      expect(result.decls).toHaveLength(3);
+    });
+
+    test("string .padStart and .padEnd", () => {
+      const result = check(`
+        const num: String = "42";
+        const padded = num.padStart(5, "0");
+        const paddedEnd = num.padEnd(5, "-");
+      `);
+      expect(result.decls).toHaveLength(3);
+    });
+
+    test("string method chaining", () => {
+      const result = check(`
+        const str: String = "  HELLO  ";
+        const processed = str.trim().toLowerCase().replace("hello", "world");
+      `);
+      expect(result.decls).toHaveLength(2);
+      const processedDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(processedDecl.init.type.kind).toBe("primitive");
+      expect((processedDecl.init.type as any).name).toBe("String");
+    });
+
+    test("literal string type methods", () => {
+      // Methods should work on literal string types too
+      const result = check(`
+        const greeting = "hello";
+        const upper = greeting.toUpperCase();
+      `);
+      expect(result.decls).toHaveLength(2);
+      const upperDecl = result.decls[1] as TypedDecl & { kind: "const" };
+      expect(upperDecl.init.type.kind).toBe("primitive");
+      expect((upperDecl.init.type as any).name).toBe("String");
+    });
   });
 
   describe("discriminated unions", () => {

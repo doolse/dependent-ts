@@ -584,9 +584,13 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
       return { value, type: fieldType };
     }
 
-    // String length
-    if (typeof obj.value === "string" && name === "length") {
-      return { value: obj.value.length, type: primitiveType("Int") };
+    // String properties and methods
+    if (typeof obj.value === "string") {
+      if (name === "length") {
+        return { value: obj.value.length, type: primitiveType("Int") };
+      }
+      const method = getStringMethod(obj.value, name, loc);
+      if (method) return method;
     }
 
     throw new CompileError(
@@ -1219,6 +1223,170 @@ function getArrayMethod(
           }
         }
         return { value: results, type: arrayType([unionType(resultTypes)], true) };
+      });
+
+    default:
+      return undefined;
+  }
+}
+
+/**
+ * Get a string method implementation for compile-time evaluation.
+ */
+function getStringMethod(
+  str: string,
+  name: string,
+  loc?: SourceLocation
+): TypedComptimeValue | undefined {
+  switch (name) {
+    // Character access
+    case "charAt":
+      return wrapBuiltin("String.charAt", (args) => {
+        const index = args[0]?.value as number ?? 0;
+        const char = index >= 0 && index < str.length ? str.charAt(index) : "";
+        return { value: char, type: primitiveType("String") };
+      });
+
+    case "charCodeAt":
+      return wrapBuiltin("String.charCodeAt", (args) => {
+        const index = args[0]?.value as number ?? 0;
+        const code = str.charCodeAt(index);
+        // NaN becomes 0 for simplicity in comptime
+        return { value: Number.isNaN(code) ? 0 : code, type: primitiveType("Int") };
+      });
+
+    // Substring extraction
+    case "substring":
+      return wrapBuiltin("String.substring", (args) => {
+        const start = args[0]?.value as number ?? 0;
+        const end = args[1]?.value as number | undefined;
+        return { value: str.substring(start, end), type: primitiveType("String") };
+      });
+
+    case "slice":
+      return wrapBuiltin("String.slice", (args) => {
+        const start = args[0]?.value as number | undefined;
+        const end = args[1]?.value as number | undefined;
+        return { value: str.slice(start, end), type: primitiveType("String") };
+      });
+
+    // Searching
+    case "indexOf":
+      return wrapBuiltin("String.indexOf", (args) => {
+        const searchValue = args[0]?.value as string ?? "";
+        const fromIndex = args[1]?.value as number | undefined;
+        return { value: str.indexOf(searchValue, fromIndex), type: primitiveType("Int") };
+      });
+
+    case "lastIndexOf":
+      return wrapBuiltin("String.lastIndexOf", (args) => {
+        const searchValue = args[0]?.value as string ?? "";
+        const fromIndex = args[1]?.value as number | undefined;
+        return { value: str.lastIndexOf(searchValue, fromIndex), type: primitiveType("Int") };
+      });
+
+    case "includes":
+      return wrapBuiltin("String.includes", (args) => {
+        const searchString = args[0]?.value as string ?? "";
+        const position = args[1]?.value as number | undefined;
+        return { value: str.includes(searchString, position), type: primitiveType("Boolean") };
+      });
+
+    case "startsWith":
+      return wrapBuiltin("String.startsWith", (args) => {
+        const searchString = args[0]?.value as string ?? "";
+        const position = args[1]?.value as number | undefined;
+        return { value: str.startsWith(searchString, position), type: primitiveType("Boolean") };
+      });
+
+    case "endsWith":
+      return wrapBuiltin("String.endsWith", (args) => {
+        const searchString = args[0]?.value as string ?? "";
+        const endPosition = args[1]?.value as number | undefined;
+        return { value: str.endsWith(searchString, endPosition), type: primitiveType("Boolean") };
+      });
+
+    // Splitting
+    case "split":
+      return wrapBuiltin("String.split", (args) => {
+        const separator = args[0]?.value as string ?? "";
+        const limit = args[1]?.value as number | undefined;
+        const parts = str.split(separator, limit);
+        return { value: parts, type: arrayType([primitiveType("String")], true) };
+      });
+
+    // Trimming
+    case "trim":
+      return wrapBuiltin("String.trim", () => {
+        return { value: str.trim(), type: primitiveType("String") };
+      });
+
+    case "trimStart":
+      return wrapBuiltin("String.trimStart", () => {
+        return { value: str.trimStart(), type: primitiveType("String") };
+      });
+
+    case "trimEnd":
+      return wrapBuiltin("String.trimEnd", () => {
+        return { value: str.trimEnd(), type: primitiveType("String") };
+      });
+
+    // Case conversion
+    case "toUpperCase":
+      return wrapBuiltin("String.toUpperCase", () => {
+        return { value: str.toUpperCase(), type: primitiveType("String") };
+      });
+
+    case "toLowerCase":
+      return wrapBuiltin("String.toLowerCase", () => {
+        return { value: str.toLowerCase(), type: primitiveType("String") };
+      });
+
+    // Replacement
+    case "replace":
+      return wrapBuiltin("String.replace", (args) => {
+        const searchValue = args[0]?.value as string ?? "";
+        const replaceValue = args[1]?.value as string ?? "";
+        return { value: str.replace(searchValue, replaceValue), type: primitiveType("String") };
+      });
+
+    case "replaceAll":
+      return wrapBuiltin("String.replaceAll", (args) => {
+        const searchValue = args[0]?.value as string ?? "";
+        const replaceValue = args[1]?.value as string ?? "";
+        return { value: str.replaceAll(searchValue, replaceValue), type: primitiveType("String") };
+      });
+
+    // Padding
+    case "padStart":
+      return wrapBuiltin("String.padStart", (args) => {
+        const targetLength = args[0]?.value as number ?? str.length;
+        const padString = args[1]?.value as string ?? " ";
+        return { value: str.padStart(targetLength, padString), type: primitiveType("String") };
+      });
+
+    case "padEnd":
+      return wrapBuiltin("String.padEnd", (args) => {
+        const targetLength = args[0]?.value as number ?? str.length;
+        const padString = args[1]?.value as string ?? " ";
+        return { value: str.padEnd(targetLength, padString), type: primitiveType("String") };
+      });
+
+    // Repetition
+    case "repeat":
+      return wrapBuiltin("String.repeat", (args) => {
+        const count = args[0]?.value as number ?? 0;
+        return { value: str.repeat(Math.max(0, count)), type: primitiveType("String") };
+      });
+
+    // Concatenation
+    case "concat":
+      return wrapBuiltin("String.concat", (args) => {
+        let result = str;
+        for (const arg of args) {
+          result += String(arg.value);
+        }
+        return { value: result, type: primitiveType("String") };
       });
 
     default:
