@@ -453,32 +453,21 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - **No raw JS**: Importing modules without `.d.ts` is a compile error
 - **Type mapping**: TypeScript types map to DepJS types (see typescript-compat.md)
 
-**Current scope:**
+**Current implementation status:**
 - Single file compilation
-- Importing from external modules with `.d.ts`
+- Import syntax is parsed and passed through to generated JS, but imported values are typed as `Unknown` (no `.d.ts` parsing yet)
+- Export syntax works (`export const x = ...`)
 
 **Not yet supported:**
-- Exporting from DepJS modules
+- TypeScript `.d.ts` parsing (imports work syntactically but without type information)
 - DepJS-to-DepJS imports
 - Multi-file compilation
 
-## Open Questions (Pre-Implementation)
+## Open Questions
 
-These need to be resolved before or during implementation:
-
-### Grammar / Syntax Formalization
-- Reserved keywords list
-- String interpolation / template literals syntax (template literals with `${...}` are implemented)
-
-### Standard Library / Builtins
-- Array methods: Which are built-in? (map, filter, reduce, forEach, find, findIndex, some, every, includes, indexOf, slice, concat, flat, flatMap, etc.)
-- String methods: Which are built-in?
-- Math functions: Built-in or imported?
-- Console API: Built-in or imported?
-- What's built-in vs imported from JS?
+Design decisions that can be addressed as needed:
 
 ### Module System
-- DepJS exports syntax and semantics
 - DepJS-to-DepJS imports
 - Multi-file compilation model
 - Module resolution algorithm
@@ -486,45 +475,74 @@ These need to be resolved before or during implementation:
 ### TypeScript Compatibility
 - Full type mapping table (expand spec/typescript-compat.md)
 - Handling unsupported TS features (classes, enums, namespaces, decorators)
-- .d.ts parsing specifics
+- `.d.ts` parsing implementation
 
 ### Compile-Time Specifics
-- Fuel limit configuration
+- Fuel limit configuration (currently hardcoded)
 - Allowed comptime effects (beyond file reading and assert)
 
-## Not Yet Implemented (Documented Features)
+## Implementation Status
 
-These features are documented in the spec but not yet implemented in the codebase:
+### Fully Implemented Features
 
-### Array Methods
-Currently implemented: `map`, `filter`, `find`, `findIndex`, `some`, `every`, `reduce`, `flat`, `flatMap`, `concat`, `slice`, `indexOf`, `includes`, `join`
+**Array Methods:**
+`map`, `filter`, `find`, `findIndex`, `some`, `every`, `reduce`, `flat`, `flatMap`, `concat`, `slice`, `indexOf`, `includes`, `join`
 
-Not yet implemented:
+**String Methods:**
+`length`, `charAt`, `charCodeAt`, `substring`, `slice`, `indexOf`, `lastIndexOf`, `includes`, `startsWith`, `endsWith`, `split`, `trim`, `trimStart`, `trimEnd`, `toUpperCase`, `toLowerCase`, `replace`, `replaceAll`, `padStart`, `padEnd`, `repeat`, `concat`
+
+**Error Handling:**
+- `throw` expression
+- `Try` builtin returning `TryResult<T>`
+
+**Async/Await:**
+- `async` functions
+- `await` expressions
+- Top-level await
+
+**Branded Types:**
+- `newtype` syntax (`newtype UserId = String`)
+- `Branded` builtin
+- `.baseType` and `.brand` properties
+- Note: `.wrap()` and `.unwrap()` methods are documented in spec but not yet implemented
+
+**Exports:**
+- `export const x = ...` syntax
+
+**Block Expressions:**
+- Inside lambda bodies: `() => { const x = 1; x + 1 }`
+- Outside lambdas with `do` keyword: `const x = do { const y = 1; y + 1 }`
+- Type declarations inside blocks: `() => { type T = Int; const x: T = 42; x }`
+
+### Not Yet Implemented
+
+**Array Methods:**
 - `forEach` - iterate with side effects
 
-### String Methods
-No string methods implemented yet. Need to decide which are built-in vs imported from JS.
+**TypeScript Interop:**
+- `.d.ts` file parsing (imports are syntactically supported but typed as `Unknown`)
 
-### Block Expressions Outside Lambdas
-Block expressions outside arrow function bodies require the `do` keyword for disambiguation from record literals:
-```
-// WORKS (arrow body - no keyword needed):
-const f = () => { const x = 1; x + 1 };
+**Module System:**
+- DepJS-to-DepJS imports
+- Multi-file compilation
 
-// WORKS (standalone - requires 'do' keyword):
-const x = do { const y = 1; y + 1 };
+**Branded Types:**
+- `.wrap()` and `.unwrap()` methods
+
+### Known Issues
+
+**Template literals after destructuring patterns:**
+Template literals with interpolation don't work correctly after destructuring patterns in match cases:
+```
+// DOESN'T WORK:
+case { x: xv }: `value is ${xv}`;
+
+// WORKAROUND - use string concatenation:
+case { x: xv }: "value is " + xv;
 ```
 
-### Type Declarations in Blocks
-Type declarations inside block expressions are not yet supported:
-```
-// NOT YET SUPPORTED:
-const f = () => {
-  type T = Int;
-  const x: T = 42;
-  x
-};
-```
+**CLI doesn't support top-level await:**
+The CLI `run` command uses `new Function()` to execute generated code, which doesn't support top-level await. Async functions compile correctly and can be used in module contexts. Workaround: use `depjs compile <file> -o out.js && node out.js` to run as a module.
 
 ## Examples Directory
 
