@@ -529,21 +529,6 @@ Design decisions that can be addressed as needed:
 **Branded Types:**
 - `.wrap()` and `.unwrap()` methods
 
-### Known Issues
-
-**Template literals after destructuring patterns:**
-Template literals with interpolation don't work correctly after destructuring patterns in match cases:
-```
-// DOESN'T WORK:
-case { x: xv }: `value is ${xv}`;
-
-// WORKAROUND - use string concatenation:
-case { x: xv }: "value is " + xv;
-```
-
-**CLI doesn't support top-level await:**
-The CLI `run` command uses `new Function()` to execute generated code, which doesn't support top-level await. Async functions compile correctly and can be used in module contexts. Workaround: use `depjs compile <file> -o out.js && node out.js` to run as a module.
-
 ## Examples Directory
 
 - `examples/` - Working examples demonstrating current capabilities

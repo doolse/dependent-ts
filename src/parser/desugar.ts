@@ -1513,56 +1513,53 @@ function desugarTemplateExpr(cursor: TreeCursor, source: string): CoreExpr {
   const templateLoc = loc(cursor);
   const parts: CoreTemplatePart[] = [];
 
+  // Template content is captured by position, not as named nodes (local tokens are anonymous).
+  // The structure is: ` content ${expr} content ${expr} content `
+  // - TemplateExpr spans the entire template including backticks
+  // - Interpolation nodes span ${expr}
+
+  const templateStart = cursor.from + 1; // Skip opening backtick
+  const templateEnd = cursor.to - 1; // Skip closing backtick
+  let currentPos = templateStart;
+
+  // Helper to add string content from currentPos to targetPos
+  const addStringPart = (targetPos: number) => {
+    if (targetPos > currentPos) {
+      const rawContent = source.slice(currentPos, targetPos);
+      const content = parseTemplateContent(rawContent);
+      if (content) {
+        parts.push({ kind: "string", value: content });
+      }
+    }
+  };
+
+  // Collect interpolation positions and expressions
   if (cursor.firstChild()) {
     do {
-      switch (cursor.name) {
-        case "TemplatePlain": {
-          // Plain template: `content` - extract between backticks
-          const txt = text(cursor, source);
-          const content = parseTemplateContent(txt.slice(1, -1));
-          if (content) {
-            parts.push({ kind: "string", value: content });
-          }
-          break;
+      if (cursor.name === "Interpolation") {
+        // Add string content before this interpolation
+        addStringPart(cursor.from);
+
+        // Process the interpolation - find the expression inside
+        if (cursor.firstChild()) {
+          do {
+            if (isExpression(cursor.name)) {
+              parts.push({ kind: "expr", expr: desugarExpr(cursor, source) });
+              break;
+            }
+          } while (cursor.nextSibling());
+          cursor.parent();
         }
-        case "TemplateStart": {
-          // Start of interpolated: `content${ - extract between ` and ${
-          const txt = text(cursor, source);
-          const content = parseTemplateContent(txt.slice(1, -2));
-          if (content) {
-            parts.push({ kind: "string", value: content });
-          }
-          break;
-        }
-        case "TemplateMiddle": {
-          // Middle section: }content${ - extract between } and ${
-          const txt = text(cursor, source);
-          const content = parseTemplateContent(txt.slice(1, -2));
-          if (content) {
-            parts.push({ kind: "string", value: content });
-          }
-          break;
-        }
-        case "TemplateEnd": {
-          // End section: }content` - extract between } and `
-          const txt = text(cursor, source);
-          const content = parseTemplateContent(txt.slice(1, -1));
-          if (content) {
-            parts.push({ kind: "string", value: content });
-          }
-          break;
-        }
-        default: {
-          // Expression in interpolation
-          if (isExpression(cursor.name)) {
-            parts.push({ kind: "expr", expr: desugarExpr(cursor, source) });
-          }
-          break;
-        }
+
+        // Move past the interpolation (including closing })
+        currentPos = cursor.to;
       }
     } while (cursor.nextSibling());
     cursor.parent();
   }
+
+  // Add any remaining string content after last interpolation
+  addStringPart(templateEnd);
 
   return { kind: "template", parts, loc: templateLoc };
 }

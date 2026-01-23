@@ -365,22 +365,19 @@ describe("Lezer Parser", () => {
   describe("template literals", () => {
     test("plain template (no interpolation)", () => {
       expect(hasNode("const x = `hello`;", "TemplateExpr")).toBe(true);
-      expect(hasNode("const x = `hello`;", "TemplatePlain")).toBe(true);
       expect(hasError("const x = `hello`;")).toBe(false);
     });
 
     test("template with single interpolation", () => {
       expect(hasNode("const x = `hello ${name}`;", "TemplateExpr")).toBe(true);
-      expect(hasNode("const x = `hello ${name}`;", "TemplateStart")).toBe(true);
-      expect(hasNode("const x = `hello ${name}`;", "TemplateEnd")).toBe(true);
+      expect(hasNode("const x = `hello ${name}`;", "Interpolation")).toBe(true);
+      expect(hasNode("const x = `hello ${name}`;", "InterpolationStart")).toBe(true);
       expect(hasError("const x = `hello ${name}`;")).toBe(false);
     });
 
     test("template with multiple interpolations", () => {
       expect(hasNode("const x = `${a} and ${b}`;", "TemplateExpr")).toBe(true);
-      expect(hasNode("const x = `${a} and ${b}`;", "TemplateStart")).toBe(true);
-      expect(hasNode("const x = `${a} and ${b}`;", "TemplateMiddle")).toBe(true);
-      expect(hasNode("const x = `${a} and ${b}`;", "TemplateEnd")).toBe(true);
+      expect(hasNode("const x = `${a} and ${b}`;", "Interpolation")).toBe(true);
       expect(hasError("const x = `${a} and ${b}`;")).toBe(false);
     });
 

@@ -149,10 +149,14 @@ atomExpr {
 
 // Template literals with interpolation
 // `hello` or `hello ${name}, you have ${count} messages`
-TemplateExpr {
-  TemplatePlain |
-  TemplateStart expression (TemplateMiddle expression)* TemplateEnd
+// Uses @local tokens to avoid conflicts with } from destructuring patterns
+@skip {} {
+  TemplateExpr[isolate] {
+    templateStart (templateEscape | templateContent | Interpolation)* templateEnd
+  }
 }
+
+Interpolation[isolate] { InterpolationStart expression "}" }
 
 ArrayElement { Spread? expressionNoComma }
 
@@ -345,16 +349,9 @@ PropertyName {
     "'" (![\\\n'] | "\\" _)* "'"
   }
 
-  // Template literals
-  // TemplatePlain: simple template with no interpolation `hello`
-  // TemplateStart: beginning of interpolated template `hello ${
-  // TemplateMiddle: middle part between interpolations } world ${
-  // TemplateEnd: end of interpolated template } goodbye`
-  templateContent { ![`$\\] | "\\" _ | "$" ![{] }
-  TemplatePlain { "`" templateContent* "`" }
-  TemplateStart { "`" templateContent* "${" }
-  TemplateMiddle { "}" templateContent* "${" }
-  TemplateEnd { "}" templateContent* "`" }
+  // Template literals - start backtick recognized in main tokenizer
+  // Content is handled by @local tokens below
+  templateStart { "`" }
 
   Number {
     @digit+ ("." @digit+)? ($[eE] $[+\-]? @digit+)? |
@@ -394,9 +391,15 @@ PropertyName {
   @precedence { "|}", BitOr }
   @precedence { "...", "." }
   @precedence { "_", TypeName, VariableName }
-  // Template tokens: prefer interpolated over plain, and template continuations over bare }
-  @precedence { TemplateStart, TemplatePlain }
-  @precedence { TemplateMiddle, TemplateEnd, "}" }
+}
+
+// Local tokens for template literals - only active inside TemplateExpr
+// This prevents } from destructuring patterns being misinterpreted as template continuations
+@local tokens {
+  InterpolationStart { "${" }
+  templateEnd { "`" }
+  templateEscape { "\\" _ }
+  @else templateContent
 }
 
 @skip { whitespace | LineComment | BlockComment }

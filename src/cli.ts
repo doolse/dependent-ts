@@ -10,7 +10,9 @@
  */
 
 import * as fs from "fs";
+import * as os from "os";
 import * as path from "path";
+import { pathToFileURL } from "url";
 import { parse } from "./parser";
 import { typecheck } from "./typecheck/typecheck";
 import { erase } from "./erasure/erasure";
@@ -144,7 +146,7 @@ function compile(source: string, filename: string): string {
   return codegen(runtime);
 }
 
-function main(): void {
+async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const options = parseArgs(args);
 
@@ -205,10 +207,21 @@ function main(): void {
           console.error(colors.dim + "--- Output ---" + colors.reset);
         }
 
-        // Run the JavaScript
-        // Note: This runs in Node.js context, so console.log etc. work
-        const runnable = new Function(js);
-        runnable();
+        // Write to temp file and execute as ES module (supports top-level await)
+        const tmpFile = path.join(
+          os.tmpdir(),
+          `depjs-${Date.now()}-${Math.random().toString(36).slice(2)}.mjs`
+        );
+        try {
+          fs.writeFileSync(tmpFile, js);
+          await import(pathToFileURL(tmpFile).href);
+        } finally {
+          try {
+            fs.unlinkSync(tmpFile);
+          } catch {
+            // Ignore cleanup errors
+          }
+        }
         break;
       }
     }
@@ -221,4 +234,7 @@ function main(): void {
   }
 }
 
-main();
+main().catch((e) => {
+  console.error(e);
+  process.exit(1);
+});
