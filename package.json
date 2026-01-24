@@ -29,6 +29,7 @@
   "dependencies": {
     "@lezer/common": "^1.2.0",
     "@lezer/highlight": "^1.2.0",
+    "@lezer/javascript": "^1.5.4",
     "@lezer/lr": "^1.4.0"
   }
 }
