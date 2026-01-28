@@ -48,6 +48,7 @@ DepJS is a new programming language with these known design goals (from initial-
 - `spec/impl/typecheck.md` - Type checking + comptime eval
 - `spec/impl/erasure.md` - Comptime elimination (TypedAST → RuntimeAST)
 - `spec/impl/codegen.md` - JS output (RuntimeAST → JavaScript)
+- `spec/impl/dts-loader.md` - TypeScript .d.ts file loading and type translation
 
 Create additional spec files as topics are discussed and decided. Don't create placeholder files with invented content.
 
@@ -455,13 +456,15 @@ Create additional spec files as topics are discussed and decided. Don't create p
 
 **Current implementation status:**
 - Single file compilation
-- Import syntax is parsed and passed through to generated JS, but imported values are typed as `Unknown` (no `.d.ts` parsing yet)
+- TypeScript `.d.ts` parsing fully integrated with type checker
+- Module resolution follows Node.js algorithm (walks up directory tree for `node_modules`)
+- Imports from `@types/*` packages get proper types
 - Export syntax works (`export const x = ...`)
 
 **Not yet supported:**
-- TypeScript `.d.ts` parsing (imports work syntactically but without type information)
 - DepJS-to-DepJS imports
 - Multi-file compilation
+- Cross-file type resolution (following `import` statements within `.d.ts` files)
 
 ## Open Questions
 
@@ -474,8 +477,12 @@ Design decisions that can be addressed as needed:
 
 ### TypeScript Compatibility
 - Full type mapping table (expand spec/typescript-compat.md)
-- Handling unsupported TS features (classes, enums, namespaces, decorators)
-- `.d.ts` parsing implementation
+- Handling unsupported TS features (classes, enums, decorators)
+- Cross-file `.d.ts` resolution (following imports within `.d.ts` files)
+- Mapped types (`{ [K in keyof T]: ... }`)
+- `keyof` operator
+- `typeof` in type positions
+- Template literal types
 
 ### Compile-Time Specifics
 - Fuel limit configuration (currently hardcoded)
@@ -514,13 +521,31 @@ Design decisions that can be addressed as needed:
 - Outside lambdas with `do` keyword: `const x = do { const y = 1; y + 1 }`
 - Type declarations inside blocks: `() => { type T = Int; const x: T = 42; x }`
 
+**TypeScript .d.ts Loading:**
+- Module resolution (Node.js style, walks up directory tree for `node_modules`)
+- `@types/*` package support
+- Namespace handling (e.g., `React.useState` resolves correctly)
+- Function declarations and variable declarations
+- Interface and type alias declarations
+- Union and intersection types
+- Generic types with constraints
+- Conditional types with `infer` keyword
+- Overloaded functions (represented as intersection types)
+- Optional parameters (`param?: Type`)
+- Rest parameters (`...param: Type[]`)
+
 ### Not Yet Implemented
 
 **Array Methods:**
 - `forEach` - iterate with side effects
 
-**TypeScript Interop:**
-- `.d.ts` file parsing (imports are syntactically supported but typed as `Unknown`)
+**TypeScript .d.ts Loading:**
+- Cross-file type resolution (following `import` statements within `.d.ts` files)
+- Mapped types (`{ [K in keyof T]: ... }`)
+- `keyof` operator
+- `typeof` in type positions
+- Template literal types
+- Class declarations (partial - treated as record types)
 
 **Module System:**
 - DepJS-to-DepJS imports
@@ -532,6 +557,7 @@ Design decisions that can be addressed as needed:
 ## Examples Directory
 
 - `examples/` - Working examples demonstrating current capabilities
+  - `react-import.djs` - Demonstrates importing and using React hooks with proper types
 - `examples/should-work/` - Examples demonstrating features that were previously broken but are now fixed
 
 ## Deferred to Future Versions

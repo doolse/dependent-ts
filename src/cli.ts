@@ -136,8 +136,9 @@ function compile(source: string, filename: string): string {
   // Parse with file path for source locations
   const decls = parse(source, { filePath: filename });
 
-  // Type check
-  const typed = typecheck(decls);
+  // Type check with module resolution from file's directory
+  const baseDir = path.dirname(path.resolve(filename));
+  const typed = typecheck(decls, { baseDir });
 
   // Erase comptime-only code
   const runtime = erase(typed);
@@ -175,7 +176,8 @@ async function main(): Promise<void> {
       case "check": {
         // Just parse and type check
         const decls = parse(source, { filePath: inputPath });
-        typecheck(decls);
+        const baseDir = path.dirname(inputPath);
+        typecheck(decls, { baseDir });
         if (!options.quiet) {
           console.log(colors.green + "✓ No errors" + colors.reset);
         }

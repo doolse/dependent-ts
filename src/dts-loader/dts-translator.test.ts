@@ -190,12 +190,26 @@ declare namespace React {
     }
   });
 
-  it("reports errors for conditional types (not yet implemented)", () => {
+  it("handles conditional types", () => {
     const result = loadDTS(`type IsString<T> = T extends string ? true : false;`);
 
-    // Should have an error about conditional types
-    expect(result.errors.length).toBeGreaterThan(0);
-    expect(result.errors[0]).toContain("Conditional");
+    // No errors - we now handle conditional types
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("IsString");
+    // Returns union of both branches for general case
+    expect(type?.kind).toBe("union");
+  });
+
+  it("handles conditional types with infer", () => {
+    const result = loadDTS(`type ReturnType<T> = T extends (...args: any[]) => infer R ? R : never;`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("ReturnType");
+    // When false branch is never, we return the true branch (the inferred type)
+    expect(type?.kind).toBe("typeVar");
+    if (type?.kind === "typeVar") {
+      expect(type.name).toBe("R");
+    }
   });
 
   it("handles parameterized types like Array<T>", () => {

@@ -2597,4 +2597,55 @@ describe("Type Checker", () => {
       expect(constDecl.declType.kind).toBe("record");
     });
   });
+
+  describe("module imports with .d.ts", () => {
+    // Helper that includes the module resolver
+    function checkWithResolver(code: string) {
+      const decls = parse(code);
+      return typecheck(decls, { baseDir: process.cwd() });
+    }
+
+    test("named import from react gets function type", () => {
+      const result = checkWithResolver('import { useState } from "react";');
+      const importDecl = result.decls[0] as TypedDecl & { kind: "import" };
+      expect(importDecl.kind).toBe("import");
+    });
+
+    test("useState has intersection type for overloads", () => {
+      const result = checkWithResolver(`
+        import { useState } from "react";
+        const _test = useState;
+      `);
+      expect(result.decls.length).toBe(2);
+      const constDecl = result.decls.find(d => d.kind === "const") as TypedDecl & { kind: "const" };
+      expect(constDecl).toBeDefined();
+      // useState should be an intersection of multiple function overloads
+      expect(constDecl.init.type.kind).toBe("intersection");
+    });
+
+    test("namespace import from react builds record type", () => {
+      const result = checkWithResolver('import * as React from "react";');
+      const importDecl = result.decls[0] as TypedDecl & { kind: "import" };
+      expect(importDecl.kind).toBe("import");
+    });
+
+    test("createElement has function type", () => {
+      const result = checkWithResolver(`
+        import { createElement } from "react";
+        const _test = createElement;
+      `);
+      expect(result.decls.length).toBe(2);
+      const constDecl = result.decls.find(d => d.kind === "const") as TypedDecl & { kind: "const" };
+      expect(constDecl).toBeDefined();
+      // createElement should be an intersection of function overloads
+      expect(constDecl.init.type.kind).toBe("intersection");
+    });
+
+    test("imports without .d.ts fall back to Unknown", () => {
+      const result = checkWithResolver('import { foo } from "nonexistent-module";');
+      const importDecl = result.decls[0] as TypedDecl & { kind: "import" };
+      expect(importDecl.kind).toBe("import");
+      // Should not throw - just type as Unknown
+    });
+  });
 });

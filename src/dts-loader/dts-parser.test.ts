@@ -20,7 +20,7 @@ type MyBool = boolean;
       if (cursor.name === "TypeAliasDeclaration") {
         cursor.firstChild();
         do {
-          if (cursor.name === "TypeDefinition") {
+          if ((cursor.name as string) === "TypeDefinition") {
             names.push(getText(cursor, source));
           }
         } while (cursor.nextSibling());

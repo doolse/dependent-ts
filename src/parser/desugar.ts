@@ -465,7 +465,9 @@ function desugarImportSpecifiers(cursor: TreeCursor, source: string): CoreImport
   if (cursor.firstChild()) {
     do {
       if (cursor.name === "ListOf") {
-        return desugarImportSpecifierList(cursor, source);
+        const result = desugarImportSpecifierList(cursor, source);
+        cursor.parent();
+        return result;
       }
     } while (cursor.nextSibling());
     cursor.parent();

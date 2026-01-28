@@ -52,12 +52,17 @@ import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
 import { isComptimeOnlyProperty, getTypePropertyType, getTypeProperty } from "./type-properties";
 import { getArrayMethodType, getArrayElementType } from "./array-methods";
 import { getStringMethodType } from "./string-methods";
+import { ModuleResolver, ModuleResolverConfig } from "./module-resolver";
 
 /**
  * Type checker configuration.
  */
 export interface TypeCheckConfig {
   maxFuel?: number;
+  /** Module resolver for .d.ts imports. If not provided, imports are typed as Unknown. */
+  moduleResolver?: ModuleResolver;
+  /** Base directory for module resolution (if moduleResolver not provided) */
+  baseDir?: string;
 }
 
 /**
@@ -78,11 +83,21 @@ class TypeChecker {
   private typeEnv: TypeEnv;
   private comptimeEnv: ComptimeEnv;
   private evaluator: ComptimeEvaluator;
+  private moduleResolver: ModuleResolver | null;
 
   constructor(config: TypeCheckConfig = {}) {
     this.typeEnv = createInitialTypeEnv();
     this.comptimeEnv = createInitialComptimeEnv();
     this.evaluator = new ComptimeEvaluator(config.maxFuel);
+
+    // Set up module resolver
+    if (config.moduleResolver) {
+      this.moduleResolver = config.moduleResolver;
+    } else if (config.baseDir) {
+      this.moduleResolver = new ModuleResolver({ baseDir: config.baseDir });
+    } else {
+      this.moduleResolver = null;
+    }
   }
 
   /**
@@ -287,39 +302,126 @@ class TypeChecker {
   private checkImportDecl(
     decl: CoreDecl & { kind: "import" }
   ): TypedDecl {
-    // For now, treat imported values as Unknown
-    // Full TypeScript .d.ts support would go here
+    // Try to resolve the module and load types from .d.ts
+    const resolved = this.moduleResolver?.resolve(decl.source);
+
+    // Helper to get type for an imported name
+    const getImportedType = (name: string): Type => {
+      if (!resolved) return primitiveType("Unknown");
+
+      // Check values first (functions, constants), then types
+      const valueType = resolved.values.get(name);
+      if (valueType) return valueType;
+
+      const typeType = resolved.types.get(name);
+      if (typeType) return typeType;
+
+      // For modules with namespace exports (like React), try with namespace prefix
+      // Extract potential namespace name from module specifier
+      const moduleName = decl.source.split("/").pop() ?? "";
+      const namespacePrefix = moduleName.charAt(0).toUpperCase() + moduleName.slice(1);
+      const prefixedName = `${namespacePrefix}.${name}`;
+
+      const prefixedValueType = resolved.values.get(prefixedName);
+      if (prefixedValueType) return prefixedValueType;
+
+      const prefixedTypeType = resolved.types.get(prefixedName);
+      if (prefixedTypeType) return prefixedTypeType;
+
+      return primitiveType("Unknown");
+    };
 
     switch (decl.clause.kind) {
-      case "default":
+      case "default": {
+        // Default import - look for "default" export
+        const type = getImportedType("default");
         this.typeEnv.define(decl.clause.name, {
-          type: primitiveType("Unknown"),
+          type,
           comptimeStatus: "runtime",
           mutable: false,
         });
         this.comptimeEnv.defineUnavailable(decl.clause.name);
         break;
+      }
 
       case "named":
         for (const spec of decl.clause.specifiers) {
-          const name = spec.alias ?? spec.name;
-          this.typeEnv.define(name, {
+          const importedName = spec.name;
+          const localName = spec.alias ?? spec.name;
+          const type = getImportedType(importedName);
+
+          this.typeEnv.define(localName, {
+            type,
+            comptimeStatus: "runtime",
+            mutable: false,
+          });
+          this.comptimeEnv.defineUnavailable(localName);
+        }
+        break;
+
+      case "namespace": {
+        // Namespace import: import * as X from "module"
+        // Build a record type from all exports
+        if (resolved) {
+          const fields: FieldInfo[] = [];
+
+          // Add all values as fields
+          for (const [name, type] of resolved.values) {
+            // Skip namespace-prefixed names (e.g., "React.useState")
+            if (!name.includes(".")) {
+              fields.push({ name, type, optional: false, annotations: [] });
+            }
+          }
+
+          // Add all types as fields (they're values at the type level)
+          for (const [name, type] of resolved.types) {
+            // Skip namespace-prefixed names
+            if (!name.includes(".")) {
+              fields.push({ name, type, optional: false, annotations: [] });
+            }
+          }
+
+          this.typeEnv.define(decl.clause.name, {
+            type: recordType(fields),
+            comptimeStatus: "runtime",
+            mutable: false,
+          });
+        } else {
+          this.typeEnv.define(decl.clause.name, {
             type: primitiveType("Unknown"),
             comptimeStatus: "runtime",
             mutable: false,
           });
-          this.comptimeEnv.defineUnavailable(name);
         }
+        this.comptimeEnv.defineUnavailable(decl.clause.name);
         break;
+      }
 
-      case "namespace":
-        this.typeEnv.define(decl.clause.name, {
-          type: primitiveType("Unknown"),
+      case "defaultAndNamed": {
+        // Default import
+        const defaultType = getImportedType("default");
+        this.typeEnv.define(decl.clause.defaultName, {
+          type: defaultType,
           comptimeStatus: "runtime",
           mutable: false,
         });
-        this.comptimeEnv.defineUnavailable(decl.clause.name);
+        this.comptimeEnv.defineUnavailable(decl.clause.defaultName);
+
+        // Named imports
+        for (const spec of decl.clause.specifiers) {
+          const importedName = spec.name;
+          const localName = spec.alias ?? spec.name;
+          const type = getImportedType(importedName);
+
+          this.typeEnv.define(localName, {
+            type,
+            comptimeStatus: "runtime",
+            mutable: false,
+          });
+          this.comptimeEnv.defineUnavailable(localName);
+        }
         break;
+      }
     }
 
     return {

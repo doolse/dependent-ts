@@ -67,6 +67,27 @@ function unresolvedType(name: string): Type {
 }
 
 /**
+ * Add a value to the map, merging overloaded functions as intersection types.
+ */
+function addValue(values: Map<string, Type>, name: string, newType: Type): void {
+  const existing = values.get(name);
+  if (existing) {
+    // If both are functions, create an intersection (overloaded function)
+    if (existing.kind === "function" && newType.kind === "function") {
+      values.set(name, intersectionType([existing, newType]));
+    } else if (existing.kind === "intersection" && newType.kind === "function") {
+      // Already an intersection, add to it
+      values.set(name, intersectionType([...existing.types, newType]));
+    } else {
+      // Different kinds - just overwrite (shouldn't happen for valid .d.ts)
+      values.set(name, newType);
+    }
+  } else {
+    values.set(name, newType);
+  }
+}
+
+/**
  * Load and translate a .d.ts file
  */
 export function loadDTS(content: string): DTSLoadResult {
@@ -122,6 +143,16 @@ function translateTopLevel(
 
     case "ExportDeclaration":
       // TODO: Handle exports
+      break;
+
+    case "FunctionDeclaration":
+      // function declarations inside namespaces
+      translateFunctionDeclaration(cursor, ctx, values);
+      break;
+
+    case "VariableDeclaration":
+      // const declarations inside namespaces
+      translateVariableDeclaration(cursor, ctx, values);
       break;
 
     default:
@@ -268,7 +299,79 @@ function translateAmbientFunction(
   cursor.parent();
 
   if (name) {
-    values.set(name, functionType(params, returnType));
+    addValue(values, name, functionType(params, returnType));
+  }
+}
+
+/**
+ * Translate a function declaration (inside namespace body)
+ */
+function translateFunctionDeclaration(
+  cursor: TreeCursor,
+  ctx: TranslationContext,
+  values: Map<string, Type>
+): void {
+  let name = "";
+  let params: ParamInfo[] = [];
+  let returnType: Type = primitiveType("Void");
+  let typeParamNames: string[] = [];
+
+  cursor.firstChild();
+  do {
+    switch (cursor.name) {
+      case "VariableDefinition":
+        name = getText(cursor, ctx.source);
+        break;
+
+      case "TypeParamList":
+        typeParamNames = translateTypeParamList(cursor, ctx);
+        break;
+
+      case "ParamList":
+        params = translateParamListToParams(cursor, ctx);
+        break;
+
+      case "TypeAnnotation":
+        const retType = translateTypeAnnotation(cursor, ctx);
+        if (retType) returnType = retType;
+        break;
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  if (name) {
+    addValue(values, name, functionType(params, returnType));
+  }
+}
+
+/**
+ * Translate a variable declaration (const inside namespace body)
+ */
+function translateVariableDeclaration(
+  cursor: TreeCursor,
+  ctx: TranslationContext,
+  values: Map<string, Type>
+): void {
+  let name = "";
+  let type: Type = primitiveType("Unknown");
+
+  cursor.firstChild();
+  do {
+    switch (cursor.name) {
+      case "VariableDefinition":
+        name = getText(cursor, ctx.source);
+        break;
+
+      case "TypeAnnotation":
+        const t = translateTypeAnnotation(cursor, ctx);
+        if (t) type = t;
+        break;
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  if (name) {
+    values.set(name, type);
   }
 }
 
@@ -385,27 +488,35 @@ function translateParamListToParams(cursor: TreeCursor, ctx: TranslationContext)
   const params: ParamInfo[] = [];
   let currentName = "";
   let currentType: Type = primitiveType("Unknown");
-  let nextIsRest = false;
+  let currentOptional = false;
+  let currentRest = false;
+  let nextIsRest = false; // Spread applies to the NEXT param
 
   cursor.firstChild();
   do {
     switch (cursor.name) {
       case "Spread":
-        // Mark that the next parameter is a rest parameter
+        // Mark that the next parameter (not current) is a rest parameter
+        // Spread comes BEFORE the VariableDefinition for the rest param
         nextIsRest = true;
         break;
 
       case "VariableDefinition":
-        // If we have a pending param, save it first
+        // If we have a pending param, save it first (with its own rest flag, not nextIsRest)
         if (currentName) {
-          params.push({ name: currentName, type: currentType, optional: false });
+          params.push({ name: currentName, type: currentType, optional: currentOptional, rest: currentRest });
         }
+        // Start new param
         currentName = getText(cursor, ctx.source);
         currentType = primitiveType("Unknown");
-        // Check if this param is marked as rest
-        if (nextIsRest) {
-          // We'll set rest when we push this param
-        }
+        currentOptional = false;
+        currentRest = nextIsRest; // Transfer the rest flag to this param
+        nextIsRest = false;
+        break;
+
+      case "Optional":
+        // Parameter is optional (has ? after name)
+        currentOptional = true;
         break;
 
       case "TypeAnnotation":
@@ -418,7 +529,7 @@ function translateParamListToParams(cursor: TreeCursor, ctx: TranslationContext)
 
   // Don't forget the last param
   if (currentName) {
-    params.push({ name: currentName, type: currentType, optional: false, rest: nextIsRest });
+    params.push({ name: currentName, type: currentType, optional: currentOptional, rest: currentRest });
   }
 
   return params;
@@ -644,9 +755,23 @@ function translateType(cursor: TreeCursor, ctx: TranslationContext): Type | null
       return primitiveType("Void");
 
     case "InferredType":
-      // This shouldn't be called directly - infer is handled in conditional type context
-      ctx.errors.push(`Unexpected infer outside conditional type`);
-      return primitiveType("Unknown");
+      // The infer var should be in scope if we're inside a conditional type's extends clause
+      // Return the type variable representing the inferred type
+      {
+        let inferName = "";
+        cursor.firstChild();
+        do {
+          if ((cursor.name as string) === "TypeName") {
+            inferName = getText(cursor, ctx.source);
+          }
+        } while (cursor.nextSibling());
+        cursor.parent();
+        if (inferName && ctx.typeParams.has(inferName)) {
+          return typeVarType(inferName);
+        }
+        // Not in scope - this happens for complex patterns we don't fully handle
+        return primitiveType("Unknown");
+      }
 
     default:
       return null;
@@ -806,22 +931,100 @@ function translateParameterizedType(cursor: TreeCursor, ctx: TranslationContext)
 
 /**
  * Translate conditional type
+ * Structure: checkType extends extendsType ? trueType : falseType
  */
 function translateConditionalType(cursor: TreeCursor, ctx: TranslationContext): Type {
-  // Structure: checkType extends extendsType ? trueType : falseType
-  const parts: Type[] = [];
+  let checkType: Type | null = null;
+  let extendsType: Type | null = null;
+  let trueType: Type | null = null;
+  let falseType: Type | null = null;
+  let stage = 0; // 0=checkType, 1=extendsType, 2=trueType, 3=falseType
+
+  // Track infer variables found in the extends clause
+  const inferVars = new Set<string>();
 
   cursor.firstChild();
   do {
+    // Skip keywords and operators
+    if (cursor.name === "extends" || cursor.name === "LogicOp") {
+      if (cursor.name === "LogicOp") {
+        const op = getText(cursor, ctx.source);
+        if (op === "?") stage = 2;
+        else if (op === ":") stage = 3;
+      } else {
+        stage = 1;
+      }
+      continue;
+    }
+
+    // For the extends clause, collect infer variables first
+    if (stage === 1) {
+      collectInferVars(cursor, ctx, inferVars);
+      // Add infer vars to type params temporarily
+      for (const v of inferVars) {
+        ctx.typeParams.set(v, -1); // Use -1 to mark as infer var
+      }
+    }
+
     const translated = translateType(cursor, ctx);
-    if (translated) parts.push(translated);
+    if (translated) {
+      switch (stage) {
+        case 0: checkType = translated; break;
+        case 1: extendsType = translated; break;
+        case 2: trueType = translated; break;
+        case 3: falseType = translated; break;
+      }
+    }
   } while (cursor.nextSibling());
   cursor.parent();
 
-  // For now, just return Unknown - proper conditional type support needs pattern matching
-  // TODO: Implement pattern matching for infer
-  ctx.errors.push(`Conditional types not fully implemented yet`);
-  return primitiveType("Unknown");
+  // Remove infer vars from scope
+  for (const v of inferVars) {
+    ctx.typeParams.delete(v);
+  }
+
+  // Handle the result
+  if (!trueType) trueType = primitiveType("Unknown");
+  if (!falseType) falseType = primitiveType("Never");
+
+  // Common pattern: `T extends X ? Y : never` - return Y (extraction pattern)
+  if (falseType.kind === "primitive" && falseType.name === "Never") {
+    return trueType;
+  }
+
+  // Common pattern: `T extends X ? T : Y` where true just returns the checked type
+  // Return union of possible results
+  if (trueType.kind === "primitive" && trueType.name === "Never") {
+    return falseType;
+  }
+
+  // General case: return union of both possibilities
+  return unionType([trueType, falseType]);
+}
+
+/**
+ * Collect infer variable names from a type node
+ */
+function collectInferVars(cursor: TreeCursor, ctx: TranslationContext, inferVars: Set<string>): void {
+  if (cursor.name === "InferredType") {
+    // Structure: infer TypeName
+    cursor.firstChild();
+    do {
+      if ((cursor.name as string) === "TypeName") {
+        inferVars.add(getText(cursor, ctx.source));
+      }
+    } while (cursor.nextSibling());
+    cursor.parent();
+    return;
+  }
+
+  // Recurse into children
+  if (cursor.firstChild()) {
+    do {
+      collectInferVars(cursor, ctx, inferVars);
+    } while (cursor.nextSibling());
+    cursor.parent();
+  }
 }
 
 /**
