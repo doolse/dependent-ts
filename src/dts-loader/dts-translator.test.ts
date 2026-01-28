@@ -237,4 +237,133 @@ type Nested = {
       expect(outer.type.kind).toBe("record");
     }
   });
+
+  it("translates keyof on type reference as deferred keyof", () => {
+    // Note: At translation time, type references (like Person) are unresolved.
+    // The keyof is kept as a deferred KeyofType to be resolved during type checking.
+    const result = loadDTS(`
+interface Person {
+  name: string;
+  age: number;
+}
+type PersonKeys = keyof Person;
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("PersonKeys");
+    // keyof on a type reference creates a deferred KeyofType
+    expect(type?.kind).toBe("keyof");
+    if (type?.kind === "keyof") {
+      // The operand is the unresolved "Person" type reference
+      expect(type.operand.kind).toBe("typeVar");
+    }
+  });
+
+  it("translates keyof on inline record type immediately", () => {
+    const result = loadDTS(`
+type PersonKeys = keyof { name: string; age: number };
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("PersonKeys");
+    // keyof on an inline record type resolves immediately to union of literals
+    expect(type?.kind).toBe("union");
+    if (type?.kind === "union") {
+      expect(type.types.length).toBe(2);
+      const literals = type.types.filter(t => t.kind === "literal");
+      expect(literals.length).toBe(2);
+      const values = literals.map(t => (t as { kind: "literal"; value: string }).value);
+      expect(values).toContain("name");
+      expect(values).toContain("age");
+    }
+  });
+
+  it("translates keyof on type variable", () => {
+    const result = loadDTS(`type Keys<T> = keyof T;`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("Keys");
+    // keyof on a type variable should create a KeyofType
+    expect(type?.kind).toBe("keyof");
+    if (type?.kind === "keyof") {
+      expect(type.operand.kind).toBe("typeVar");
+      if (type.operand.kind === "typeVar") {
+        expect(type.operand.name).toBe("T");
+      }
+    }
+  });
+
+  it("translates indexed access on type reference as deferred", () => {
+    // Note: At translation time, type references are unresolved.
+    // Indexed access is kept as deferred to be resolved during type checking.
+    const result = loadDTS(`
+interface Person {
+  name: string;
+  age: number;
+}
+type PersonName = Person["name"];
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("PersonName");
+    // Indexed access on type reference creates deferred IndexedAccessType
+    expect(type?.kind).toBe("indexedAccess");
+    if (type?.kind === "indexedAccess") {
+      expect(type.objectType.kind).toBe("typeVar"); // Unresolved Person
+      expect(type.indexType.kind).toBe("literal"); // "name" literal
+    }
+  });
+
+  it("translates indexed access on inline record type immediately", () => {
+    const result = loadDTS(`
+type PersonName = { name: string; age: number }["name"];
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("PersonName");
+    // Indexed access on inline record with literal key resolves immediately
+    expect(type?.kind).toBe("primitive");
+    if (type?.kind === "primitive") {
+      expect(type.name).toBe("String");
+    }
+  });
+
+  it("translates indexed access on type variable", () => {
+    const result = loadDTS(`type PropType<T, K extends keyof T> = T[K];`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("PropType");
+    // Indexed access with type variable should create IndexedAccessType
+    expect(type?.kind).toBe("indexedAccess");
+    if (type?.kind === "indexedAccess") {
+      expect(type.objectType.kind).toBe("typeVar");
+      expect(type.indexType.kind).toBe("typeVar");
+    }
+  });
+
+  it("handles keyof inline empty record", () => {
+    const result = loadDTS(`
+type EmptyKeys = keyof {};
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("EmptyKeys");
+    // keyof empty inline record resolves immediately to Never
+    expect(type?.kind).toBe("primitive");
+    if (type?.kind === "primitive") {
+      expect(type.name).toBe("Never");
+    }
+  });
+
+  it("keeps keyof on type reference as deferred", () => {
+    const result = loadDTS(`
+type Empty = {};
+type EmptyKeys = keyof Empty;
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.types.get("EmptyKeys");
+    // keyof on type reference (even if it's empty) is deferred
+    expect(type?.kind).toBe("keyof");
+  });
 });

@@ -107,6 +107,12 @@ export function formatType(t: Type): string {
 
     case "boundedType":
       return `Type<${formatType(base.bound)}>`;
+
+    case "keyof":
+      return `keyof ${formatTypeParens(base.operand)}`;
+
+    case "indexedAccess":
+      return `${formatTypeParens(base.objectType)}[${formatType(base.indexType)}]`;
   }
 }
 

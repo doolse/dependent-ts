@@ -578,6 +578,14 @@ function isRuntimeUsable(type: Type): boolean {
     case "boundedType":
       // Type<Bound> is a meta-type, not runtime usable
       return false;
+
+    case "keyof":
+      // keyof types are comptime-only (they return Type values)
+      return false;
+
+    case "indexedAccess":
+      // Indexed access types are comptime-only (they return Type values)
+      return false;
   }
 }
 

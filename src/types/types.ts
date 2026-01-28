@@ -74,7 +74,9 @@ export type Type =
   | TypeVarType
   | ThisType
   | WithMetadataType
-  | BoundedTypeType;
+  | BoundedTypeType
+  | KeyofType
+  | IndexedAccessType;
 
 export type PrimitiveType = {
   kind: "primitive";
@@ -158,6 +160,27 @@ export type WithMetadataType = {
 export type BoundedTypeType = {
   kind: "boundedType";
   bound: Type;
+};
+
+/**
+ * Keyof type - represents `keyof T`.
+ * Returns a union of string literal types for the keys of the operand type.
+ * This is used when the operand is not yet fully resolved (e.g., a type variable).
+ */
+export type KeyofType = {
+  kind: "keyof";
+  operand: Type;
+};
+
+/**
+ * Indexed access type - represents `T[K]`.
+ * Returns the type of property K on type T.
+ * Used when the types are not yet fully resolved.
+ */
+export type IndexedAccessType = {
+  kind: "indexedAccess";
+  objectType: Type;
+  indexType: Type;
 };
 
 // ============================================
@@ -309,6 +332,14 @@ export function boundedType(bound: Type): BoundedTypeType {
   return { kind: "boundedType", bound };
 }
 
+export function keyofType(operand: Type): KeyofType {
+  return { kind: "keyof", operand };
+}
+
+export function indexedAccessType(objectType: Type, indexType: Type): IndexedAccessType {
+  return { kind: "indexedAccess", objectType, indexType };
+}
+
 // ============================================
 // Built-in primitive types
 // ============================================
@@ -369,6 +400,10 @@ export function containsTypeType(t: Type): boolean {
       return containsTypeType(t.baseType);
     case "boundedType":
       return true; // Type<Bound> contains Type
+    case "keyof":
+      return containsTypeType(t.operand);
+    case "indexedAccess":
+      return containsTypeType(t.objectType) || containsTypeType(t.indexType);
   }
 }
 
@@ -445,6 +480,13 @@ export function substituteThis(type: Type, receiverType: Type): Type {
         substituteThis(type.baseType, receiverType),
         type.metadata
       );
+    case "keyof":
+      return keyofType(substituteThis(type.operand, receiverType));
+    case "indexedAccess":
+      return indexedAccessType(
+        substituteThis(type.objectType, receiverType),
+        substituteThis(type.indexType, receiverType)
+      );
   }
 }
 
@@ -478,5 +520,9 @@ export function containsThis(type: Type): boolean {
     case "branded":
     case "withMetadata":
       return containsThis(type.baseType);
+    case "keyof":
+      return containsThis(type.operand);
+    case "indexedAccess":
+      return containsThis(type.objectType) || containsThis(type.indexType);
   }
 }

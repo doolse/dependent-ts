@@ -16,9 +16,12 @@ import {
   isVariadicArray,
   getArrayElementTypes,
   arrayType,
+  literalType,
+  KeyofType,
+  IndexedAccessType,
 } from "../types/types";
 import { formatType } from "../types/format";
-import { isSubtype } from "../types/subtype";
+import { isSubtype, computeKeyofRecord } from "../types/subtype";
 import { CompileError, SourceLocation } from "../ast/core-ast";
 import {
   TypedComptimeValue,
@@ -31,6 +34,77 @@ import {
 } from "./comptime-env";
 
 /**
+ * Try to resolve lazy type constructors (KeyofType, IndexedAccessType).
+ * Returns the resolved type if possible, otherwise returns the original type.
+ */
+export function resolveType(type: Type): Type {
+  const base = unwrapMetadata(type);
+
+  switch (base.kind) {
+    case "keyof": {
+      // Try to resolve the operand first
+      const resolvedOperand = resolveType(base.operand);
+      if (resolvedOperand.kind === "record") {
+        return computeKeyofRecord(resolvedOperand);
+      }
+      // Can't resolve - return as-is (or with resolved operand)
+      if (resolvedOperand !== base.operand) {
+        return { kind: "keyof", operand: resolvedOperand };
+      }
+      return base;
+    }
+
+    case "indexedAccess": {
+      // Try to resolve both parts
+      const resolvedObject = resolveType(base.objectType);
+      const resolvedIndex = resolveType(base.indexType);
+
+      // If object is a record and index is a literal string, resolve
+      if (resolvedObject.kind === "record" && resolvedIndex.kind === "literal" && resolvedIndex.baseType === "String") {
+        const fieldName = resolvedIndex.value as string;
+        const field = resolvedObject.fields.find(f => f.name === fieldName);
+        if (field) {
+          return field.type;
+        }
+        // Check index type
+        if (resolvedObject.indexType) {
+          return resolvedObject.indexType;
+        }
+        return primitiveType("Never");
+      }
+
+      // If index is a union of literals, return union of field types
+      if (resolvedObject.kind === "record" && resolvedIndex.kind === "union") {
+        const types: Type[] = [];
+        for (const indexPart of resolvedIndex.types) {
+          if (indexPart.kind === "literal" && indexPart.baseType === "String") {
+            const fieldName = indexPart.value as string;
+            const field = resolvedObject.fields.find(f => f.name === fieldName);
+            if (field) {
+              types.push(field.type);
+            } else if (resolvedObject.indexType) {
+              types.push(resolvedObject.indexType);
+            }
+          }
+        }
+        if (types.length > 0) {
+          return unionType(types);
+        }
+      }
+
+      // Can't fully resolve
+      if (resolvedObject !== base.objectType || resolvedIndex !== base.indexType) {
+        return { kind: "indexedAccess", objectType: resolvedObject, indexType: resolvedIndex };
+      }
+      return base;
+    }
+
+    default:
+      return type;
+  }
+}
+
+/**
  * Get a property from a Type value.
  */
 export function getTypeProperty(
@@ -39,8 +113,10 @@ export function getTypeProperty(
   evaluator: ComptimeEvaluatorInterface,
   loc?: SourceLocation
 ): TypedComptimeValue {
-  const base = unwrapMetadata(type);
-  const metadata = getMetadata(type);
+  // Try to resolve lazy types first
+  const resolvedType = resolveType(type);
+  const base = unwrapMetadata(resolvedType);
+  const metadata = getMetadata(resolvedType);
 
   switch (prop) {
     // ============================================

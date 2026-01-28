@@ -739,16 +739,16 @@ The loader can pre-expand these for common elements to avoid runtime expansion c
 
 | Feature | Priority | Notes |
 |---------|----------|-------|
-| Conditional types | High | Parses but returns `Unknown`; pattern matching needed |
-| `infer` keyword | High | Depends on conditional type patterns |
-| `keyof` operator | Medium | Returns placeholder string |
-| Indexed access `T[K]` | Medium | Returns placeholder string |
+| Conditional types | High | Implemented - returns union of true/false branches, extraction patterns handled |
+| `infer` keyword | High | Implemented - inferred types tracked in scope |
+| `keyof` operator | Done | Inline records resolve immediately; type references create deferred `KeyofType` |
+| Indexed access `T[K]` | Done | Inline records with literal keys resolve immediately; others create `IndexedAccessType` |
 | Mapped types | Medium | Not translated |
-| Type resolution | High | Cross-references not resolved |
-| Module resolution | High | No `.d.ts` file lookup from `node_modules` |
+| Type resolution | High | Cross-references not resolved at translation time; deferred to type checking |
+| Module resolution | Done | Node.js style resolution from `node_modules` including `@types/*` |
 | Interface merging | Medium | Not implemented |
 | Generic type instantiation | Medium | Parameterized types stored as placeholders |
-| Overloaded functions | Low | Not yet handled as intersections |
+| Overloaded functions | Done | Handled as intersection of function types |
 
 ### Suggested Next Step
 

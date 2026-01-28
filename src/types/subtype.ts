@@ -13,6 +13,9 @@ import {
   unwrapMetadata,
   isVariadicArray,
   getArrayElementTypes,
+  unionType,
+  literalType,
+  primitiveType,
 } from "./types";
 
 /**
@@ -158,6 +161,28 @@ export function isSubtype(sub: Type, sup: Type): boolean {
       return true;
     }
     return false;
+  }
+
+  // Keyof types: keyof A <: keyof B if the computed results are subtypes
+  // For structural equality, check if operands are the same
+  if (subBase.kind === "keyof" && supBase.kind === "keyof") {
+    return typesEqual(subBase.operand, supBase.operand);
+  }
+
+  // If we have a keyof with a record operand, we can try to resolve it
+  if (subBase.kind === "keyof" && subBase.operand.kind === "record") {
+    const keys = computeKeyofRecord(subBase.operand);
+    return isSubtype(keys, supBase);
+  }
+  if (supBase.kind === "keyof" && supBase.operand.kind === "record") {
+    const keys = computeKeyofRecord(supBase.operand);
+    return isSubtype(subBase, keys);
+  }
+
+  // Indexed access types: T[K] - check structural equality
+  if (subBase.kind === "indexedAccess" && supBase.kind === "indexedAccess") {
+    return typesEqual(subBase.objectType, supBase.objectType) &&
+           typesEqual(subBase.indexType, supBase.indexType);
   }
 
   return false;
@@ -498,6 +523,17 @@ export function typesEqual(a: Type, b: Type): boolean {
     case "this":
       return true;
 
+    case "keyof": {
+      const bKeyof = bBase as typeof aBase;
+      return typesEqual(aBase.operand, bKeyof.operand);
+    }
+
+    case "indexedAccess": {
+      const bIndexed = bBase as typeof aBase;
+      return typesEqual(aBase.objectType, bIndexed.objectType) &&
+             typesEqual(aBase.indexType, bIndexed.indexType);
+    }
+
     case "withMetadata":
       // Already unwrapped above
       return false;
@@ -507,4 +543,17 @@ export function typesEqual(a: Type, b: Type): boolean {
       return typesEqual(aBase.bound, bBounded.bound);
     }
   }
+}
+
+/**
+ * Compute keyof for a record type.
+ * Returns a union of string literal types for the field names.
+ */
+export function computeKeyofRecord(record: RecordType): Type {
+  if (record.fields.length === 0) {
+    return primitiveType("Never");
+  }
+  return unionType(
+    record.fields.map((f) => literalType(f.name, "String"))
+  );
 }

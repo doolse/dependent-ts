@@ -5,7 +5,8 @@
  */
 
 import { Tree, TreeCursor } from "@lezer/common";
-import { Type, primitiveType, recordType, unionType, intersectionType, functionType, arrayType, literalType, FieldInfo, ParamInfo, typeVarType, PrimitiveName } from "../types/types";
+import { Type, primitiveType, recordType, unionType, intersectionType, functionType, arrayType, literalType, FieldInfo, ParamInfo, typeVarType, PrimitiveName, keyofType, indexedAccessType } from "../types/types";
+import { computeKeyofRecord } from "../types/subtype";
 import { parseDTS, getText, findChild } from "./dts-parser";
 
 /**
@@ -1028,7 +1029,9 @@ function collectInferVars(cursor: TreeCursor, ctx: TranslationContext, inferVars
 }
 
 /**
- * Translate keyof type
+ * Translate keyof type.
+ * If the operand is a concrete record type, compute the keys immediately.
+ * Otherwise, create a KeyofType for deferred resolution.
  */
 function translateKeyofType(cursor: TreeCursor, ctx: TranslationContext): Type {
   cursor.firstChild();
@@ -1036,8 +1039,18 @@ function translateKeyofType(cursor: TreeCursor, ctx: TranslationContext): Type {
     if (cursor.name !== "keyof") {
       const operandType = translateType(cursor, ctx);
       cursor.parent();
-      // TODO: Create proper keyof type - for now use placeholder
-      return unresolvedType(`keyof(${formatTypeSimple(operandType)})`);
+
+      if (!operandType) {
+        return primitiveType("Unknown");
+      }
+
+      // If the operand is a concrete record type, compute keyof immediately
+      if (operandType.kind === "record") {
+        return computeKeyofRecord(operandType);
+      }
+
+      // For type variables or other complex types, create a deferred KeyofType
+      return keyofType(operandType);
     }
   } while (cursor.nextSibling());
   cursor.parent();
@@ -1045,7 +1058,9 @@ function translateKeyofType(cursor: TreeCursor, ctx: TranslationContext): Type {
 }
 
 /**
- * Translate indexed type (T[K])
+ * Translate indexed type (T[K]).
+ * If the object type is a record and the index is a literal string, resolve immediately.
+ * Otherwise, create an IndexedAccessType for deferred resolution.
  */
 function translateIndexedType(cursor: TreeCursor, ctx: TranslationContext): Type {
   const parts: Type[] = [];
@@ -1056,9 +1071,26 @@ function translateIndexedType(cursor: TreeCursor, ctx: TranslationContext): Type
   } while (cursor.nextSibling());
   cursor.parent();
 
-  // TODO: Create proper indexed access type - for now use placeholder
   if (parts.length >= 2) {
-    return unresolvedType(`${formatTypeSimple(parts[0])}[${formatTypeSimple(parts[1])}]`);
+    const [objectType, indexType] = parts;
+
+    // If object is a record and index is a literal string, resolve immediately
+    if (objectType.kind === "record" && indexType.kind === "literal" && indexType.baseType === "String") {
+      const fieldName = indexType.value as string;
+      const field = objectType.fields.find(f => f.name === fieldName);
+      if (field) {
+        return field.type;
+      }
+      // Field not found - check index type
+      if (objectType.indexType) {
+        return objectType.indexType;
+      }
+      // No such field and no index type - return Never
+      return primitiveType("Never");
+    }
+
+    // For complex cases, create a deferred IndexedAccessType
+    return indexedAccessType(objectType, indexType);
   }
   return primitiveType("Unknown");
 }

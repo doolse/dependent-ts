@@ -533,13 +533,14 @@ Design decisions that can be addressed as needed:
 - Overloaded functions (represented as intersection types)
 - Optional parameters (`param?: Type`)
 - Rest parameters (`...param: Type[]`)
+- `keyof` operator (inline records resolve immediately; type references create deferred `KeyofType`)
+- Indexed access `T[K]` (inline records with literal keys resolve immediately; others create `IndexedAccessType`)
 
 ### Not Yet Implemented
 
 **TypeScript .d.ts Loading:**
 - Cross-file type resolution (following `import` statements within `.d.ts` files)
 - Mapped types (`{ [K in keyof T]: ... }`)
-- `keyof` operator
 - `typeof` in type positions
 - Template literal types
 - Class declarations (partial - treated as record types)
