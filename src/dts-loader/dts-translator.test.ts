@@ -366,4 +366,191 @@ type EmptyKeys = keyof Empty;
     // keyof on type reference (even if it's empty) is deferred
     expect(type?.kind).toBe("keyof");
   });
+
+  // Export declaration tests
+  describe("export declarations", () => {
+    it("handles export type alias", () => {
+      const result = loadDTS(`export type MyString = string;`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("MyString");
+      expect(type?.kind).toBe("primitive");
+      if (type?.kind === "primitive") {
+        expect(type.name).toBe("String");
+      }
+    });
+
+    it("handles export interface", () => {
+      const result = loadDTS(`
+export interface User {
+  name: string;
+  age: number;
+}
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("User");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        expect(type.fields).toHaveLength(2);
+        expect(type.fields[0].name).toBe("name");
+        expect(type.fields[1].name).toBe("age");
+      }
+    });
+
+    it("handles export function", () => {
+      const result = loadDTS(`export function greet(name: string): string;`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.values.get("greet");
+      expect(type?.kind).toBe("function");
+      if (type?.kind === "function") {
+        expect(type.params).toHaveLength(1);
+        expect(type.params[0].name).toBe("name");
+      }
+    });
+
+    it("handles export declare const", () => {
+      const result = loadDTS(`export declare const VERSION: string;`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.values.get("VERSION");
+      expect(type?.kind).toBe("primitive");
+      if (type?.kind === "primitive") {
+        expect(type.name).toBe("String");
+      }
+    });
+
+    it("handles export declare function", () => {
+      const result = loadDTS(`export declare function calculate(x: number): number;`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.values.get("calculate");
+      expect(type?.kind).toBe("function");
+    });
+
+    it("handles export declare class", () => {
+      const result = loadDTS(`
+export declare class Point {
+  x: number;
+  y: number;
+}
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("Point");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        expect(type.fields).toHaveLength(2);
+        expect(type.fields.map(f => f.name)).toEqual(["x", "y"]);
+      }
+    });
+
+    it("handles export declare namespace", () => {
+      const result = loadDTS(`
+export declare namespace Utils {
+  function helper(): void;
+  type Config = { debug: boolean };
+}
+`);
+
+      expect(result.errors).toHaveLength(0);
+      // Namespace exports are prefixed
+      expect(result.values.has("Utils.helper")).toBe(true);
+      expect(result.types.has("Utils.Config")).toBe(true);
+      // Namespace value itself
+      expect(result.values.has("Utils")).toBe(true);
+    });
+
+    it("handles export group without rename", () => {
+      const result = loadDTS(`
+type Internal = string;
+interface Data { value: number }
+export { Internal, Data };
+`);
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("Internal")?.kind).toBe("primitive");
+      expect(result.types.get("Data")?.kind).toBe("record");
+    });
+
+    it("handles export group with rename", () => {
+      const result = loadDTS(`
+type Internal = string;
+export { Internal as External };
+`);
+
+      expect(result.errors).toHaveLength(0);
+      // Original name still exists
+      expect(result.types.get("Internal")?.kind).toBe("primitive");
+      // Renamed export also exists
+      expect(result.types.get("External")?.kind).toBe("primitive");
+    });
+
+    it("handles export type group", () => {
+      const result = loadDTS(`
+type MyType = number;
+export type { MyType };
+`);
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("MyType")?.kind).toBe("primitive");
+    });
+
+    it("handles export type group with rename", () => {
+      const result = loadDTS(`
+type Original = boolean;
+export type { Original as Renamed };
+`);
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("Original")?.kind).toBe("primitive");
+      expect(result.types.get("Renamed")?.kind).toBe("primitive");
+    });
+
+    it("handles mixed exports", () => {
+      const result = loadDTS(`
+export type PublicType = string;
+export interface PublicInterface { x: number }
+export declare function publicFunc(): void;
+type PrivateType = number;
+export { PrivateType as ExportedType };
+`);
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.has("PublicType")).toBe(true);
+      expect(result.types.has("PublicInterface")).toBe(true);
+      expect(result.values.has("publicFunc")).toBe(true);
+      expect(result.types.has("PrivateType")).toBe(true);
+      expect(result.types.has("ExportedType")).toBe(true);
+    });
+
+    it("ignores re-exports from other modules", () => {
+      // Re-exports from other modules are not supported yet
+      const result = loadDTS(`
+export { something } from "other-module";
+export * from "another-module";
+`);
+
+      // Should not error, just ignore
+      expect(result.errors).toHaveLength(0);
+      // Nothing should be exported since we don't follow imports
+      expect(result.types.size).toBe(0);
+      expect(result.values.size).toBe(0);
+    });
+
+    it("handles multiple items in export group", () => {
+      const result = loadDTS(`
+type A = string;
+type B = number;
+type C = boolean;
+export { A, B as Beta, C };
+`);
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("A")?.kind).toBe("primitive");
+      expect(result.types.get("Beta")?.kind).toBe("primitive");
+      expect(result.types.get("C")?.kind).toBe("primitive");
+    });
+  });
 });

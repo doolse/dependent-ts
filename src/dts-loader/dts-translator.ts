@@ -143,7 +143,7 @@ function translateTopLevel(
       break;
 
     case "ExportDeclaration":
-      // TODO: Handle exports
+      translateExportDeclaration(cursor, ctx, types, values);
       break;
 
     case "FunctionDeclaration":
@@ -159,6 +159,159 @@ function translateTopLevel(
     default:
       // Ignore other top-level constructs for now
       break;
+  }
+}
+
+/**
+ * Translate an export declaration.
+ * Handles:
+ * - Inline exports: export type Foo = ..., export interface Foo { }, export function foo(), export declare ...
+ * - Export groups: export { A }, export { A as B }, export type { A }
+ * - Re-exports are skipped (export { foo } from "module", export * from "module")
+ */
+function translateExportDeclaration(
+  cursor: TreeCursor,
+  ctx: TranslationContext,
+  types: Map<string, Type>,
+  values: Map<string, Type>
+): void {
+  let hasFromClause = false;
+  let isTypeOnly = false;
+  const exportGroupItems: Array<{ localName: string; exportedName: string }> = [];
+
+  cursor.firstChild();
+  do {
+    switch (cursor.name) {
+      case "export":
+        // Skip the export keyword
+        break;
+
+      case "type":
+        // export type { ... } - type-only export (we treat same as regular for now)
+        isTypeOnly = true;
+        break;
+
+      case "from":
+        // Re-export from another module - skip since we don't follow imports
+        hasFromClause = true;
+        break;
+
+      case "Star":
+        // export * from "module" - skip since we don't follow imports
+        hasFromClause = true;
+        break;
+
+      case "ExportGroup":
+        // Parse export group: { A } or { A as B } or { A, B as C }
+        parseExportGroup(cursor, ctx, exportGroupItems);
+        break;
+
+      case "TypeAliasDeclaration":
+        // export type Foo = ...
+        translateTypeAlias(cursor, ctx, types);
+        break;
+
+      case "InterfaceDeclaration":
+        // export interface Foo { }
+        translateInterface(cursor, ctx, types);
+        break;
+
+      case "FunctionDeclaration":
+        // export function foo(): void
+        translateFunctionDeclaration(cursor, ctx, values);
+        break;
+
+      case "AmbientDeclaration":
+        // export declare function/class/namespace/const
+        if (cursor.firstChild()) {
+          while (cursor.nextSibling()) {
+            translateAmbient(cursor, ctx, types, values);
+          }
+          cursor.parent();
+        }
+        break;
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  // Handle export group if present and not a re-export
+  if (exportGroupItems.length > 0 && !hasFromClause) {
+    for (const { localName, exportedName } of exportGroupItems) {
+      // Check if it's a type
+      const typeVal = types.get(localName);
+      if (typeVal) {
+        if (localName !== exportedName) {
+          types.set(exportedName, typeVal);
+        }
+        continue;
+      }
+
+      // Check if it's a value
+      const valueType = values.get(localName);
+      if (valueType) {
+        if (localName !== exportedName) {
+          values.set(exportedName, valueType);
+        }
+        continue;
+      }
+
+      // Symbol not found - could be in a different file or not yet processed
+      // For now, ignore (the symbol might be declared elsewhere in the same file
+      // and processed before we get here)
+    }
+  }
+}
+
+/**
+ * Parse an export group: { A } or { A as B } or { A, B as C }
+ */
+function parseExportGroup(
+  cursor: TreeCursor,
+  ctx: TranslationContext,
+  items: Array<{ localName: string; exportedName: string }>
+): void {
+  let currentLocalName = "";
+  let expectingExportedName = false;
+
+  cursor.firstChild();
+  do {
+    switch (cursor.name) {
+      case "VariableName":
+        const name = getText(cursor, ctx.source);
+        if (expectingExportedName) {
+          // This is the "as B" part - B is the exported name
+          items.push({ localName: currentLocalName, exportedName: name });
+          currentLocalName = "";
+          expectingExportedName = false;
+        } else {
+          // This could be a standalone name or the local part of "A as B"
+          if (currentLocalName) {
+            // Previous name wasn't followed by "as", so it's a standalone export
+            items.push({ localName: currentLocalName, exportedName: currentLocalName });
+          }
+          currentLocalName = name;
+        }
+        break;
+
+      case "as":
+        // Next VariableName will be the exported name
+        expectingExportedName = true;
+        break;
+
+      case ",":
+        // Separator - if we have a pending name without "as", add it
+        if (currentLocalName && !expectingExportedName) {
+          items.push({ localName: currentLocalName, exportedName: currentLocalName });
+          currentLocalName = "";
+        }
+        break;
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  // Don't forget the last item if not followed by "as"
+  if (currentLocalName && !expectingExportedName) {
+    items.push({ localName: currentLocalName, exportedName: currentLocalName });
   }
 }
 
@@ -259,6 +412,11 @@ function translateAmbient(
 
     case "NamespaceDeclaration":
       translateNamespace(cursor, ctx, types, values);
+      break;
+
+    case "VariableDeclaration":
+      // declare const x: T
+      translateVariableDeclaration(cursor, ctx, values);
       break;
   }
 }
