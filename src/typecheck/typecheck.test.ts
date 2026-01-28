@@ -503,6 +503,41 @@ describe("Type Checker", () => {
         // .brand returns a string, which is runtime usable
         expect(brandDecl.init.comptimeOnly).toBe(false);
       });
+
+      test("branded type .wrap() wraps value", () => {
+        const result = check(`
+          newtype UserId = String;
+          const id = UserId.wrap("abc123");
+        `);
+        const idDecl = result.decls[1] as TypedDecl & { kind: "const" };
+        // The type should be the branded type
+        expect(idDecl.init.type.kind).toBe("branded");
+      });
+
+      test("branded type .unwrap() unwraps value", () => {
+        const result = check(`
+          newtype UserId = String;
+          const id: UserId = UserId.wrap("abc123");
+          const str: String = UserId.unwrap(id);
+        `);
+        expect(result.decls.length).toBe(3);
+        const strDecl = result.decls[2] as TypedDecl & { kind: "const" };
+        // The type should be String (the base type)
+        expect(strDecl.declType.kind).toBe("primitive");
+        expect((strDecl.declType as Type & { kind: "primitive" }).name).toBe("String");
+      });
+
+      test(".wrap() is not available on non-branded types", () => {
+        expect(() => check(`
+          const x = String.wrap("hello");
+        `)).toThrow("'wrap' is only valid on branded types");
+      });
+
+      test(".unwrap() is not available on non-branded types", () => {
+        expect(() => check(`
+          const x = Int.unwrap(42);
+        `)).toThrow("'unwrap' is only valid on branded types");
+      });
     });
 
     describe("WithMetadata", () => {

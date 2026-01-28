@@ -493,7 +493,7 @@ Design decisions that can be addressed as needed:
 ### Fully Implemented Features
 
 **Array Methods:**
-`map`, `filter`, `find`, `findIndex`, `some`, `every`, `reduce`, `flat`, `flatMap`, `concat`, `slice`, `indexOf`, `includes`, `join`
+`map`, `filter`, `find`, `findIndex`, `some`, `every`, `forEach`, `reduce`, `flat`, `flatMap`, `concat`, `slice`, `indexOf`, `includes`, `join`
 
 **String Methods:**
 `length`, `charAt`, `charCodeAt`, `substring`, `slice`, `indexOf`, `lastIndexOf`, `includes`, `startsWith`, `endsWith`, `split`, `trim`, `trimStart`, `trimEnd`, `toUpperCase`, `toLowerCase`, `replace`, `replaceAll`, `padStart`, `padEnd`, `repeat`, `concat`
@@ -511,7 +511,7 @@ Design decisions that can be addressed as needed:
 - `newtype` syntax (`newtype UserId = String`)
 - `Branded` builtin
 - `.baseType` and `.brand` properties
-- Note: `.wrap()` and `.unwrap()` methods are documented in spec but not yet implemented
+- `.wrap()` and `.unwrap()` methods (zero runtime cost type conversion)
 
 **Exports:**
 - `export const x = ...` syntax
@@ -536,9 +536,6 @@ Design decisions that can be addressed as needed:
 
 ### Not Yet Implemented
 
-**Array Methods:**
-- `forEach` - iterate with side effects
-
 **TypeScript .d.ts Loading:**
 - Cross-file type resolution (following `import` statements within `.d.ts` files)
 - Mapped types (`{ [K in keyof T]: ... }`)
@@ -550,9 +547,6 @@ Design decisions that can be addressed as needed:
 **Module System:**
 - DepJS-to-DepJS imports
 - Multi-file compilation
-
-**Branded Types:**
-- `.wrap()` and `.unwrap()` methods
 
 ## Examples Directory
 

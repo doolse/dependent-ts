@@ -1097,6 +1097,27 @@ function getArrayMethod(
         return { value: true, type: primitiveType("Boolean") };
       });
 
+    case "forEach":
+      return wrapBuiltin("Array.forEach", (args, evaluator, callLoc) => {
+        const fn = args[0];
+        if (fn === undefined) {
+          throw new CompileError(
+            "Array.forEach requires a callback function",
+            "typecheck",
+            callLoc ?? loc
+          );
+        }
+        for (let i = 0; i < arr.length; i++) {
+          callCallback(
+            fn,
+            [wrapElement(arr[i], i), wrapValue(i, primitiveType("Int")), wrapArray()],
+            evaluator,
+            callLoc ?? loc
+          );
+        }
+        return { value: undefined, type: primitiveType("Void") };
+      });
+
     case "reduce":
       return wrapBuiltin("Array.reduce", (args, evaluator, callLoc) => {
         const fn = args[0];

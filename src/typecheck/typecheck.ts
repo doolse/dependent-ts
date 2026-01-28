@@ -1304,7 +1304,7 @@ class TypeChecker {
       const isComptimeOnly = isComptimeOnlyProperty(expr.name);
 
       // Get the static type for this property
-      const propType = getTypePropertyType(expr.name);
+      let propType = getTypePropertyType(expr.name);
       if (!propType) {
         throw new CompileError(
           `Type has no property '${expr.name}'`,
@@ -1314,6 +1314,7 @@ class TypeChecker {
       }
 
       // If we have the actual Type value, evaluate the property access
+      // and use its precise type (important for wrap/unwrap which have type-specific return types)
       let comptimeValue: unknown;
       if (object.comptimeValue !== undefined && isRawTypeValue(object.comptimeValue)) {
         const result = getTypeProperty(
@@ -1323,6 +1324,8 @@ class TypeChecker {
           expr.loc
         );
         comptimeValue = result.value;
+        // Use the actual type from evaluation if available (more precise than static type)
+        propType = result.type;
       }
 
       return {

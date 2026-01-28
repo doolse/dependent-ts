@@ -955,6 +955,76 @@ describe("Branded types", () => {
       expect(evalRaw(evaluator, selfExtends, env, typeEnv)).toBe(true);
     });
   });
+
+  describe("wrap and unwrap methods", () => {
+    test(".wrap() wraps value with branded type", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Create UserId = Branded(String, "UserId")
+      const brandedExpr = call(id("Branded"), [id("String"), literal("UserId")]);
+      env.defineEvaluated("UserId", evaluator.evaluate(brandedExpr, env, typeEnv));
+
+      // UserId.wrap("abc123")
+      const wrapExpr = call(prop(id("UserId"), "wrap"), [literal("abc123")]);
+      const result = evaluator.evaluate(wrapExpr, env, typeEnv);
+
+      // Value should be unchanged
+      expect(result.value).toBe("abc123");
+      // Type should be the branded type
+      expect(result.type.kind).toBe("branded");
+    });
+
+    test(".unwrap() unwraps branded value to base type", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Create UserId = Branded(String, "UserId")
+      const brandedExpr = call(id("Branded"), [id("String"), literal("UserId")]);
+      env.defineEvaluated("UserId", evaluator.evaluate(brandedExpr, env, typeEnv));
+
+      // First wrap a value
+      const wrapExpr = call(prop(id("UserId"), "wrap"), [literal("abc123")]);
+      const wrapped = evaluator.evaluate(wrapExpr, env, typeEnv);
+      env.defineEvaluated("userId", wrapped);
+
+      // UserId.unwrap(userId)
+      const unwrapExpr = call(prop(id("UserId"), "unwrap"), [id("userId")]);
+      const result = evaluator.evaluate(unwrapExpr, env, typeEnv);
+
+      // Value should be unchanged
+      expect(result.value).toBe("abc123");
+      // Type should be the base type (String)
+      expect(result.type.kind).toBe("primitive");
+      expect((result.type as { kind: "primitive"; name: string }).name).toBe("String");
+    });
+
+    test(".wrap() is only available on branded types", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // String.wrap should throw
+      const wrapExpr = prop(id("String"), "wrap");
+      expect(() => evaluator.evaluate(wrapExpr, env, typeEnv)).toThrow(
+        "'wrap' is only valid on branded types"
+      );
+    });
+
+    test(".unwrap() is only available on branded types", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = createInitialComptimeEnv();
+      const typeEnv = createInitialTypeEnv();
+
+      // Int.unwrap should throw
+      const unwrapExpr = prop(id("Int"), "unwrap");
+      expect(() => evaluator.evaluate(unwrapExpr, env, typeEnv)).toThrow(
+        "'unwrap' is only valid on branded types"
+      );
+    });
+  });
 });
 
 describe(".keysType property", () => {
@@ -1534,6 +1604,36 @@ describe("Array methods at compile time", () => {
       );
 
       expect(evalRaw(evaluator, reduceExpr, env, typeEnv)).toBe(10);
+    });
+  });
+
+  describe("forEach", () => {
+    test("calls callback for each element", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [1, 2, 3].forEach(x => x) returns undefined
+      const forEachExpr = call(
+        prop(array(literal(1), literal(2), literal(3)), "forEach"),
+        [lambda(["x"], id("x"))]
+      );
+
+      expect(evalRaw(evaluator, forEachExpr, env, typeEnv)).toBeUndefined();
+    });
+
+    test("receives index as second parameter", () => {
+      const evaluator = new ComptimeEvaluator();
+      const env = new ComptimeEnv();
+      const typeEnv = new TypeEnv();
+
+      // [10, 20, 30].forEach((_, i) => i) returns undefined
+      const forEachExpr = call(
+        prop(array(literal(10), literal(20), literal(30)), "forEach"),
+        [lambda(["x", "i"], id("i"))]
+      );
+
+      expect(evalRaw(evaluator, forEachExpr, env, typeEnv)).toBeUndefined();
     });
   });
 

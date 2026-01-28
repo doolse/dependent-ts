@@ -125,6 +125,13 @@ export function getArrayMethodType(
       // ((element: T) => Boolean) => Boolean
       return functionType([callbackParam(primitiveType("Boolean"))], primitiveType("Boolean"));
 
+    case "forEach":
+      // ((element: T, index: Int, array: Array<T>) => Void) => Void
+      return functionType(
+        [fullCallback(primitiveType("Void"))],
+        primitiveType("Void")
+      );
+
     case "concat":
       // (...items: Array<T | Array<T>>) => Array<T>
       // Simplified: (...items: Array<T>[]) => Array<T>

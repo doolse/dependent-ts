@@ -319,6 +319,38 @@ export function getTypeProperty(
         async: false,
       });
 
+    case "wrap":
+      if (base.kind !== "branded") {
+        throw new CompileError(
+          `'wrap' is only valid on branded types, got ${formatType(type)}`,
+          "typecheck",
+          loc
+        );
+      }
+      // wrap: (baseType) => brandedType - identity at runtime
+      return wrapValue(createWrapMethod(type, base), {
+        kind: "function",
+        params: [{ name: "value", type: base.baseType, optional: false }],
+        returnType: type,
+        async: false,
+      });
+
+    case "unwrap":
+      if (base.kind !== "branded") {
+        throw new CompileError(
+          `'unwrap' is only valid on branded types, got ${formatType(type)}`,
+          "typecheck",
+          loc
+        );
+      }
+      // unwrap: (brandedType) => baseType - identity at runtime
+      return wrapValue(createUnwrapMethod(type, base), {
+        kind: "function",
+        params: [{ name: "value", type: type, optional: false }],
+        returnType: base.baseType,
+        async: false,
+      });
+
     default:
       throw new CompileError(
         `Type has no property '${prop}'`,
@@ -427,6 +459,56 @@ function createAnnotationMethod(
       }
 
       return wrapValue(undefined, primitiveType("Undefined"));
+    },
+  };
+}
+
+/**
+ * Create the BrandedType.wrap(value) method.
+ * Wraps a base type value as the branded type. Identity at runtime.
+ */
+function createWrapMethod(
+  brandedType: Type,
+  base: Type & { kind: "branded" }
+): ComptimeBuiltin {
+  return {
+    kind: "builtin",
+    name: "Type.wrap",
+    impl: (args, _evaluator, loc) => {
+      if (args.length !== 1) {
+        throw new CompileError(
+          `wrap() expects 1 argument`,
+          "typecheck",
+          loc
+        );
+      }
+      // Return the same value but with the branded type
+      return wrapValue(args[0].value, brandedType);
+    },
+  };
+}
+
+/**
+ * Create the BrandedType.unwrap(value) method.
+ * Unwraps a branded type value to the base type. Identity at runtime.
+ */
+function createUnwrapMethod(
+  _brandedType: Type,
+  base: Type & { kind: "branded" }
+): ComptimeBuiltin {
+  return {
+    kind: "builtin",
+    name: "Type.unwrap",
+    impl: (args, _evaluator, loc) => {
+      if (args.length !== 1) {
+        throw new CompileError(
+          `unwrap() expects 1 argument`,
+          "typecheck",
+          loc
+        );
+      }
+      // Return the same value but with the base type
+      return wrapValue(args[0].value, base.baseType);
     },
   };
 }
@@ -564,6 +646,25 @@ export function getTypePropertyType(prop: string): Type | undefined {
       return {
         kind: "function",
         params: [{ name: "annotationType", type: primitiveType("Type"), optional: false }],
+        returnType: primitiveType("Unknown"),
+        async: false,
+      };
+
+    // Branded type methods - actual types depend on the specific branded type
+    // These are placeholder types; getTypeProperty returns the correct specific types
+    case "wrap":
+      // (BaseType) => BrandedType - actual types filled in by getTypeProperty
+      return {
+        kind: "function",
+        params: [{ name: "value", type: primitiveType("Unknown"), optional: false }],
+        returnType: primitiveType("Unknown"),
+        async: false,
+      };
+    case "unwrap":
+      // (BrandedType) => BaseType - actual types filled in by getTypeProperty
+      return {
+        kind: "function",
+        params: [{ name: "value", type: primitiveType("Unknown"), optional: false }],
         returnType: primitiveType("Unknown"),
         async: false,
       };
