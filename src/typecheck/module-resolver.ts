@@ -29,8 +29,6 @@ export interface ResolvedModule {
 export interface ModuleResolverConfig {
   /** Base directory for resolving modules (usually the directory containing the source file) */
   baseDir: string;
-  /** Additional directories to search for node_modules */
-  nodeModulesPaths?: string[];
 }
 
 /**
@@ -38,26 +36,12 @@ export interface ModuleResolverConfig {
  */
 export class ModuleResolver {
   private baseDir: string;
-  private nodeModulesPaths: string[];
   private cache: Map<string, ResolvedModule | null> = new Map();
+  /** Tracks files currently being loaded to detect circular dependencies */
+  private loading: Set<string> = new Set();
 
   constructor(config: ModuleResolverConfig) {
     this.baseDir = config.baseDir;
-
-    // Build node_modules paths by walking up the directory tree (Node.js style)
-    if (config.nodeModulesPaths) {
-      this.nodeModulesPaths = config.nodeModulesPaths;
-    } else {
-      this.nodeModulesPaths = [];
-      let dir = config.baseDir;
-      while (true) {
-        const nmPath = path.join(dir, "node_modules");
-        this.nodeModulesPaths.push(nmPath);
-        const parent = path.dirname(dir);
-        if (parent === dir) break; // Reached root
-        dir = parent;
-      }
-    }
   }
 
   /**
@@ -65,79 +49,7 @@ export class ModuleResolver {
    * Returns null if the module cannot be resolved.
    */
   resolve(specifier: string): ResolvedModule | null {
-    // Check cache first
-    const cacheKey = `${this.baseDir}:${specifier}`;
-    if (this.cache.has(cacheKey)) {
-      return this.cache.get(cacheKey)!;
-    }
-
-    let result: ResolvedModule | null = null;
-
-    if (specifier.startsWith(".") || specifier.startsWith("/")) {
-      // Relative or absolute path
-      result = this.resolveRelative(specifier);
-    } else {
-      // npm package
-      result = this.resolvePackage(specifier);
-    }
-
-    this.cache.set(cacheKey, result);
-    return result;
-  }
-
-  /**
-   * Resolve a relative path import.
-   */
-  private resolveRelative(specifier: string): ResolvedModule | null {
-    const basePath = path.resolve(this.baseDir, specifier);
-
-    // Try various extensions
-    const candidates = [
-      basePath + ".d.ts",
-      path.join(basePath, "index.d.ts"),
-    ];
-
-    for (const candidate of candidates) {
-      if (fs.existsSync(candidate)) {
-        return this.loadDTSFile(candidate);
-      }
-    }
-
-    return null;
-  }
-
-  /**
-   * Resolve an npm package import.
-   */
-  private resolvePackage(specifier: string): ResolvedModule | null {
-    // Handle scoped packages and subpaths
-    const parts = specifier.split("/");
-    let packageName: string;
-    let subpath: string;
-
-    if (specifier.startsWith("@")) {
-      // Scoped package: @scope/package or @scope/package/subpath
-      packageName = parts.slice(0, 2).join("/");
-      subpath = parts.slice(2).join("/");
-    } else {
-      // Regular package: package or package/subpath
-      packageName = parts[0];
-      subpath = parts.slice(1).join("/");
-    }
-
-    for (const nodeModulesPath of this.nodeModulesPaths) {
-      // Try @types/<package>
-      const typesPath = path.join(nodeModulesPath, "@types", packageName.replace("@", "").replace("/", "__"));
-      const typesResult = this.tryPackageDir(typesPath, subpath);
-      if (typesResult) return typesResult;
-
-      // Try the package itself (might have bundled types)
-      const packagePath = path.join(nodeModulesPath, packageName);
-      const packageResult = this.tryPackageDir(packagePath, subpath);
-      if (packageResult) return packageResult;
-    }
-
-    return null;
+    return this.resolveFromDir(specifier, this.baseDir);
   }
 
   /**
@@ -194,9 +106,23 @@ export class ModuleResolver {
    * Load and parse a .d.ts file.
    */
   private loadDTSFile(dtsPath: string): ResolvedModule | null {
+    // Circular dependency protection
+    if (this.loading.has(dtsPath)) {
+      // Return empty result to break the cycle
+      return {
+        dtsPath,
+        types: new Map(),
+        values: new Map(),
+      };
+    }
+
+    this.loading.add(dtsPath);
     try {
       const content = fs.readFileSync(dtsPath, "utf-8");
-      const result = loadDTS(content);
+      const result = loadDTS(content, {
+        filePath: dtsPath,
+        resolver: (specifier, fromPath) => this.resolveForDTS(specifier, fromPath),
+      });
 
       return {
         dtsPath,
@@ -206,7 +132,111 @@ export class ModuleResolver {
     } catch (error) {
       // File read or parse error
       return null;
+    } finally {
+      this.loading.delete(dtsPath);
     }
+  }
+
+  /**
+   * Resolve a module specifier from within a .d.ts file.
+   * Used as a callback during .d.ts translation.
+   */
+  private resolveForDTS(specifier: string, fromPath: string): { types: Map<string, Type>; values: Map<string, Type>; errors: string[] } | null {
+    const fromDir = path.dirname(fromPath);
+    const resolved = this.resolveFromDir(specifier, fromDir);
+    if (resolved) {
+      return { types: resolved.types, values: resolved.values, errors: [] };
+    }
+    return null;
+  }
+
+  /**
+   * Resolve a module specifier from a specific directory.
+   * This is used for resolving imports within .d.ts files.
+   */
+  private resolveFromDir(specifier: string, baseDir: string): ResolvedModule | null {
+    // Check cache first
+    const cacheKey = `${baseDir}:${specifier}`;
+    if (this.cache.has(cacheKey)) {
+      return this.cache.get(cacheKey)!;
+    }
+
+    let result: ResolvedModule | null = null;
+
+    if (specifier.startsWith(".") || specifier.startsWith("/")) {
+      // Relative or absolute path - resolve from the given base directory
+      result = this.resolveRelativeFromDir(specifier, baseDir);
+    } else {
+      // npm package - use the standard resolution
+      result = this.resolvePackageFromDir(specifier, baseDir);
+    }
+
+    this.cache.set(cacheKey, result);
+    return result;
+  }
+
+  /**
+   * Resolve a relative path import from a specific directory.
+   */
+  private resolveRelativeFromDir(specifier: string, baseDir: string): ResolvedModule | null {
+    const basePath = path.resolve(baseDir, specifier);
+
+    // Try various extensions
+    const candidates = [
+      basePath + ".d.ts",
+      path.join(basePath, "index.d.ts"),
+    ];
+
+    for (const candidate of candidates) {
+      if (fs.existsSync(candidate)) {
+        return this.loadDTSFile(candidate);
+      }
+    }
+
+    return null;
+  }
+
+  /**
+   * Resolve an npm package import from a specific directory.
+   * Builds node_modules paths by walking up from baseDir.
+   */
+  private resolvePackageFromDir(specifier: string, baseDir: string): ResolvedModule | null {
+    // Handle scoped packages and subpaths
+    const parts = specifier.split("/");
+    let packageName: string;
+    let subpath: string;
+
+    if (specifier.startsWith("@")) {
+      // Scoped package: @scope/package or @scope/package/subpath
+      packageName = parts.slice(0, 2).join("/");
+      subpath = parts.slice(2).join("/");
+    } else {
+      // Regular package: package or package/subpath
+      packageName = parts[0];
+      subpath = parts.slice(1).join("/");
+    }
+
+    // Build node_modules paths by walking up from baseDir
+    let dir = baseDir;
+    while (true) {
+      const nodeModulesPath = path.join(dir, "node_modules");
+
+      // Try @types/<package>
+      const typesPath = path.join(nodeModulesPath, "@types", packageName.replace("@", "").replace("/", "__"));
+      const typesResult = this.tryPackageDir(typesPath, subpath);
+      if (typesResult) return typesResult;
+
+      // Try the package itself (might have bundled types)
+      const packagePath = path.join(nodeModulesPath, packageName);
+      const packageResult = this.tryPackageDir(packagePath, subpath);
+      if (packageResult) return packageResult;
+
+      const parent = path.dirname(dir);
+      if (parent === dir) break; // Reached root
+      dir = parent;
+    }
+
+    return null;
   }
 
   /**

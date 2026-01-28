@@ -1,6 +1,7 @@
 import { describe, it, expect } from "vitest";
-import { loadDTS } from "./dts-translator";
+import { loadDTS, DTSLoadResult, ModuleTypeResolver } from "./dts-translator";
 import { formatType } from "../types/format";
+import { primitiveType, recordType, functionType } from "../types/types";
 
 describe("DTS Translator", () => {
   it("translates primitive type aliases", () => {
@@ -525,8 +526,8 @@ export { PrivateType as ExportedType };
       expect(result.types.has("ExportedType")).toBe(true);
     });
 
-    it("ignores re-exports from other modules", () => {
-      // Re-exports from other modules are not supported yet
+    it("ignores re-exports when no resolver provided", () => {
+      // Re-exports without a resolver should be ignored
       const result = loadDTS(`
 export { something } from "other-module";
 export * from "another-module";
@@ -534,7 +535,7 @@ export * from "another-module";
 
       // Should not error, just ignore
       expect(result.errors).toHaveLength(0);
-      // Nothing should be exported since we don't follow imports
+      // Nothing should be exported since we don't have a resolver
       expect(result.types.size).toBe(0);
       expect(result.values.size).toBe(0);
     });
@@ -551,6 +552,301 @@ export { A, B as Beta, C };
       expect(result.types.get("A")?.kind).toBe("primitive");
       expect(result.types.get("Beta")?.kind).toBe("primitive");
       expect(result.types.get("C")?.kind).toBe("primitive");
+    });
+  });
+
+  // Cross-file resolution tests
+  describe("cross-file resolution", () => {
+    // Create a mock resolver that returns predefined modules
+    function createMockResolver(modules: Record<string, DTSLoadResult>): ModuleTypeResolver {
+      return (specifier: string, _fromPath: string) => {
+        return modules[specifier] || null;
+      };
+    }
+
+    it("resolves imported types", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([["ImportedType", primitiveType("String")]]),
+        values: new Map(),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+import { ImportedType } from "some-module";
+type MyType = ImportedType;
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ "some-module": mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      const myType = result.types.get("MyType");
+      expect(myType?.kind).toBe("primitive");
+      if (myType?.kind === "primitive") {
+        expect(myType.name).toBe("String");
+      }
+    });
+
+    it("resolves imported values", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map(),
+        values: new Map([
+          ["helperFn", functionType([{ name: "x", type: primitiveType("Number"), optional: false }], primitiveType("String"))],
+        ]),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+import { helperFn } from "utils";
+export { helperFn };
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ utils: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      const fn = result.values.get("helperFn");
+      expect(fn?.kind).toBe("function");
+    });
+
+    it("handles import with rename", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([["OriginalName", primitiveType("Number")]]),
+        values: new Map(),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+import { OriginalName as LocalName } from "module";
+type UseIt = LocalName;
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ module: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      const useIt = result.types.get("UseIt");
+      expect(useIt?.kind).toBe("primitive");
+      if (useIt?.kind === "primitive") {
+        expect(useIt.name).toBe("Number");
+      }
+    });
+
+    it("handles namespace import", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([["SomeType", primitiveType("Boolean")]]),
+        values: new Map([["someFunc", functionType([], primitiveType("Void"))]]),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+import * as ns from "module";
+export { ns };
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ module: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      const ns = result.values.get("ns");
+      expect(ns?.kind).toBe("record");
+      if (ns?.kind === "record") {
+        expect(ns.fields.length).toBe(2);
+        expect(ns.fields.map((f) => f.name).sort()).toEqual(["SomeType", "someFunc"]);
+      }
+    });
+
+    it("handles re-export with resolver", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([["ExternalType", primitiveType("String")]]),
+        values: new Map([["externalFunc", functionType([], primitiveType("Number"))]]),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+export { ExternalType, externalFunc } from "external";
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ external: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("ExternalType")?.kind).toBe("primitive");
+      expect(result.values.get("externalFunc")?.kind).toBe("function");
+    });
+
+    it("handles re-export with rename", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([["InternalName", primitiveType("Boolean")]]),
+        values: new Map(),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+export { InternalName as PublicName } from "module";
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ module: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("PublicName")?.kind).toBe("primitive");
+      // Original name should NOT be exported
+      expect(result.types.has("InternalName")).toBe(false);
+    });
+
+    it("handles export * from module", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([
+          ["TypeA", primitiveType("String")],
+          ["TypeB", primitiveType("Number")],
+        ]),
+        values: new Map([["funcA", functionType([], primitiveType("Void"))]]),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+export * from "module";
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ module: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("TypeA")?.kind).toBe("primitive");
+      expect(result.types.get("TypeB")?.kind).toBe("primitive");
+      expect(result.values.get("funcA")?.kind).toBe("function");
+    });
+
+    it("handles circular dependency gracefully", () => {
+      // Create a resolver that simulates circular dependency
+      // by returning an empty result when called
+      let callCount = 0;
+      const circularResolver: ModuleTypeResolver = (_specifier, _fromPath) => {
+        callCount++;
+        if (callCount > 10) {
+          throw new Error("Too many resolver calls - possible infinite loop");
+        }
+        // Return empty result to simulate circular dependency handling
+        return { types: new Map(), values: new Map(), errors: [] };
+      };
+
+      const result = loadDTS(
+        `
+import { Something } from "circular";
+export type MyType = string;
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: circularResolver,
+        }
+      );
+
+      // Should not hang or throw
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("MyType")?.kind).toBe("primitive");
+    });
+
+    it("handles missing module gracefully", () => {
+      const result = loadDTS(
+        `
+import { NotFound } from "nonexistent";
+type MyType = string;
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: () => null, // Always returns null
+        }
+      );
+
+      // Should not error, just ignore the import
+      expect(result.errors).toHaveLength(0);
+      expect(result.types.get("MyType")?.kind).toBe("primitive");
+    });
+
+    it("uses imported type in record field", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([
+          [
+            "Address",
+            recordType([
+              { name: "street", type: primitiveType("String"), optional: false, annotations: [] },
+              { name: "city", type: primitiveType("String"), optional: false, annotations: [] },
+            ]),
+          ],
+        ]),
+        values: new Map(),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+import { Address } from "types";
+interface Person {
+  name: string;
+  address: Address;
+}
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ types: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      const person = result.types.get("Person");
+      expect(person?.kind).toBe("record");
+      if (person?.kind === "record") {
+        const addressField = person.fields.find((f) => f.name === "address");
+        expect(addressField?.type.kind).toBe("record");
+        if (addressField?.type.kind === "record") {
+          expect(addressField.type.fields.length).toBe(2);
+        }
+      }
+    });
+
+    it("handles import type syntax", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([["TypeOnly", primitiveType("String")]]),
+        values: new Map(),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+import type { TypeOnly } from "module";
+type MyType = TypeOnly;
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ module: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      const myType = result.types.get("MyType");
+      expect(myType?.kind).toBe("primitive");
     });
   });
 });

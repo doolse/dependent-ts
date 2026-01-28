@@ -22,6 +22,25 @@ export interface DTSLoadResult {
 }
 
 /**
+ * Callback type for resolving modules during .d.ts translation.
+ * Returns the load result for the module, or null if it cannot be resolved.
+ */
+export type ModuleTypeResolver = (
+  specifier: string,
+  fromPath: string
+) => DTSLoadResult | null;
+
+/**
+ * Options for loading a .d.ts file
+ */
+export interface DTSLoadOptions {
+  /** Path to the .d.ts file being loaded (for resolving relative imports) */
+  filePath?: string;
+  /** Resolver callback for loading imported modules */
+  resolver?: ModuleTypeResolver;
+}
+
+/**
  * Context for translation - tracks type parameters in scope
  */
 interface TranslationContext {
@@ -33,6 +52,14 @@ interface TranslationContext {
   source: string;
   /** Accumulated errors */
   errors: string[];
+  /** Path to the current file (for resolving relative imports) */
+  filePath?: string;
+  /** Resolver callback for loading imported modules */
+  resolver?: ModuleTypeResolver;
+  /** Types imported from other modules (name -> type) */
+  importedTypes: Map<string, Type>;
+  /** Values imported from other modules (name -> type) */
+  importedValues: Map<string, Type>;
 }
 
 /**
@@ -91,13 +118,17 @@ function addValue(values: Map<string, Type>, name: string, newType: Type): void 
 /**
  * Load and translate a .d.ts file
  */
-export function loadDTS(content: string): DTSLoadResult {
+export function loadDTS(content: string, options?: DTSLoadOptions): DTSLoadResult {
   const tree = parseDTS(content);
   const ctx: TranslationContext = {
     typeParams: new Map(),
     inferVars: new Map(),
     source: content,
     errors: [],
+    filePath: options?.filePath,
+    resolver: options?.resolver,
+    importedTypes: new Map(),
+    importedValues: new Map(),
   };
 
   const types = new Map<string, Type>();
@@ -146,6 +177,10 @@ function translateTopLevel(
       translateExportDeclaration(cursor, ctx, types, values);
       break;
 
+    case "ImportDeclaration":
+      translateImportDeclaration(cursor, ctx);
+      break;
+
     case "FunctionDeclaration":
       // function declarations inside namespaces
       translateFunctionDeclaration(cursor, ctx, values);
@@ -167,7 +202,7 @@ function translateTopLevel(
  * Handles:
  * - Inline exports: export type Foo = ..., export interface Foo { }, export function foo(), export declare ...
  * - Export groups: export { A }, export { A as B }, export type { A }
- * - Re-exports are skipped (export { foo } from "module", export * from "module")
+ * - Re-exports: export { foo } from "module", export * from "module"
  */
 function translateExportDeclaration(
   cursor: TreeCursor,
@@ -177,6 +212,8 @@ function translateExportDeclaration(
 ): void {
   let hasFromClause = false;
   let isTypeOnly = false;
+  let isStarExport = false;
+  let moduleSpecifier = "";
   const exportGroupItems: Array<{ localName: string; exportedName: string }> = [];
 
   cursor.firstChild();
@@ -192,13 +229,21 @@ function translateExportDeclaration(
         break;
 
       case "from":
-        // Re-export from another module - skip since we don't follow imports
+        // Re-export from another module
         hasFromClause = true;
         break;
 
       case "Star":
-        // export * from "module" - skip since we don't follow imports
+        // export * from "module"
+        isStarExport = true;
         hasFromClause = true;
+        break;
+
+      case "String":
+        // Module specifier for re-exports
+        const specText = getText(cursor, ctx.source);
+        // Remove quotes
+        moduleSpecifier = specText.slice(1, -1);
         break;
 
       case "ExportGroup":
@@ -234,10 +279,45 @@ function translateExportDeclaration(
   } while (cursor.nextSibling());
   cursor.parent();
 
-  // Handle export group if present and not a re-export
+  // Handle re-exports from other modules
+  if (hasFromClause && moduleSpecifier && ctx.resolver && ctx.filePath) {
+    const resolved = ctx.resolver(moduleSpecifier, ctx.filePath);
+    if (resolved) {
+      if (isStarExport) {
+        // export * from "module" - re-export all
+        resolved.types.forEach((type, name) => {
+          types.set(name, type);
+        });
+        resolved.values.forEach((type, name) => {
+          values.set(name, type);
+        });
+      } else {
+        // export { A, B as C } from "module" - re-export specific symbols
+        for (const { localName, exportedName } of exportGroupItems) {
+          // Check types first
+          const importedType = resolved.types.get(localName);
+          if (importedType) {
+            types.set(exportedName, importedType);
+            continue;
+          }
+
+          // Check values
+          const importedValue = resolved.values.get(localName);
+          if (importedValue) {
+            values.set(exportedName, importedValue);
+            continue;
+          }
+          // Symbol not found in resolved module - could be a deeper re-export
+        }
+      }
+    }
+    return;
+  }
+
+  // Handle export group from current file (not a re-export)
   if (exportGroupItems.length > 0 && !hasFromClause) {
     for (const { localName, exportedName } of exportGroupItems) {
-      // Check if it's a type
+      // Check if it's a type in current file
       const typeVal = types.get(localName);
       if (typeVal) {
         if (localName !== exportedName) {
@@ -246,7 +326,7 @@ function translateExportDeclaration(
         continue;
       }
 
-      // Check if it's a value
+      // Check if it's a value in current file
       const valueType = values.get(localName);
       if (valueType) {
         if (localName !== exportedName) {
@@ -255,9 +335,21 @@ function translateExportDeclaration(
         continue;
       }
 
+      // Check imported types
+      const importedType = ctx.importedTypes.get(localName);
+      if (importedType) {
+        types.set(exportedName, importedType);
+        continue;
+      }
+
+      // Check imported values
+      const importedValue = ctx.importedValues.get(localName);
+      if (importedValue) {
+        values.set(exportedName, importedValue);
+        continue;
+      }
+
       // Symbol not found - could be in a different file or not yet processed
-      // For now, ignore (the symbol might be declared elsewhere in the same file
-      // and processed before we get here)
     }
   }
 }
@@ -312,6 +404,194 @@ function parseExportGroup(
   // Don't forget the last item if not followed by "as"
   if (currentLocalName && !expectingExportedName) {
     items.push({ localName: currentLocalName, exportedName: currentLocalName });
+  }
+}
+
+/**
+ * Translate an import declaration.
+ * Handles:
+ * - Named imports: import { A, B } from "module"
+ * - Type-only imports: import type { A } from "module"
+ * - Namespace imports: import * as ns from "module"
+ * - Default imports: import X from "module"
+ */
+function translateImportDeclaration(cursor: TreeCursor, ctx: TranslationContext): void {
+  if (!ctx.resolver || !ctx.filePath) {
+    // No resolver available, skip import processing
+    return;
+  }
+
+  let isTypeOnly = false;
+  let moduleSpecifier = "";
+  let namespaceAlias = "";
+  let defaultImportName = "";
+  const namedImports: Array<{ importedName: string; localName: string }> = [];
+
+  cursor.firstChild();
+  do {
+    switch (cursor.name) {
+      case "import":
+        // Skip the import keyword
+        break;
+
+      case "type":
+        // import type { ... }
+        isTypeOnly = true;
+        break;
+
+      case "Star":
+        // Namespace import: import * as ns
+        // Next we expect "as" and then the alias name
+        break;
+
+      case "as":
+        // Part of namespace import or named import rename
+        break;
+
+      case "VariableDefinition":
+        // This could be:
+        // 1. Namespace alias after "* as"
+        // 2. Default import name
+        const name = getText(cursor, ctx.source);
+        if (namespaceAlias === "" && namedImports.length === 0) {
+          // Could be namespace alias or default import
+          // We'll determine based on context (if we saw Star, it's namespace)
+          namespaceAlias = name;
+        }
+        break;
+
+      case "ImportGroup":
+        // Named imports: { A, B as C }
+        parseImportGroup(cursor, ctx, namedImports);
+        // If we had a pending name, it was a default import
+        if (namespaceAlias) {
+          defaultImportName = namespaceAlias;
+          namespaceAlias = "";
+        }
+        break;
+
+      case "String":
+        // Module specifier
+        const specText = getText(cursor, ctx.source);
+        // Remove quotes
+        moduleSpecifier = specText.slice(1, -1);
+        break;
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  if (!moduleSpecifier) {
+    return;
+  }
+
+  // Resolve the module
+  const resolved = ctx.resolver(moduleSpecifier, ctx.filePath);
+  if (!resolved) {
+    // Module not found - this is not necessarily an error, as some imports
+    // may be for runtime-only modules
+    return;
+  }
+
+  // Handle namespace import: import * as ns from "module"
+  if (namespaceAlias && namedImports.length === 0 && !defaultImportName) {
+    // Create a record type with all exports
+    const fields: FieldInfo[] = [];
+    resolved.types.forEach((type, name) => {
+      fields.push({ name, type, optional: false, annotations: [] });
+    });
+    resolved.values.forEach((type, name) => {
+      fields.push({ name, type, optional: false, annotations: [] });
+    });
+    ctx.importedValues.set(namespaceAlias, recordType(fields));
+    return;
+  }
+
+  // Handle named imports: import { A, B as C } from "module"
+  for (const { importedName, localName } of namedImports) {
+    // Check types first
+    const importedType = resolved.types.get(importedName);
+    if (importedType) {
+      ctx.importedTypes.set(localName, importedType);
+      continue;
+    }
+
+    // Check values
+    const importedValue = resolved.values.get(importedName);
+    if (importedValue) {
+      ctx.importedValues.set(localName, importedValue);
+      continue;
+    }
+
+    // Symbol not found in the resolved module
+    // This could be a re-export that wasn't resolved, so we don't error
+  }
+
+  // Handle default import: import X from "module"
+  if (defaultImportName) {
+    // Default exports are typically named "default" in the resolved module
+    const defaultType = resolved.types.get("default") || resolved.values.get("default");
+    if (defaultType) {
+      if (resolved.types.has("default")) {
+        ctx.importedTypes.set(defaultImportName, defaultType);
+      } else {
+        ctx.importedValues.set(defaultImportName, defaultType);
+      }
+    }
+  }
+}
+
+/**
+ * Parse an import group: { A } or { A as B } or { A, B as C }
+ */
+function parseImportGroup(
+  cursor: TreeCursor,
+  ctx: TranslationContext,
+  items: Array<{ importedName: string; localName: string }>
+): void {
+  let currentImportedName = "";
+  let expectingLocalName = false;
+
+  cursor.firstChild();
+  do {
+    switch (cursor.name) {
+      case "VariableDefinition":
+      case "VariableName":
+        // In import groups, names can appear as either VariableDefinition or VariableName
+        const name = getText(cursor, ctx.source);
+        if (expectingLocalName) {
+          // This is the "as B" part - B is the local name
+          items.push({ importedName: currentImportedName, localName: name });
+          currentImportedName = "";
+          expectingLocalName = false;
+        } else {
+          // This could be a standalone name or the imported part of "A as B"
+          if (currentImportedName) {
+            // Previous name wasn't followed by "as", so it's a standalone import
+            items.push({ importedName: currentImportedName, localName: currentImportedName });
+          }
+          currentImportedName = name;
+        }
+        break;
+
+      case "as":
+        // Next name will be the local name
+        expectingLocalName = true;
+        break;
+
+      case ",":
+        // Separator - if we have a pending name without "as", add it
+        if (currentImportedName && !expectingLocalName) {
+          items.push({ importedName: currentImportedName, localName: currentImportedName });
+          currentImportedName = "";
+        }
+        break;
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  // Don't forget the last item if not followed by "as"
+  if (currentImportedName && !expectingLocalName) {
+    items.push({ importedName: currentImportedName, localName: currentImportedName });
   }
 }
 
@@ -954,8 +1234,13 @@ function translateTypeName(cursor: TreeCursor, ctx: TranslationContext): Type {
     return typeVarType(name);
   }
 
+  // Check imported types (from cross-file resolution)
+  const importedType = ctx.importedTypes.get(name);
+  if (importedType) {
+    return importedType;
+  }
+
   // Otherwise it's a type reference - use typeVarType as placeholder
-  // TODO: Look up in types map and resolve properly
   return unresolvedType(name);
 }
 

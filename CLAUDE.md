@@ -460,11 +460,11 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - Module resolution follows Node.js algorithm (walks up directory tree for `node_modules`)
 - Imports from `@types/*` packages get proper types
 - Export syntax works (`export const x = ...`)
+- Cross-file `.d.ts` resolution (follows `import` and re-export statements within `.d.ts` files)
 
 **Not yet supported:**
 - DepJS-to-DepJS imports
 - Multi-file compilation
-- Cross-file type resolution (following `import` statements within `.d.ts` files)
 
 ## Open Questions
 
@@ -478,9 +478,7 @@ Design decisions that can be addressed as needed:
 ### TypeScript Compatibility
 - Full type mapping table (expand spec/typescript-compat.md)
 - Handling unsupported TS features (classes, enums, decorators)
-- Cross-file `.d.ts` resolution (following imports within `.d.ts` files)
 - Mapped types (`{ [K in keyof T]: ... }`)
-- `keyof` operator
 - `typeof` in type positions
 - Template literal types
 
@@ -535,11 +533,12 @@ Design decisions that can be addressed as needed:
 - Rest parameters (`...param: Type[]`)
 - `keyof` operator (inline records resolve immediately; type references create deferred `KeyofType`)
 - Indexed access `T[K]` (inline records with literal keys resolve immediately; others create `IndexedAccessType`)
+- Cross-file resolution (follows `import` statements and re-exports within `.d.ts` files)
+- Circular dependency handling (returns empty result to break cycles)
 
 ### Not Yet Implemented
 
 **TypeScript .d.ts Loading:**
-- Cross-file type resolution (following `import` statements within `.d.ts` files)
 - Mapped types (`{ [K in keyof T]: ... }`)
 - `typeof` in type positions
 - Template literal types
