@@ -158,6 +158,56 @@ declare class Component<P, S> {
     }
   });
 
+  it("translates class with constructor as callable value", () => {
+    const result = loadDTS(`
+declare class Point {
+  x: number;
+  y: number;
+  constructor(x: number, y: number);
+  distance(): number;
+}
+`);
+
+    expect(result.errors).toHaveLength(0);
+
+    // Instance type should have fields but NOT constructor
+    const type = result.types.get("Point");
+    expect(type?.kind).toBe("record");
+    if (type?.kind === "record") {
+      expect(type.fields).toHaveLength(3);
+      expect(type.fields.map(f => f.name)).toEqual(["x", "y", "distance"]);
+    }
+
+    // Class should also be a value (constructor function)
+    const value = result.values.get("Point");
+    expect(value?.kind).toBe("function");
+    if (value?.kind === "function") {
+      // Constructor takes (number, number) and returns Point instance
+      expect(value.params).toHaveLength(2);
+      expect(value.params[0].name).toBe("x");
+      expect(value.params[1].name).toBe("y");
+      expect(value.returnType.kind).toBe("record");
+    }
+  });
+
+  it("translates class without constructor as callable with empty params", () => {
+    const result = loadDTS(`
+declare class Empty {
+  value: string;
+}
+`);
+
+    expect(result.errors).toHaveLength(0);
+
+    // Should still have a constructor value with empty params
+    const value = result.values.get("Empty");
+    expect(value?.kind).toBe("function");
+    if (value?.kind === "function") {
+      expect(value.params).toHaveLength(0);
+      expect(value.returnType.kind).toBe("record");
+    }
+  });
+
   it("translates namespace", () => {
     const result = loadDTS(`
 declare namespace React {

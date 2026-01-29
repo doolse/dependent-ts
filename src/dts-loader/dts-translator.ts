@@ -845,7 +845,7 @@ function translateClass(
   values: Map<string, Type>
 ): void {
   let name = "";
-  let fields: FieldInfo[] = [];
+  let classBodyResult: ClassBodyResult | null = null;
   let typeParamNames: string[] = [];
 
   cursor.firstChild();
@@ -860,16 +860,21 @@ function translateClass(
         break;
 
       case "ClassBody":
-        fields = translateClassBody(cursor, ctx);
+        classBodyResult = translateClassBody(cursor, ctx);
         break;
     }
   } while (cursor.nextSibling());
   cursor.parent();
 
-  if (name) {
-    // Store instance type
-    types.set(name, recordType(fields));
-    // TODO: Store constructor as value
+  if (name && classBodyResult) {
+    // Store instance type (the shape of instances of this class)
+    const instanceType = recordType(classBodyResult.fields);
+    types.set(name, instanceType);
+
+    // Store constructor as a function value that returns the instance type
+    // If no explicit constructor, use empty params (default constructor)
+    const constructorParams = classBodyResult.constructorParams ?? [];
+    values.set(name, functionType(constructorParams, instanceType));
   }
 }
 
@@ -1257,10 +1262,22 @@ function translatePropertyType(cursor: TreeCursor, ctx: TranslationContext): Fie
 }
 
 /**
- * Translate class body to fields
+ * Result of translating a class body
  */
-function translateClassBody(cursor: TreeCursor, ctx: TranslationContext): FieldInfo[] {
+interface ClassBodyResult {
+  /** Instance fields and methods (excludes constructor) */
+  fields: FieldInfo[];
+  /** Constructor parameters, if a constructor was declared */
+  constructorParams: ParamInfo[] | null;
+}
+
+/**
+ * Translate class body to fields and constructor info
+ */
+function translateClassBody(cursor: TreeCursor, ctx: TranslationContext): ClassBodyResult {
   const fields: FieldInfo[] = [];
+  let constructorParams: ParamInfo[] | null = null;
+
   cursor.firstChild();
   do {
     switch (cursor.name) {
@@ -1270,13 +1287,17 @@ function translateClassBody(cursor: TreeCursor, ctx: TranslationContext): FieldI
         break;
 
       case "MethodDeclaration":
-        const methodField = translateMethodDeclaration(cursor, ctx);
-        if (methodField) fields.push(methodField);
+        const methodResult = translateMethodDeclarationOrConstructor(cursor, ctx);
+        if (methodResult.isConstructor) {
+          constructorParams = methodResult.params;
+        } else if (methodResult.field) {
+          fields.push(methodResult.field);
+        }
         break;
     }
   } while (cursor.nextSibling());
   cursor.parent();
-  return fields;
+  return { fields, constructorParams };
 }
 
 /**
@@ -1308,9 +1329,18 @@ function translatePropertyDeclaration(cursor: TreeCursor, ctx: TranslationContex
 }
 
 /**
- * Translate method declaration to FieldInfo
+ * Result of translating a method declaration
  */
-function translateMethodDeclaration(cursor: TreeCursor, ctx: TranslationContext): FieldInfo | null {
+interface MethodResult {
+  isConstructor: boolean;
+  field: FieldInfo | null;
+  params: ParamInfo[];
+}
+
+/**
+ * Translate method declaration to FieldInfo, or extract constructor params
+ */
+function translateMethodDeclarationOrConstructor(cursor: TreeCursor, ctx: TranslationContext): MethodResult {
   let name = "";
   let params: ParamInfo[] = [];
   let returnType: Type = primitiveType("Void");
@@ -1334,15 +1364,24 @@ function translateMethodDeclaration(cursor: TreeCursor, ctx: TranslationContext)
   } while (cursor.nextSibling());
   cursor.parent();
 
+  // Constructor is special - return its params but don't add as field
+  if (name === "constructor") {
+    return { isConstructor: true, field: null, params };
+  }
+
   if (name) {
     return {
-      name,
-      type: functionType(params, returnType),
-      optional: false,
-      annotations: [],
+      isConstructor: false,
+      field: {
+        name,
+        type: functionType(params, returnType),
+        optional: false,
+        annotations: [],
+      },
+      params: [],
     };
   }
-  return null;
+  return { isConstructor: false, field: null, params: [] };
 }
 
 /**

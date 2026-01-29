@@ -468,7 +468,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 
 ## Current Focus
 
-- **Mapped types** (`{ [K in keyof T]: ... }`) - Enables type-level transformations like `Pick`, `Omit`, `Partial`
+- **`typeof` in type positions** - Would allow `type T = typeof someValue` patterns for TypeScript compatibility
 
 ## Open Questions
 
@@ -538,11 +538,11 @@ Design decisions that can be addressed as needed:
 - Indexed access `T[K]` (inline records with literal keys resolve immediately; others create `IndexedAccessType`)
 - Cross-file resolution (follows `import` statements and re-exports within `.d.ts` files)
 - Circular dependency handling (returns empty result to break cycles)
+- Mapped types (`{ [K in keyof T]: ... }`) with modifier support (`-?`, `+?`, `readonly`, `-readonly`)
 
 ### Not Yet Implemented
 
 **TypeScript .d.ts Loading:**
-- Mapped types (`{ [K in keyof T]: ... }`)
 - `typeof` in type positions
 - Template literal types
 - Class declarations (partial - treated as record types)
