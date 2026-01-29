@@ -185,6 +185,15 @@ export function isSubtype(sub: Type, sup: Type): boolean {
            typesEqual(subBase.indexType, supBase.indexType);
   }
 
+  // Mapped types: check structural equality
+  if (subBase.kind === "mapped" && supBase.kind === "mapped") {
+    return subBase.keyVar === supBase.keyVar &&
+           typesEqual(subBase.keyDomain, supBase.keyDomain) &&
+           typesEqual(subBase.valueType, supBase.valueType) &&
+           subBase.optional === supBase.optional &&
+           subBase.readonly === supBase.readonly;
+  }
+
   return false;
 }
 
@@ -541,6 +550,15 @@ export function typesEqual(a: Type, b: Type): boolean {
     case "boundedType": {
       const bBounded = bBase as typeof aBase;
       return typesEqual(aBase.bound, bBounded.bound);
+    }
+
+    case "mapped": {
+      const bMapped = bBase as typeof aBase;
+      return aBase.keyVar === bMapped.keyVar &&
+             typesEqual(aBase.keyDomain, bMapped.keyDomain) &&
+             typesEqual(aBase.valueType, bMapped.valueType) &&
+             aBase.optional === bMapped.optional &&
+             aBase.readonly === bMapped.readonly;
     }
   }
 }

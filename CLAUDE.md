@@ -466,11 +466,15 @@ Create additional spec files as topics are discussed and decided. Don't create p
 - DepJS-to-DepJS imports
 - Multi-file compilation
 
+## Current Focus
+
+- **Mapped types** (`{ [K in keyof T]: ... }`) - Enables type-level transformations like `Pick`, `Omit`, `Partial`
+
 ## Open Questions
 
 Design decisions that can be addressed as needed:
 
-### Module System
+### Module System (Low Priority)
 - DepJS-to-DepJS imports
 - Multi-file compilation model
 - Module resolution algorithm
@@ -478,7 +482,6 @@ Design decisions that can be addressed as needed:
 ### TypeScript Compatibility
 - Full type mapping table (expand spec/typescript-compat.md)
 - Handling unsupported TS features (classes, enums, decorators)
-- Mapped types (`{ [K in keyof T]: ... }`)
 - `typeof` in type positions
 - Template literal types
 

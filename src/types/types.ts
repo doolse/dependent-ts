@@ -56,6 +56,7 @@ export type ParamInfo = {
 export type TypeMetadata = {
   name?: string;
   typeArgs?: Type[];
+  typeParams?: string[]; // Parameter names for generic types (e.g., ["T", "U"] for Container<T, U>)
   annotations?: TypedAnnotation[];
 };
 
@@ -76,7 +77,8 @@ export type Type =
   | WithMetadataType
   | BoundedTypeType
   | KeyofType
-  | IndexedAccessType;
+  | IndexedAccessType
+  | MappedType;
 
 export type PrimitiveType = {
   kind: "primitive";
@@ -181,6 +183,19 @@ export type IndexedAccessType = {
   kind: "indexedAccess";
   objectType: Type;
   indexType: Type;
+};
+
+/**
+ * Mapped type - represents `{ [K in Domain]: ValueType }`.
+ * Used for type transformations like Partial<T>, Required<T>, Pick<T, K>.
+ */
+export type MappedType = {
+  kind: "mapped";
+  keyVar: string;           // The key variable name (e.g., "K")
+  keyDomain: Type;          // The domain to iterate over (e.g., keyof T)
+  valueType: Type;          // The value type expression (may reference keyVar)
+  optional?: "add" | "remove" | "preserve"; // Modifier for optionality (+?, -?, ?)
+  readonly?: "add" | "remove" | "preserve"; // Modifier for readonly (+readonly, -readonly)
 };
 
 // ============================================
@@ -340,6 +355,22 @@ export function indexedAccessType(objectType: Type, indexType: Type): IndexedAcc
   return { kind: "indexedAccess", objectType, indexType };
 }
 
+export function mappedType(
+  keyVar: string,
+  keyDomain: Type,
+  valueType: Type,
+  options: { optional?: "add" | "remove" | "preserve"; readonly?: "add" | "remove" | "preserve" } = {}
+): MappedType {
+  return {
+    kind: "mapped",
+    keyVar,
+    keyDomain,
+    valueType,
+    optional: options.optional,
+    readonly: options.readonly,
+  };
+}
+
 // ============================================
 // Built-in primitive types
 // ============================================
@@ -404,6 +435,8 @@ export function containsTypeType(t: Type): boolean {
       return containsTypeType(t.operand);
     case "indexedAccess":
       return containsTypeType(t.objectType) || containsTypeType(t.indexType);
+    case "mapped":
+      return containsTypeType(t.keyDomain) || containsTypeType(t.valueType);
   }
 }
 
@@ -487,7 +520,226 @@ export function substituteThis(type: Type, receiverType: Type): Type {
         substituteThis(type.objectType, receiverType),
         substituteThis(type.indexType, receiverType)
       );
+    case "mapped":
+      return mappedType(
+        type.keyVar,
+        substituteThis(type.keyDomain, receiverType),
+        substituteThis(type.valueType, receiverType),
+        { optional: type.optional, readonly: type.readonly }
+      );
   }
+}
+
+/**
+ * Substitute type variables with concrete types.
+ * Used for instantiating generic types.
+ */
+export function substituteTypeVars(
+  type: Type,
+  substitutions: Map<string, Type>
+): Type {
+  if (substitutions.size === 0) return type;
+
+  switch (type.kind) {
+    case "typeVar":
+      return substitutions.get(type.name) ?? type;
+
+    case "primitive":
+    case "literal":
+    case "this":
+      return type;
+
+    case "record":
+      return recordType(
+        type.fields.map((f) => ({
+          ...f,
+          type: substituteTypeVars(f.type, substitutions),
+        })),
+        {
+          indexType: type.indexType
+            ? substituteTypeVars(type.indexType, substitutions)
+            : undefined,
+          closed: type.closed,
+        }
+      );
+
+    case "function":
+      return functionType(
+        type.params.map((p) => ({
+          ...p,
+          type: substituteTypeVars(p.type, substitutions),
+        })),
+        substituteTypeVars(type.returnType, substitutions),
+        type.async
+      );
+
+    case "array":
+      return arrayTypeFromElements(
+        type.elements.map((e) => ({
+          ...e,
+          type: substituteTypeVars(e.type, substitutions),
+        }))
+      );
+
+    case "union":
+      return unionType(type.types.map((t) => substituteTypeVars(t, substitutions)));
+
+    case "intersection":
+      return intersectionType(
+        type.types.map((t) => substituteTypeVars(t, substitutions))
+      );
+
+    case "branded":
+      return brandedType(
+        substituteTypeVars(type.baseType, substitutions),
+        type.brand,
+        type.name
+      );
+
+    case "withMetadata":
+      return withMetadata(
+        substituteTypeVars(type.baseType, substitutions),
+        {
+          ...type.metadata,
+          typeArgs: type.metadata.typeArgs?.map((t) =>
+            substituteTypeVars(t, substitutions)
+          ),
+        }
+      );
+
+    case "boundedType":
+      return boundedType(substituteTypeVars(type.bound, substitutions));
+
+    case "keyof":
+      return keyofType(substituteTypeVars(type.operand, substitutions));
+
+    case "indexedAccess": {
+      const substitutedObject = substituteTypeVars(type.objectType, substitutions);
+      const substitutedIndex = substituteTypeVars(type.indexType, substitutions);
+
+      // Try to resolve if object is a record and index is a literal
+      if (substitutedObject.kind === "record" && substitutedIndex.kind === "literal" && substitutedIndex.baseType === "String") {
+        const fieldName = substitutedIndex.value as string;
+        const field = substitutedObject.fields.find(f => f.name === fieldName);
+        if (field) {
+          return field.type;
+        }
+        // Field not found - check index type
+        if (substitutedObject.indexType) {
+          return substitutedObject.indexType;
+        }
+        return primitiveType("Never");
+      }
+
+      return indexedAccessType(substitutedObject, substitutedIndex);
+    }
+
+    case "mapped": {
+      // Substitute in both key domain and value type
+      const substitutedDomain = substituteTypeVars(type.keyDomain, substitutions);
+      const substitutedValue = substituteTypeVars(type.valueType, substitutions);
+
+      // Try to resolve the mapped type if the domain is now concrete
+      const resolved = resolveMappedType(
+        type.keyVar,
+        substitutedDomain,
+        substitutedValue,
+        type.optional,
+        type.readonly
+      );
+      return resolved;
+    }
+  }
+}
+
+/**
+ * Try to resolve a mapped type to a concrete record type.
+ * If the key domain is a concrete set of string literals, we can expand it.
+ * Otherwise, returns a MappedType for deferred resolution.
+ */
+function resolveMappedType(
+  keyVar: string,
+  keyDomain: Type,
+  valueType: Type,
+  optional?: "add" | "remove" | "preserve",
+  readonly?: "add" | "remove" | "preserve"
+): Type {
+  // If keyDomain is a keyof on a record, compute the keys
+  if (keyDomain.kind === "keyof" && keyDomain.operand.kind === "record") {
+    const recordOperand = keyDomain.operand;
+    const fields: FieldInfo[] = [];
+
+    for (const field of recordOperand.fields) {
+      // Substitute keyVar with the field name literal in valueType
+      const keyLiteral = literalType(field.name, "String");
+      const subs = new Map<string, Type>([[keyVar, keyLiteral]]);
+      const resolvedValueType = substituteTypeVars(valueType, subs);
+
+      // Determine optionality
+      let isOptional = field.optional;
+      if (optional === "add") isOptional = true;
+      if (optional === "remove") isOptional = false;
+
+      fields.push({
+        name: field.name,
+        type: resolvedValueType,
+        optional: isOptional,
+        annotations: [],
+      });
+    }
+
+    return recordType(fields);
+  }
+
+  // If keyDomain is a union of string literals, expand
+  const keys = extractStringLiterals(keyDomain);
+  if (keys !== null) {
+    const fields: FieldInfo[] = [];
+
+    for (const key of keys) {
+      const keyLiteral = literalType(key, "String");
+      const subs = new Map<string, Type>([[keyVar, keyLiteral]]);
+      const resolvedValueType = substituteTypeVars(valueType, subs);
+
+      const isOptional = optional === "add";
+
+      fields.push({
+        name: key,
+        type: resolvedValueType,
+        optional: isOptional,
+        annotations: [],
+      });
+    }
+
+    return recordType(fields);
+  }
+
+  // Can't resolve - return a mapped type
+  return mappedType(keyVar, keyDomain, valueType, { optional, readonly });
+}
+
+/**
+ * Extract string literal values from a type if it's a union of string literals.
+ * Returns null if the type is not a concrete set of string literals.
+ */
+function extractStringLiterals(type: Type): string[] | null {
+  if (type.kind === "literal" && type.baseType === "String") {
+    return [type.value as string];
+  }
+
+  if (type.kind === "union") {
+    const results: string[] = [];
+    for (const member of type.types) {
+      if (member.kind === "literal" && member.baseType === "String") {
+        results.push(member.value as string);
+      } else {
+        return null; // Not all members are string literals
+      }
+    }
+    return results;
+  }
+
+  return null;
 }
 
 /**
@@ -524,5 +776,7 @@ export function containsThis(type: Type): boolean {
       return containsThis(type.operand);
     case "indexedAccess":
       return containsThis(type.objectType) || containsThis(type.indexType);
+    case "mapped":
+      return containsThis(type.keyDomain) || containsThis(type.valueType);
   }
 }

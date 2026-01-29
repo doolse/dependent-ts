@@ -5,7 +5,7 @@
  */
 
 import { Tree, TreeCursor } from "@lezer/common";
-import { Type, primitiveType, recordType, unionType, intersectionType, functionType, arrayType, literalType, FieldInfo, ParamInfo, typeVarType, PrimitiveName, keyofType, indexedAccessType } from "../types/types";
+import { Type, primitiveType, recordType, unionType, intersectionType, functionType, arrayType, literalType, FieldInfo, ParamInfo, typeVarType, PrimitiveName, keyofType, indexedAccessType, withMetadata, getMetadata, unwrapMetadata, substituteTypeVars, mappedType, MappedType } from "../types/types";
 import { computeKeyofRecord } from "../types/subtype";
 import { parseDTS, getText, findChild } from "./dts-parser";
 
@@ -60,6 +60,8 @@ interface TranslationContext {
   importedTypes: Map<string, Type>;
   /** Values imported from other modules (name -> type) */
   importedValues: Map<string, Type>;
+  /** Types defined locally in this file (for generic instantiation) */
+  localTypes: Map<string, Type>;
 }
 
 /**
@@ -120,6 +122,9 @@ function addValue(values: Map<string, Type>, name: string, newType: Type): void 
  */
 export function loadDTS(content: string, options?: DTSLoadOptions): DTSLoadResult {
   const tree = parseDTS(content);
+  const types = new Map<string, Type>();
+  const values = new Map<string, Type>();
+
   const ctx: TranslationContext = {
     typeParams: new Map(),
     inferVars: new Map(),
@@ -129,10 +134,8 @@ export function loadDTS(content: string, options?: DTSLoadOptions): DTSLoadResul
     resolver: options?.resolver,
     importedTypes: new Map(),
     importedValues: new Map(),
+    localTypes: types, // Share the same map so we can look up types as they're defined
   };
-
-  const types = new Map<string, Type>();
-  const values = new Map<string, Type>();
 
   const cursor = tree.cursor();
   if (cursor.firstChild()) {
@@ -629,11 +632,18 @@ function translateTypeAlias(
   } while (cursor.nextSibling());
   cursor.parent();
 
+  // Clear type params from scope after translating body
+  for (const param of typeParamNames) {
+    ctx.typeParams.delete(param);
+  }
+
   if (name && bodyType) {
-    // If it has type params, it's a generic type (function from types to type)
-    // For now, store the body type directly
-    // TODO: Create a type function for generics
-    types.set(name, bodyType);
+    // If it has type params, wrap with metadata to enable instantiation
+    if (typeParamNames.length > 0) {
+      types.set(name, withMetadata(bodyType, { name, typeParams: typeParamNames }));
+    } else {
+      types.set(name, bodyType);
+    }
   }
 }
 
@@ -667,8 +677,19 @@ function translateInterface(
   } while (cursor.nextSibling());
   cursor.parent();
 
+  // Clear type params from scope after translating body
+  for (const param of typeParamNames) {
+    ctx.typeParams.delete(param);
+  }
+
   if (name) {
-    types.set(name, recordType(fields));
+    const baseType = recordType(fields);
+    // If it has type params, wrap with metadata to enable instantiation
+    if (typeParamNames.length > 0) {
+      types.set(name, withMetadata(baseType, { name, typeParams: typeParamNames }));
+    } else {
+      types.set(name, baseType);
+    }
   }
 }
 
@@ -1005,6 +1026,60 @@ function translateTypeAnnotation(cursor: TreeCursor, ctx: TranslationContext): T
 }
 
 /**
+ * Translate object type as a Type (handles both records and mapped types)
+ */
+function translateObjectTypeAsType(cursor: TreeCursor, ctx: TranslationContext): Type {
+  // First, check if this is a mapped type
+  // Mapped types can appear as:
+  // 1. IndexSignature with "in" keyword: { [K in keyof T]: T[K] }
+  // 2. PropertyType with BinaryExpression containing "in": { [P in K]: T[P] }
+  cursor.firstChild();
+  let isMapped = false;
+
+  do {
+    if (cursor.name === "IndexSignature") {
+      // Check if this IndexSignature has an "in" keyword (mapped type)
+      cursor.firstChild();
+      do {
+        if (cursor.name === "in") {
+          isMapped = true;
+          break;
+        }
+      } while (cursor.nextSibling());
+      cursor.parent();
+      if (isMapped) break;
+    }
+
+    if (cursor.name === "PropertyType") {
+      // Check for PropertyType with [P in K] syntax (BinaryExpression with "in")
+      cursor.firstChild();
+      do {
+        if (cursor.name === "BinaryExpression") {
+          cursor.firstChild();
+          do {
+            if (cursor.name === "in") {
+              isMapped = true;
+              break;
+            }
+          } while (cursor.nextSibling());
+          cursor.parent();
+        }
+      } while (cursor.nextSibling() && !isMapped);
+      cursor.parent();
+      if (isMapped) break;
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  if (isMapped) {
+    return translateMappedType(cursor, ctx);
+  }
+
+  // Regular record type
+  return recordType(translateObjectType(cursor, ctx));
+}
+
+/**
  * Translate object type to fields
  */
 function translateObjectType(cursor: TreeCursor, ctx: TranslationContext): FieldInfo[] {
@@ -1015,10 +1090,137 @@ function translateObjectType(cursor: TreeCursor, ctx: TranslationContext): Field
       const field = translatePropertyType(cursor, ctx);
       if (field) fields.push(field);
     }
-    // TODO: Handle MethodType, IndexSignature
+    // Note: IndexSignature is handled separately for mapped types
   } while (cursor.nextSibling());
   cursor.parent();
   return fields;
+}
+
+/**
+ * Translate a mapped type: { [K in Domain]: ValueType }
+ *
+ * Two AST forms:
+ * 1. IndexSignature: { [K in keyof T]?: T[K] }
+ * 2. PropertyType with BinaryExpression: { [P in K]: T[P] }
+ */
+function translateMappedType(cursor: TreeCursor, ctx: TranslationContext): Type {
+  let keyVar = "";
+  let keyDomain: Type | null = null;
+  let valueType: Type | null = null;
+  let optionalMod: "add" | "remove" | "preserve" | undefined;
+  let readonlyMod: "add" | "remove" | "preserve" | undefined;
+
+  cursor.firstChild();
+  do {
+    if (cursor.name === "IndexSignature") {
+      // Form 1: IndexSignature with in keyword
+      cursor.firstChild();
+      let sawIn = false;
+      let hasOptional = false;
+      let hasReadonly = false;
+      let hasMinus = false;
+      let hasPlus = false;
+
+      do {
+        switch (cursor.name) {
+          case "readonly":
+            hasReadonly = true;
+            break;
+
+          case "PropertyDefinition":
+            // This is the key variable (K)
+            keyVar = getText(cursor, ctx.source);
+            // Add to type params so it can be used in the value type
+            ctx.typeParams.set(keyVar, -2); // Use -2 to mark as mapped key var
+            break;
+
+          case "in":
+            sawIn = true;
+            break;
+
+          case "ArithOp":
+            // Check for +/- modifiers before ? or readonly
+            const opText = getText(cursor, ctx.source);
+            if (opText === "-") hasMinus = true;
+            if (opText === "+") hasPlus = true;
+            break;
+
+          case "Optional":
+            hasOptional = true;
+            break;
+
+          case "TypeAnnotation":
+            valueType = translateTypeAnnotation(cursor, ctx);
+            break;
+
+          default:
+            // After "in", the next type is the key domain
+            if (sawIn && !keyDomain) {
+              const translated = translateType(cursor, ctx);
+              if (translated) keyDomain = translated;
+            }
+            break;
+        }
+      } while (cursor.nextSibling());
+      cursor.parent();
+
+      // Determine optional modifier
+      if (hasOptional) {
+        optionalMod = hasMinus ? "remove" : "add";
+      }
+
+      // Determine readonly modifier
+      if (hasReadonly) {
+        readonlyMod = hasMinus ? "remove" : "add";
+      }
+    }
+
+    if (cursor.name === "PropertyType") {
+      // Form 2: PropertyType with BinaryExpression containing "in"
+      cursor.firstChild();
+      do {
+        if (cursor.name === "BinaryExpression") {
+          // Parse [P in K] - BinaryExpression: VariableName "in" VariableName/TypeName
+          cursor.firstChild();
+          let sawIn = false;
+          do {
+            if (cursor.name === "VariableName") {
+              if (!sawIn) {
+                keyVar = getText(cursor, ctx.source);
+                ctx.typeParams.set(keyVar, -2);
+              } else {
+                // This is the key domain (could be a type variable)
+                const domainName = getText(cursor, ctx.source);
+                keyDomain = typeVarType(domainName);
+              }
+            }
+            if (cursor.name === "in") {
+              sawIn = true;
+            }
+          } while (cursor.nextSibling());
+          cursor.parent();
+        }
+
+        if (cursor.name === "TypeAnnotation") {
+          valueType = translateTypeAnnotation(cursor, ctx);
+        }
+      } while (cursor.nextSibling());
+      cursor.parent();
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  // Remove key var from type params
+  if (keyVar) {
+    ctx.typeParams.delete(keyVar);
+  }
+
+  if (!keyVar || !keyDomain || !valueType) {
+    // Failed to parse - return Unknown
+    return primitiveType("Unknown");
+  }
+
+  return mappedType(keyVar, keyDomain, valueType, { optional: optionalMod, readonly: readonlyMod });
 }
 
 /**
@@ -1158,7 +1360,7 @@ function translateType(cursor: TreeCursor, ctx: TranslationContext): Type | null
       return translateIntersectionType(cursor, ctx);
 
     case "ObjectType":
-      return recordType(translateObjectType(cursor, ctx));
+      return translateObjectTypeAsType(cursor, ctx);
 
     case "ArrayType":
       return translateArrayType(cursor, ctx);
@@ -1238,6 +1440,18 @@ function translateTypeName(cursor: TreeCursor, ctx: TranslationContext): Type {
   const importedType = ctx.importedTypes.get(name);
   if (importedType) {
     return importedType;
+  }
+
+  // Check local types (for non-generic type references)
+  const localType = ctx.localTypes.get(name);
+  if (localType) {
+    const metadata = getMetadata(localType);
+    // If it's a generic type (has typeParams), don't return it directly
+    // It needs to be instantiated via translateParameterizedType
+    if (!metadata?.typeParams || metadata.typeParams.length === 0) {
+      return localType;
+    }
+    // Generic type used without type args - return the body as-is (like TypeScript allows)
   }
 
   // Otherwise it's a type reference - use typeVarType as placeholder
@@ -1367,8 +1581,32 @@ function translateParameterizedType(cursor: TreeCursor, ctx: TranslationContext)
     return arrayType([typeArgs[0]], true); // Variable-length array
   }
 
-  // Generic parameterized type - use typeVarType with descriptive name for now
-  // TODO: Create proper parameterized type with type args
+  // Look up the generic type in local types, imported types, or context
+  const genericType = ctx.localTypes.get(baseName) ?? ctx.importedTypes.get(baseName);
+
+  if (genericType) {
+    const metadata = getMetadata(genericType);
+    if (metadata?.typeParams && metadata.typeParams.length > 0) {
+      // It's a generic type - instantiate it with the provided type arguments
+      if (typeArgs.length === metadata.typeParams.length) {
+        const substitutions = new Map<string, Type>();
+        for (let i = 0; i < typeArgs.length; i++) {
+          substitutions.set(metadata.typeParams[i], typeArgs[i]);
+        }
+        // Substitute type vars in the body and return
+        const bodyType = unwrapMetadata(genericType);
+        return substituteTypeVars(bodyType, substitutions);
+      }
+      // Wrong number of type arguments - return as unresolved with descriptive name
+    }
+    // Not a generic type or wrong arity - check if it needs type args
+    if (!metadata?.typeParams || metadata.typeParams.length === 0) {
+      // Non-generic type used with type args - just return the base type
+      return genericType;
+    }
+  }
+
+  // Fallback: unresolved generic type
   const typeName = `${baseName}<${typeArgs.map(formatTypeSimple).join(", ")}>`;
   return unresolvedType(typeName);
 }

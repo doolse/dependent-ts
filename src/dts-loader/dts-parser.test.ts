@@ -180,4 +180,19 @@ declare function useState<S = undefined>(): [S | undefined, (s: S | undefined) =
     console.log("\n=== Overloaded Functions ===");
     printTree(tree, source);
   });
+
+  it("parses mapped types", () => {
+    const source = `type Partial<T> = { [K in keyof T]?: T[K] };
+type Readonly<T> = { readonly [K in keyof T]: T[K] };`;
+    const tree = parseDTS(source);
+    console.log("\n=== Mapped Types ===");
+    printTree(tree, source);
+  });
+
+  it("parses Required mapped type with -?", () => {
+    const source = `type Required<T> = { [K in keyof T]-?: T[K] };`;
+    const tree = parseDTS(source);
+    console.log("\n=== Required Mapped Type ===");
+    printTree(tree, source);
+  });
 });

@@ -1,7 +1,7 @@
 import { describe, it, expect } from "vitest";
 import { loadDTS, DTSLoadResult, ModuleTypeResolver } from "./dts-translator";
 import { formatType } from "../types/format";
-import { primitiveType, recordType, functionType } from "../types/types";
+import { primitiveType, recordType, functionType, unwrapMetadata } from "../types/types";
 
 describe("DTS Translator", () => {
   it("translates primitive type aliases", () => {
@@ -184,9 +184,12 @@ declare namespace React {
 
     expect(result.errors).toHaveLength(0);
     const type = result.types.get("Container");
-    expect(type?.kind).toBe("record");
-    if (type?.kind === "record") {
-      const valueField = type.fields.find(f => f.name === "value");
+    // Generic type is wrapped in withMetadata with typeParams
+    expect(type?.kind).toBe("withMetadata");
+    const unwrapped = type ? unwrapMetadata(type) : null;
+    expect(unwrapped?.kind).toBe("record");
+    if (unwrapped?.kind === "record") {
+      const valueField = unwrapped.fields.find(f => f.name === "value");
       expect(valueField?.type.kind).toBe("typeVar");
     }
   });
@@ -197,8 +200,11 @@ declare namespace React {
     // No errors - we now handle conditional types
     expect(result.errors).toHaveLength(0);
     const type = result.types.get("IsString");
+    // Generic type is wrapped in withMetadata
+    expect(type?.kind).toBe("withMetadata");
+    const unwrapped = type ? unwrapMetadata(type) : null;
     // Returns union of both branches for general case
-    expect(type?.kind).toBe("union");
+    expect(unwrapped?.kind).toBe("union");
   });
 
   it("handles conditional types with infer", () => {
@@ -206,10 +212,13 @@ declare namespace React {
 
     expect(result.errors).toHaveLength(0);
     const type = result.types.get("ReturnType");
+    // Generic type is wrapped in withMetadata
+    expect(type?.kind).toBe("withMetadata");
+    const unwrapped = type ? unwrapMetadata(type) : null;
     // When false branch is never, we return the true branch (the inferred type)
-    expect(type?.kind).toBe("typeVar");
-    if (type?.kind === "typeVar") {
-      expect(type.name).toBe("R");
+    expect(unwrapped?.kind).toBe("typeVar");
+    if (unwrapped?.kind === "typeVar") {
+      expect(unwrapped.name).toBe("R");
     }
   });
 
@@ -239,9 +248,9 @@ type Nested = {
     }
   });
 
-  it("translates keyof on type reference as deferred keyof", () => {
-    // Note: At translation time, type references (like Person) are unresolved.
-    // The keyof is kept as a deferred KeyofType to be resolved during type checking.
+  it("translates keyof on type reference as resolved union", () => {
+    // Note: Since local types are now resolved during translation,
+    // keyof on a locally-defined interface resolves immediately.
     const result = loadDTS(`
 interface Person {
   name: string;
@@ -252,11 +261,15 @@ type PersonKeys = keyof Person;
 
     expect(result.errors).toHaveLength(0);
     const type = result.types.get("PersonKeys");
-    // keyof on a type reference creates a deferred KeyofType
-    expect(type?.kind).toBe("keyof");
-    if (type?.kind === "keyof") {
-      // The operand is the unresolved "Person" type reference
-      expect(type.operand.kind).toBe("typeVar");
+    // keyof on a resolved record type gives a union of literals
+    expect(type?.kind).toBe("union");
+    if (type?.kind === "union") {
+      expect(type.types.length).toBe(2);
+      const values = type.types
+        .filter(t => t.kind === "literal")
+        .map(t => (t as { kind: "literal"; value: string }).value);
+      expect(values).toContain("name");
+      expect(values).toContain("age");
     }
   });
 
@@ -284,19 +297,22 @@ type PersonKeys = keyof { name: string; age: number };
 
     expect(result.errors).toHaveLength(0);
     const type = result.types.get("Keys");
+    // Generic type is wrapped in withMetadata
+    expect(type?.kind).toBe("withMetadata");
+    const unwrapped = type ? unwrapMetadata(type) : null;
     // keyof on a type variable should create a KeyofType
-    expect(type?.kind).toBe("keyof");
-    if (type?.kind === "keyof") {
-      expect(type.operand.kind).toBe("typeVar");
-      if (type.operand.kind === "typeVar") {
-        expect(type.operand.name).toBe("T");
+    expect(unwrapped?.kind).toBe("keyof");
+    if (unwrapped?.kind === "keyof") {
+      expect(unwrapped.operand.kind).toBe("typeVar");
+      if (unwrapped.operand.kind === "typeVar") {
+        expect(unwrapped.operand.name).toBe("T");
       }
     }
   });
 
-  it("translates indexed access on type reference as deferred", () => {
-    // Note: At translation time, type references are unresolved.
-    // Indexed access is kept as deferred to be resolved during type checking.
+  it("translates indexed access on type reference as resolved", () => {
+    // Note: Since local types are now resolved during translation,
+    // indexed access on a locally-defined interface resolves immediately.
     const result = loadDTS(`
 interface Person {
   name: string;
@@ -307,11 +323,10 @@ type PersonName = Person["name"];
 
     expect(result.errors).toHaveLength(0);
     const type = result.types.get("PersonName");
-    // Indexed access on type reference creates deferred IndexedAccessType
-    expect(type?.kind).toBe("indexedAccess");
-    if (type?.kind === "indexedAccess") {
-      expect(type.objectType.kind).toBe("typeVar"); // Unresolved Person
-      expect(type.indexType.kind).toBe("literal"); // "name" literal
+    // Indexed access on resolved record with literal key gives the field type
+    expect(type?.kind).toBe("primitive");
+    if (type?.kind === "primitive") {
+      expect(type.name).toBe("String");
     }
   });
 
@@ -334,11 +349,14 @@ type PersonName = { name: string; age: number }["name"];
 
     expect(result.errors).toHaveLength(0);
     const type = result.types.get("PropType");
+    // Generic type is wrapped in withMetadata
+    expect(type?.kind).toBe("withMetadata");
+    const unwrapped = type ? unwrapMetadata(type) : null;
     // Indexed access with type variable should create IndexedAccessType
-    expect(type?.kind).toBe("indexedAccess");
-    if (type?.kind === "indexedAccess") {
-      expect(type.objectType.kind).toBe("typeVar");
-      expect(type.indexType.kind).toBe("typeVar");
+    expect(unwrapped?.kind).toBe("indexedAccess");
+    if (unwrapped?.kind === "indexedAccess") {
+      expect(unwrapped.objectType.kind).toBe("typeVar");
+      expect(unwrapped.indexType.kind).toBe("typeVar");
     }
   });
 
@@ -356,7 +374,7 @@ type EmptyKeys = keyof {};
     }
   });
 
-  it("keeps keyof on type reference as deferred", () => {
+  it("resolves keyof on empty type reference to Never", () => {
     const result = loadDTS(`
 type Empty = {};
 type EmptyKeys = keyof Empty;
@@ -364,8 +382,11 @@ type EmptyKeys = keyof Empty;
 
     expect(result.errors).toHaveLength(0);
     const type = result.types.get("EmptyKeys");
-    // keyof on type reference (even if it's empty) is deferred
-    expect(type?.kind).toBe("keyof");
+    // keyof on resolved empty record gives Never (no keys)
+    expect(type?.kind).toBe("primitive");
+    if (type?.kind === "primitive") {
+      expect(type.name).toBe("Never");
+    }
   });
 
   // Export declaration tests
@@ -552,6 +573,263 @@ export { A, B as Beta, C };
       expect(result.types.get("A")?.kind).toBe("primitive");
       expect(result.types.get("Beta")?.kind).toBe("primitive");
       expect(result.types.get("C")?.kind).toBe("primitive");
+    });
+  });
+
+  // Mapped types tests
+  describe("mapped types", () => {
+    it("parses Partial<T> as a mapped type", () => {
+      const result = loadDTS(`type Partial<T> = { [K in keyof T]?: T[K] };`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("Partial");
+      expect(type?.kind).toBe("withMetadata");
+      const unwrapped = type ? unwrapMetadata(type) : null;
+      expect(unwrapped?.kind).toBe("mapped");
+      if (unwrapped?.kind === "mapped") {
+        expect(unwrapped.keyVar).toBe("K");
+        expect(unwrapped.keyDomain.kind).toBe("keyof");
+        expect(unwrapped.optional).toBe("add");
+      }
+    });
+
+    it("instantiates Partial<T> with concrete record type", () => {
+      const result = loadDTS(`
+type Partial<T> = { [K in keyof T]?: T[K] };
+interface Person {
+  name: string;
+  age: number;
+}
+type PartialPerson = Partial<Person>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("PartialPerson");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        expect(type.fields.length).toBe(2);
+        const nameField = type.fields.find(f => f.name === "name");
+        const ageField = type.fields.find(f => f.name === "age");
+        expect(nameField?.optional).toBe(true);
+        expect(ageField?.optional).toBe(true);
+        expect(nameField?.type.kind).toBe("primitive");
+        if (nameField?.type.kind === "primitive") {
+          expect(nameField.type.name).toBe("String");
+        }
+      }
+    });
+
+    it("parses Required<T> mapped type", () => {
+      const result = loadDTS(`type Required<T> = { [K in keyof T]-?: T[K] };`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("Required");
+      expect(type?.kind).toBe("withMetadata");
+      const unwrapped = type ? unwrapMetadata(type) : null;
+      expect(unwrapped?.kind).toBe("mapped");
+      if (unwrapped?.kind === "mapped") {
+        expect(unwrapped.keyVar).toBe("K");
+        expect(unwrapped.optional).toBe("remove");
+      }
+    });
+
+    it("parses Readonly<T> mapped type", () => {
+      const result = loadDTS(`type Readonly<T> = { readonly [K in keyof T]: T[K] };`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("Readonly");
+      expect(type?.kind).toBe("withMetadata");
+      const unwrapped = type ? unwrapMetadata(type) : null;
+      expect(unwrapped?.kind).toBe("mapped");
+      if (unwrapped?.kind === "mapped") {
+        expect(unwrapped.keyVar).toBe("K");
+        expect(unwrapped.readonly).toBe("add");
+      }
+    });
+
+    it("instantiates Pick<T, K> with concrete types", () => {
+      const result = loadDTS(`
+type Pick<T, K extends keyof T> = { [P in K]: T[P] };
+interface Person {
+  name: string;
+  age: number;
+  email: string;
+}
+type NameAndAge = Pick<Person, "name" | "age">;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("NameAndAge");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        expect(type.fields.length).toBe(2);
+        const names = type.fields.map(f => f.name).sort();
+        expect(names).toEqual(["age", "name"]);
+      }
+    });
+
+    it("handles nested mapped types", () => {
+      const result = loadDTS(`
+type Partial<T> = { [K in keyof T]?: T[K] };
+interface Nested {
+  a: string;
+  b: number;
+}
+type Container<T> = { value: Partial<T> };
+type PartialNested = Container<Nested>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("PartialNested");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        const valueField = type.fields.find(f => f.name === "value");
+        expect(valueField?.type.kind).toBe("record");
+        if (valueField?.type.kind === "record") {
+          expect(valueField.type.fields.length).toBe(2);
+          expect(valueField.type.fields.every(f => f.optional)).toBe(true);
+        }
+      }
+    });
+  });
+
+  // Generic type instantiation tests
+  describe("generic type instantiation", () => {
+    it("instantiates generic type alias with concrete type", () => {
+      const result = loadDTS(`
+type Container<T> = { value: T };
+type StringContainer = Container<string>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("StringContainer");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        expect(type.fields.length).toBe(1);
+        expect(type.fields[0].name).toBe("value");
+        expect(type.fields[0].type.kind).toBe("primitive");
+        if (type.fields[0].type.kind === "primitive") {
+          expect(type.fields[0].type.name).toBe("String");
+        }
+      }
+    });
+
+    it("instantiates generic interface with concrete type", () => {
+      const result = loadDTS(`
+interface Box<T> {
+  contents: T;
+  isEmpty: boolean;
+}
+type NumberBox = Box<number>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("NumberBox");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        expect(type.fields.length).toBe(2);
+        const contents = type.fields.find(f => f.name === "contents");
+        expect(contents?.type.kind).toBe("primitive");
+        if (contents?.type.kind === "primitive") {
+          expect(contents.type.name).toBe("Number");
+        }
+      }
+    });
+
+    it("instantiates nested generic types", () => {
+      const result = loadDTS(`
+type Wrapper<T> = { inner: T };
+type Container<T> = { value: Wrapper<T> };
+type StringContainer = Container<string>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("StringContainer");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        const valueField = type.fields.find(f => f.name === "value");
+        expect(valueField?.type.kind).toBe("record");
+        if (valueField?.type.kind === "record") {
+          const innerField = valueField.type.fields.find(f => f.name === "inner");
+          expect(innerField?.type.kind).toBe("primitive");
+          if (innerField?.type.kind === "primitive") {
+            expect(innerField.type.name).toBe("String");
+          }
+        }
+      }
+    });
+
+    it("instantiates generic type with multiple parameters", () => {
+      const result = loadDTS(`
+type Pair<A, B> = { first: A; second: B };
+type StringNumberPair = Pair<string, number>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("StringNumberPair");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        const first = type.fields.find(f => f.name === "first");
+        const second = type.fields.find(f => f.name === "second");
+        expect(first?.type.kind).toBe("primitive");
+        expect(second?.type.kind).toBe("primitive");
+        if (first?.type.kind === "primitive" && second?.type.kind === "primitive") {
+          expect(first.type.name).toBe("String");
+          expect(second.type.name).toBe("Number");
+        }
+      }
+    });
+
+    it("instantiates generic function type", () => {
+      const result = loadDTS(`
+type Callback<T, R> = (value: T) => R;
+type StringToNumber = Callback<string, number>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("StringToNumber");
+      expect(type?.kind).toBe("function");
+      if (type?.kind === "function") {
+        expect(type.params.length).toBe(1);
+        expect(type.params[0].type.kind).toBe("primitive");
+        if (type.params[0].type.kind === "primitive") {
+          expect(type.params[0].type.name).toBe("String");
+        }
+        expect(type.returnType.kind).toBe("primitive");
+        if (type.returnType.kind === "primitive") {
+          expect(type.returnType.name).toBe("Number");
+        }
+      }
+    });
+
+    it("instantiates generic union type", () => {
+      const result = loadDTS(`
+type Result<T, E> = { ok: true; value: T } | { ok: false; error: E };
+type StringResult = Result<string, Error>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("StringResult");
+      expect(type?.kind).toBe("union");
+      if (type?.kind === "union") {
+        expect(type.types.length).toBe(2);
+      }
+    });
+
+    it("preserves metadata from instantiated generic", () => {
+      const result = loadDTS(`
+type Container<T> = { value: T };
+type StringContainer = Container<string>;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      // The StringContainer itself is a non-generic type alias
+      // Container<T> is the generic that stores metadata with typeParams
+      const container = result.types.get("Container");
+      expect(container?.kind).toBe("withMetadata");
+      if (container?.kind === "withMetadata") {
+        expect(container.metadata.typeParams).toEqual(["T"]);
+      }
     });
   });
 

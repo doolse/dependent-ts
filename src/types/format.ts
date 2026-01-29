@@ -113,6 +113,11 @@ export function formatType(t: Type): string {
 
     case "indexedAccess":
       return `${formatTypeParens(base.objectType)}[${formatType(base.indexType)}]`;
+
+    case "mapped": {
+      const optMod = base.optional === "add" ? "?" : base.optional === "remove" ? "-?" : "";
+      return `{ [${base.keyVar} in ${formatType(base.keyDomain)}]${optMod}: ${formatType(base.valueType)} }`;
+    }
   }
 }
 
