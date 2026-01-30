@@ -586,6 +586,10 @@ function isRuntimeUsable(type: Type): boolean {
     case "indexedAccess":
       // Indexed access types are comptime-only (they return Type values)
       return false;
+
+    case "mapped":
+      // Mapped types are comptime-only (used for type transformations)
+      return false;
   }
 }
 

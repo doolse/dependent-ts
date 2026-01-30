@@ -1042,11 +1042,12 @@ function translateObjectTypeAsType(cursor: TreeCursor, ctx: TranslationContext):
   let isMapped = false;
 
   do {
-    if (cursor.name === "IndexSignature") {
+    const nodeName = cursor.name as string;
+    if (nodeName === "IndexSignature") {
       // Check if this IndexSignature has an "in" keyword (mapped type)
       cursor.firstChild();
       do {
-        if (cursor.name === "in") {
+        if ((cursor.name as string) === "in") {
           isMapped = true;
           break;
         }
@@ -1055,14 +1056,14 @@ function translateObjectTypeAsType(cursor: TreeCursor, ctx: TranslationContext):
       if (isMapped) break;
     }
 
-    if (cursor.name === "PropertyType") {
+    if (nodeName === "PropertyType") {
       // Check for PropertyType with [P in K] syntax (BinaryExpression with "in")
       cursor.firstChild();
       do {
-        if (cursor.name === "BinaryExpression") {
+        if ((cursor.name as string) === "BinaryExpression") {
           cursor.firstChild();
           do {
-            if (cursor.name === "in") {
+            if ((cursor.name as string) === "in") {
               isMapped = true;
               break;
             }
@@ -1117,7 +1118,8 @@ function translateMappedType(cursor: TreeCursor, ctx: TranslationContext): Type 
 
   cursor.firstChild();
   do {
-    if (cursor.name === "IndexSignature") {
+    const nodeName = cursor.name as string;
+    if (nodeName === "IndexSignature") {
       // Form 1: IndexSignature with in keyword
       cursor.firstChild();
       let sawIn = false;
@@ -1127,7 +1129,8 @@ function translateMappedType(cursor: TreeCursor, ctx: TranslationContext): Type 
       let hasPlus = false;
 
       do {
-        switch (cursor.name) {
+        const childName = cursor.name as string;
+        switch (childName) {
           case "readonly":
             hasReadonly = true;
             break;
@@ -1180,16 +1183,18 @@ function translateMappedType(cursor: TreeCursor, ctx: TranslationContext): Type 
       }
     }
 
-    if (cursor.name === "PropertyType") {
+    if (nodeName === "PropertyType") {
       // Form 2: PropertyType with BinaryExpression containing "in"
       cursor.firstChild();
       do {
-        if (cursor.name === "BinaryExpression") {
+        const propChildName = cursor.name as string;
+        if (propChildName === "BinaryExpression") {
           // Parse [P in K] - BinaryExpression: VariableName "in" VariableName/TypeName
           cursor.firstChild();
           let sawIn = false;
           do {
-            if (cursor.name === "VariableName") {
+            const binChildName = cursor.name as string;
+            if (binChildName === "VariableName") {
               if (!sawIn) {
                 keyVar = getText(cursor, ctx.source);
                 ctx.typeParams.set(keyVar, -2);
@@ -1199,14 +1204,14 @@ function translateMappedType(cursor: TreeCursor, ctx: TranslationContext): Type 
                 keyDomain = typeVarType(domainName);
               }
             }
-            if (cursor.name === "in") {
+            if (binChildName === "in") {
               sawIn = true;
             }
           } while (cursor.nextSibling());
           cursor.parent();
         }
 
-        if (cursor.name === "TypeAnnotation") {
+        if (propChildName === "TypeAnnotation") {
           valueType = translateTypeAnnotation(cursor, ctx);
         }
       } while (cursor.nextSibling());

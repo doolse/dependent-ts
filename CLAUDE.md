@@ -539,22 +539,41 @@ Design decisions that can be addressed as needed:
 - Cross-file resolution (follows `import` statements and re-exports within `.d.ts` files)
 - Circular dependency handling (returns empty result to break cycles)
 - Mapped types (`{ [K in keyof T]: ... }`) with modifier support (`-?`, `+?`, `readonly`, `-readonly`)
+- Class declarations (constructor translation to callable function type, instance type mapping)
 
 ### Not Yet Implemented
 
 **TypeScript .d.ts Loading:**
 - `typeof` in type positions
 - Template literal types
-- Class declarations (partial - treated as record types)
 
 **Module System:**
 - DepJS-to-DepJS imports
 - Multi-file compilation
 
+## Test Summary
+
+All tests passing (746 total):
+
+| Module | Tests |
+|--------|-------|
+| parser/lezer-parser | 78 |
+| dts-loader/dts-parser | 17 |
+| dts-loader/dts-translator | 64 |
+| typecheck/comptime-eval | 156 |
+| typecheck/typecheck | 277 |
+| erasure/erasure | 27 |
+| codegen/codegen | 68 |
+| types/subtype | 59 |
+
+Run tests: `npm test`
+Run single file: `npm run depjs -- path/to/file.djs`
+
 ## Examples Directory
 
 - `examples/` - Working examples demonstrating current capabilities
   - `react-import.djs` - Demonstrates importing and using React hooks with proper types
+  - `csv-types.djs` - Compile-time type derivation from CSV headers using `Comptime.readFile`
 - `examples/should-work/` - Examples demonstrating features that were previously broken but are now fixed
 
 ## Deferred to Future Versions
