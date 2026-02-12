@@ -470,6 +470,38 @@ Create additional spec files as topics are discussed and decided. Don't create p
 
 - No specific focus area at present
 
+## Blocking Issues for Working React Example
+
+A browser-runnable React app (using `jsx`/`jsxs` from `react/jsx-runtime` and `useState`) is blocked by the following issues. These were discovered while attempting to build a counter app example.
+
+### 1. DTS translator discards type parameter names on generic functions
+**Impact:** High — affects all generic .d.ts-imported functions
+**Location:** `src/dts-loader/dts-translator.ts`, `translateFunctionDeclaration` (~line 806)
+**Details:** When translating `declare function useState<S>(initialState: S | (() => S)): [S, Dispatch<SetStateAction<S>>]`, the function extracts `typeParamNames` but creates a bare `functionType(params, returnType)` without attaching them. Compare with type alias translation (~line 645) which correctly wraps with `withMetadata(bodyType, { name, typeParams: typeParamNames })`. Without the type parameter metadata, the type checker has no way to know which TypeVars in the signature are generic parameters.
+
+### 2. Type checker doesn't infer type arguments during .d.ts function calls
+**Impact:** High — affects all generic .d.ts-imported functions
+**Location:** `src/typecheck/typecheck.ts`, `tryMatchSignature` (~line 1132)
+**Details:** When checking `useState(0)`, `tryMatchSignature` checks `isSubtype(Int, S)` which passes (because `subtype.ts` has a rule that any type satisfies an unbounded TypeVar), but it **doesn't collect the mapping** `S → Int`. It only checks "does it match?" not "what did S resolve to?". For DepJS-defined generics this works because desugaring turns `<T>(x: T)` into `(x: T, T: Type = typeOf(x))` — the type parameter becomes a value parameter. But .d.ts imports bypass that desugaring entirely and need explicit type argument inference.
+
+### 3. Type checker doesn't instantiate return types with inferred type arguments
+**Impact:** High — follows from #2
+**Location:** `src/typecheck/typecheck.ts`, `checkOverloadedCall` (~line 1025)
+**Details:** The return type `[S, Dispatch<SetStateAction<S>>]` is returned directly without substitution. Even if Gap #2 were fixed and we had the mapping `S → Int`, there's no call to `substituteTypeVars(returnType, {S: Int})`. The `substituteTypeVars` function already exists in `src/types/types.ts` (~line 537) — it just needs to be wired into the call path.
+
+### 4. Parameterized type aliases from .d.ts are not expanded
+**Impact:** High — affects any .d.ts type alias referenced with type arguments
+**Location:** `src/dts-loader/dts-translator.ts`, `translateParameterizedType`
+**Details:** When the DTS translator encounters `Dispatch<SetStateAction<S>>`, `Dispatch` and `SetStateAction` are type aliases defined elsewhere in React's types. Instead of resolving them to their underlying types, they end up as opaque `typeVar` nodes with the full parameterized name as a string (e.g., `typeVar("Dispatch<SetStateAction<S>>")`). This means they can't be recognized as callable, intersected, or structurally compared. The fix requires the translator to look up and instantiate type aliases when they're referenced with type arguments.
+
+### 5. Namespace member types from .d.ts are not resolved
+**Impact:** Medium — affects .d.ts files that use `import * as Ns from "..."`
+**Location:** `src/dts-loader/dts-translator.ts`
+**Details:** When a `.d.ts` file does `import * as React from "./"` and then references `React.ElementType`, this becomes an unresolved `IndexedAccessType(typeVar("React"), typeVar("ElementType"))`. The DTS loader doesn't resolve these namespace member references to concrete types during translation. This affects `react/jsx-runtime` where all parameter/return types reference the React namespace.
+
+### Fix order
+Gaps 1-3 form a chain: attach type params to functions (#1), collect type argument mappings during call checking (#2), substitute into return types (#3). Gap 4 (alias expansion) is independent but equally important for real-world .d.ts files. Gap 5 is lower priority since it primarily affects subpath modules like `react/jsx-runtime`.
+
 ## Open Questions
 
 Design decisions that can be addressed as needed:
@@ -552,13 +584,13 @@ Design decisions that can be addressed as needed:
 
 ## Test Summary
 
-All tests passing (746 total):
+All tests passing (752 total):
 
 | Module | Tests |
 |--------|-------|
 | parser/lezer-parser | 78 |
 | dts-loader/dts-parser | 17 |
-| dts-loader/dts-translator | 64 |
+| dts-loader/dts-translator | 70 |
 | typecheck/comptime-eval | 156 |
 | typecheck/typecheck | 277 |
 | erasure/erasure | 27 |

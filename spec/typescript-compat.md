@@ -900,7 +900,7 @@ Effects (file I/O, console, network) happen at runtime. DepJS treats imported fu
 | Index signatures     | Supported | Via `RecordType([], valueType)`                |
 | Union types          | Supported | Direct mapping                                 |
 | Intersection types   | Supported | Same `&` syntax                                |
-| Generic types        | Supported | Direct mapping                                 |
+| Generic types        | Partial   | DepJS-defined generics work; .d.ts generic function calls don't infer type arguments (see below) |
 | Generic constraints  | Supported | Via `Type<Bound>` bounded type parameter       |
 | Default type params  | Supported | Via generics desugaring                        |
 | Mapped types         | Supported | Via first-class type functions                 |
@@ -909,7 +909,7 @@ Effects (file I/O, console, network) happen at runtime. DepJS treats imported fu
 | Template literals    | Out of scope | String refinements; error on `.d.ts` import    |
 | `infer` keyword      | Supported | Via `.returnType`, `.elementType`, `.parameterTypes` |
 | `keyof` operator     | Supported | Via `.keysType` property                       |
-| `typeof` operator    | Supported | Via `typeOf()` function                        |
+| `typeof` operator    | Supported | Via `typeOf()` function; `.d.ts` `typeof` also supported |
 | Function types       | Supported | Direct mapping                                 |
 | Overloaded functions | Supported | Via intersection of function types (`.d.ts` import only) |
 | Array/Tuple types    | Supported | `T[]` for variable, `[T, U]` for fixed         |
@@ -917,3 +917,18 @@ Effects (file I/O, console, network) happen at runtime. DepJS treats imported fu
 | `this` type          | Supported | Via `This` type with substitution at access    |
 | Branded types        | Supported | Via `Branded()` constructor, `newtype` sugar   |
 | .d.ts imports        | Supported | ES module syntax, Node.js resolution, `.d.ts` required |
+| Generic .d.ts calls  | Not yet   | Type args not inferred, return types not instantiated |
+| Type alias expansion | Not yet   | Parameterized type aliases from .d.ts not expanded |
+
+### .d.ts Generic Function Calls — Known Gap
+
+DepJS-defined generics work via desugaring: `<T>(x: T) => ...` becomes `(x: T, T: Type = typeOf(x)) => ...`, so type inference happens naturally through default parameter evaluation.
+
+However, `.d.ts`-imported generic functions (e.g., `useState<S>`) use a different representation — `FunctionType` with `TypeVar` parameters — and the type checker currently:
+1. Does not collect TypeVar→Type mappings during argument matching
+2. Does not call `substituteTypeVars` on the return type
+3. Does not preserve type parameter metadata on imported function types
+
+This means `useState(0)` returns `[S, Dispatch<SetStateAction<S>>]` instead of `[Int, Dispatch<SetStateAction<Int>>]`. Additionally, parameterized type aliases like `Dispatch<SetStateAction<S>>` are stored as opaque typeVar strings rather than being expanded to their underlying types.
+
+See CLAUDE.md "Blocking Issues for Working React Example" for the full gap analysis.

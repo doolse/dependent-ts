@@ -715,7 +715,7 @@ The loader can pre-expand these for common elements to avoid runtime expansion c
 
 **Location:** `src/dts-loader/`
 
-### Completed (Prototype)
+### Implemented
 
 | Feature | File | Notes |
 |---------|------|-------|
@@ -731,51 +731,33 @@ The loader can pre-expand these for common elements to avoid runtime expansion c
 | Tuple types | `dts-translator.ts` | `[A, B, C]` |
 | Type parameters | `dts-translator.ts` | Tracked in scope, stored as `TypeVarType` |
 | `declare function` | `dts-translator.ts` | Stored in `values` map |
-| `declare class` | `dts-translator.ts` | Instance type stored in `types` map |
+| `declare class` | `dts-translator.ts` | Constructor + instance type |
 | `declare namespace` | `dts-translator.ts` | Members prefixed and merged |
-| Tests | `*.test.ts` | 30 tests total (15 parser, 15 translator) |
+| Conditional types | `dts-translator.ts` | Returns union of true/false branches, extraction patterns handled |
+| `infer` keyword | `dts-translator.ts` | Inferred types tracked in scope |
+| `keyof` operator | `dts-translator.ts` | Inline records resolve immediately; type references create deferred `KeyofType` |
+| Indexed access `T[K]` | `dts-translator.ts` | Inline records with literal keys resolve immediately; others create `IndexedAccessType` |
+| Mapped types | `dts-translator.ts` | `{ [K in keyof T]: ... }` with modifier support |
+| Module resolution | `module-resolver.ts` | Node.js style resolution from `node_modules` including `@types/*` |
+| Cross-file resolution | `dts-translator.ts` | Follows `import` and re-export statements within `.d.ts` files |
+| Overloaded functions | `dts-translator.ts` | Handled as intersection of function types |
+| `typeof` in type positions | `dts-translator.ts` | Resolves value types for `typeof foo` patterns |
 
-### Not Yet Implemented
+### Known Gaps
 
-| Feature | Priority | Notes |
-|---------|----------|-------|
-| Conditional types | High | Implemented - returns union of true/false branches, extraction patterns handled |
-| `infer` keyword | High | Implemented - inferred types tracked in scope |
-| `keyof` operator | Done | Inline records resolve immediately; type references create deferred `KeyofType` |
-| Indexed access `T[K]` | Done | Inline records with literal keys resolve immediately; others create `IndexedAccessType` |
-| Mapped types | Medium | Not translated |
-| Type resolution | High | Cross-references not resolved at translation time; deferred to type checking |
-| Module resolution | Done | Node.js style resolution from `node_modules` including `@types/*` |
-| Interface merging | Medium | Not implemented |
-| Generic type instantiation | Medium | Parameterized types stored as placeholders |
-| Overloaded functions | Done | Handled as intersection of function types |
+These were identified while attempting to build a working React app. See CLAUDE.md "Blocking Issues" for full details.
 
-### Suggested Next Step
-
-**Load React types** to identify gaps:
-
-```typescript
-import { loadDTS } from "./dts-loader";
-import * as fs from "fs";
-
-const reactTypes = fs.readFileSync("node_modules/@types/react/index.d.ts", "utf-8");
-const result = loadDTS(reactTypes);
-
-console.log("Types loaded:", result.types.size);
-console.log("Values loaded:", result.values.size);
-console.log("Errors:", result.errors.length);
-```
-
-This will reveal:
-1. Which TypeScript constructs are missing
-2. How many conditional types / `infer` patterns need handling
-3. Whether the namespace handling works for the `React` namespace
-4. Performance characteristics (4000+ lines)
+| Gap | Impact | Details |
+|-----|--------|---------|
+| Generic function type params discarded | High | `translateFunctionDeclaration` extracts `typeParamNames` but doesn't attach them to the FunctionType via metadata. Type aliases do this correctly. |
+| Type argument inference for .d.ts calls | High | `tryMatchSignature` checks subtype compatibility but doesn't collect TypeVar→Type mappings. DepJS-defined generics avoid this via desugaring to value params. |
+| Return type instantiation | High | `checkOverloadedCall` returns `sig.returnType` without calling `substituteTypeVars`. The function exists but isn't wired in. |
+| Parameterized type alias expansion | High | `Dispatch<SetStateAction<S>>` becomes an opaque `typeVar("Dispatch<SetStateAction<S>>")` instead of being resolved to its underlying type. |
+| Namespace member type resolution | Medium | `React.ElementType` from `import * as React from "./"` becomes unresolved `IndexedAccessType`. |
+| Interface merging | Low | Multiple `interface` declarations with same name not merged. |
 
 ## Open Questions
 
 1. **Cross-file references:** How to handle `/// <reference path="..." />`?
 2. **Recursive types:** How to handle types that reference themselves?
-3. **Overloaded functions:** Current spec says intersection - confirm this works for all cases?
-4. **Generic defaults:** How to handle `type Foo<T = string>`?
-5. **Pre-expansion:** Should we pre-expand utility types like `DetailedHTMLProps` during loading, or keep them as function calls?
+3. **Pre-expansion:** Should we pre-expand utility types like `DetailedHTMLProps` during loading, or keep them as function calls?
