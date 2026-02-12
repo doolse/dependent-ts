@@ -29,6 +29,8 @@ import {
   substituteThis,
   isVariadicArray,
   getArrayElementTypes,
+  substituteTypeVars,
+  unwrapMetadata,
 } from "../types/types";
 import { isSubtype } from "../types/subtype";
 import { formatType } from "../types/format";
@@ -74,6 +76,100 @@ export function typecheck(
 ): TypedProgram {
   const checker = new TypeChecker(config);
   return checker.checkProgram(decls);
+}
+
+/**
+ * Infer type argument bindings by structurally matching argument types against
+ * parameter types that contain type variables. Used for .d.ts generic functions
+ * where type parameters are tracked on the FunctionType rather than desugared
+ * into value parameters.
+ */
+export function inferTypeArguments(
+  typeParams: string[],
+  paramTypes: Type[],
+  argTypes: Type[]
+): Map<string, Type> {
+  const inferences = new Map<string, Type>();
+  const typeParamSet = new Set(typeParams);
+
+  for (let i = 0; i < Math.min(paramTypes.length, argTypes.length); i++) {
+    inferFromTypes(paramTypes[i], argTypes[i], typeParamSet, inferences);
+  }
+
+  return inferences;
+}
+
+/**
+ * Recursively walk a parameter type pattern and argument type to extract
+ * TypeVar → ConcreteType bindings. First binding wins for each TypeVar.
+ */
+function inferFromTypes(
+  paramType: Type,
+  argType: Type,
+  typeParams: Set<string>,
+  inferences: Map<string, Type>
+): void {
+  // Unwrap metadata on both sides
+  if (paramType.kind === "withMetadata") {
+    inferFromTypes(paramType.baseType, argType, typeParams, inferences);
+    return;
+  }
+  if (argType.kind === "withMetadata") {
+    inferFromTypes(paramType, argType.baseType, typeParams, inferences);
+    return;
+  }
+
+  // Direct TypeVar match - if it's one of our type params, record the binding
+  if (paramType.kind === "typeVar" && typeParams.has(paramType.name)) {
+    if (!inferences.has(paramType.name)) {
+      inferences.set(paramType.name, argType);
+    }
+    return;
+  }
+
+  // Union param type: infer from each member that contains a type param
+  if (paramType.kind === "union") {
+    for (const member of paramType.types) {
+      inferFromTypes(member, argType, typeParams, inferences);
+    }
+    return;
+  }
+
+  // Intersection param type: infer from each member
+  if (paramType.kind === "intersection") {
+    for (const member of paramType.types) {
+      inferFromTypes(member, argType, typeParams, inferences);
+    }
+    return;
+  }
+
+  // Function types: match param types and return types
+  if (paramType.kind === "function" && argType.kind === "function") {
+    for (let i = 0; i < Math.min(paramType.params.length, argType.params.length); i++) {
+      inferFromTypes(paramType.params[i].type, argType.params[i].type, typeParams, inferences);
+    }
+    inferFromTypes(paramType.returnType, argType.returnType, typeParams, inferences);
+    return;
+  }
+
+  // Array types: match element types
+  if (paramType.kind === "array" && argType.kind === "array") {
+    for (let i = 0; i < Math.min(paramType.elements.length, argType.elements.length); i++) {
+      inferFromTypes(paramType.elements[i].type, argType.elements[i].type, typeParams, inferences);
+    }
+    return;
+  }
+
+  // Record types: match field types by name
+  if (paramType.kind === "record" && argType.kind === "record") {
+    for (const pField of paramType.fields) {
+      const aField = argType.fields.find((f) => f.name === pField.name);
+      if (aField) {
+        inferFromTypes(pField.type, aField.type, typeParams, inferences);
+      }
+    }
+    return;
+  }
 }
 
 /**
@@ -893,8 +989,18 @@ class TypeChecker {
       }
     }
 
-    // Handle generic return type inference for array methods
+    // Infer type arguments for .d.ts generic functions
     let returnType = fnType.returnType;
+    if (fnType.typeParams && fnType.typeParams.length > 0) {
+      const argTypes = expandedArgTypes.map((a) => a.type);
+      const paramTypes = fnType.params.map((p) => p.type);
+      const typeArgMap = inferTypeArguments(fnType.typeParams, paramTypes, argTypes);
+      if (typeArgMap.size > 0) {
+        returnType = substituteTypeVars(returnType, typeArgMap);
+      }
+    }
+
+    // Handle generic return type inference for array methods
     if (expr.fn.kind === "property") {
       const methodName = expr.fn.name;
       // Extract TypedExpr[] for the method inference
@@ -1018,11 +1124,17 @@ class TypeChecker {
         const comptimeOnly =
           fn.comptimeOnly || args.some((a) => a.comptimeOnly);
 
+        // Substitute inferred type arguments into return type
+        let returnType = sig.returnType;
+        if (matchResult.typeArgMap && matchResult.typeArgMap.size > 0) {
+          returnType = substituteTypeVars(returnType, matchResult.typeArgMap);
+        }
+
         return {
           ...expr,
           fn,
           args: typedArgs as unknown as CoreArgument[],
-          type: sig.returnType,
+          type: returnType,
           comptimeOnly,
         };
       }
@@ -1128,12 +1240,13 @@ class TypeChecker {
 
   /**
    * Try to match arguments against a single function signature.
+   * Returns type argument substitutions when the signature has type params.
    */
   private tryMatchSignature(
     sig: Type & { kind: "function" },
     args: TypedExpr[],
     _coreArgs: CoreArgument[]
-  ): { matches: boolean } {
+  ): { matches: boolean; typeArgMap?: Map<string, Type> } {
     // Check argument count
     const hasRestParam = sig.params.length > 0 && sig.params[sig.params.length - 1].rest;
     const nonRestParams = hasRestParam ? sig.params.slice(0, -1) : sig.params;
@@ -1173,7 +1286,15 @@ class TypeChecker {
       }
     }
 
-    return { matches: true };
+    // Infer type arguments if the signature has type params
+    let typeArgMap: Map<string, Type> | undefined;
+    if (sig.typeParams && sig.typeParams.length > 0) {
+      const paramTypes = sig.params.map((p) => p.type);
+      const argTypes = args.map((a) => a.type);
+      typeArgMap = inferTypeArguments(sig.typeParams, paramTypes, argTypes);
+    }
+
+    return { matches: true, typeArgMap };
   }
 
   /**

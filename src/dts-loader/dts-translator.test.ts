@@ -139,6 +139,42 @@ declare function createElement(
     }
   });
 
+  it("attaches type params to generic declare function", () => {
+    const result = loadDTS(`declare function identity<T>(x: T): T;`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.values.get("identity");
+    expect(type?.kind).toBe("function");
+    if (type?.kind === "function") {
+      expect(type.typeParams).toEqual(["T"]);
+      expect(type.params).toHaveLength(1);
+      expect(type.params[0].type.kind).toBe("typeVar");
+      expect(type.returnType.kind).toBe("typeVar");
+    }
+  });
+
+  it("attaches multiple type params to generic declare function", () => {
+    const result = loadDTS(`declare function pair<A, B>(a: A, b: B): [A, B];`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.values.get("pair");
+    expect(type?.kind).toBe("function");
+    if (type?.kind === "function") {
+      expect(type.typeParams).toEqual(["A", "B"]);
+    }
+  });
+
+  it("non-generic declare function has no typeParams", () => {
+    const result = loadDTS(`declare function greet(name: string): string;`);
+
+    expect(result.errors).toHaveLength(0);
+    const type = result.values.get("greet");
+    expect(type?.kind).toBe("function");
+    if (type?.kind === "function") {
+      expect(type.typeParams).toBeUndefined();
+    }
+  });
+
   it("translates declare class", () => {
     const result = loadDTS(`
 declare class Component<P, S> {
@@ -227,6 +263,106 @@ declare namespace React {
     // Check namespace value
     const nsValue = result.values.get("React");
     expect(nsValue?.kind).toBe("record");
+  });
+
+  it("resolves namespace member types via dot access", () => {
+    const result = loadDTS(`
+declare namespace React {
+  type ReactNode = string | number | null;
+}
+type X = React.ReactNode;
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const xType = result.types.get("X");
+    expect(xType).toBeDefined();
+    // X should resolve to the union string | number | null, not an unresolved type
+    expect(xType?.kind).toBe("union");
+  });
+
+  it("resolves nested namespace member types", () => {
+    const result = loadDTS(`
+declare namespace Outer {
+  namespace Inner {
+    type MyType = string;
+  }
+}
+type X = Outer.Inner.MyType;
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const xType = result.types.get("X");
+    expect(xType).toBeDefined();
+    expect(xType?.kind).toBe("primitive");
+  });
+
+  it("resolves namespace member types in function params", () => {
+    const result = loadDTS(`
+declare namespace React {
+  type ElementType = string | number;
+  type Key = string | number;
+}
+declare function jsx(type: React.ElementType, key?: React.Key): void;
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const fn = result.values.get("jsx");
+    expect(fn?.kind).toBe("function");
+    if (fn?.kind === "function") {
+      // First param should be the resolved union, not an IndexedAccessType
+      expect(fn.params[0].type.kind).toBe("union");
+    }
+  });
+
+  it("resolves parameterized type aliases within namespace", () => {
+    const result = loadDTS(`
+declare namespace NS {
+  type SetStateAction<S> = S | ((prevState: S) => S);
+  type Dispatch<A> = (value: A) => void;
+  function useState<S>(initialState: S | (() => S)): [S, Dispatch<SetStateAction<S>>];
+}
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const fnType = result.values.get("NS.useState");
+    expect(fnType?.kind).toBe("function");
+    if (fnType?.kind === "function") {
+      expect(fnType.typeParams).toEqual(["S"]);
+      // Return type should be an array [S, (value: S | ((prevState: S) => S)) => void]
+      // NOT [S, typeVar("Dispatch<SetStateAction<S>>")]
+      const retType = fnType.returnType;
+      expect(retType.kind).toBe("array");
+      if (retType.kind === "array") {
+        expect(retType.elements).toHaveLength(2);
+        // Second element should be the expanded Dispatch - a function type
+        const dispatchType = retType.elements[1].type;
+        expect(dispatchType.kind).toBe("function");
+      }
+    }
+  });
+
+  it("resolves parameterized type aliases at top level", () => {
+    const result = loadDTS(`
+type Inner<T> = { value: T };
+type Outer<T> = { wrapped: Inner<T> };
+`);
+
+    expect(result.errors).toHaveLength(0);
+    const outerType = result.types.get("Outer");
+    expect(outerType).toBeDefined();
+    // Outer<T> should have a field 'wrapped' with type { value: T } (not unresolved Inner<T>)
+    const body = unwrapMetadata(outerType!);
+    expect(body.kind).toBe("record");
+    if (body.kind === "record") {
+      const wrappedField = body.fields.find(f => f.name === "wrapped");
+      expect(wrappedField).toBeDefined();
+      expect(wrappedField!.type.kind).toBe("record");
+      if (wrappedField!.type.kind === "record") {
+        const valueField = wrappedField!.type.fields.find(f => f.name === "value");
+        expect(valueField).toBeDefined();
+        expect(valueField!.type.kind).toBe("typeVar");
+      }
+    }
   });
 
   it("handles generic types with type parameters", () => {
@@ -993,6 +1129,33 @@ export { ns };
       if (ns?.kind === "record") {
         expect(ns.fields.length).toBe(2);
         expect(ns.fields.map((f) => f.name).sort()).toEqual(["SomeType", "someFunc"]);
+      }
+    });
+
+    it("resolves namespace member types from imported namespace", () => {
+      const mockModule: DTSLoadResult = {
+        types: new Map([["ElementType", primitiveType("String")]]),
+        values: new Map([["useState", functionType([], primitiveType("Void"))]]),
+        errors: [],
+      };
+
+      const result = loadDTS(
+        `
+import * as React from "react";
+declare function jsx(type: React.ElementType): void;
+`,
+        {
+          filePath: "/test/file.d.ts",
+          resolver: createMockResolver({ react: mockModule }),
+        }
+      );
+
+      expect(result.errors).toHaveLength(0);
+      const fn = result.values.get("jsx");
+      expect(fn?.kind).toBe("function");
+      if (fn?.kind === "function") {
+        // React.ElementType should resolve to String, not an IndexedAccessType
+        expect(fn.params[0].type.kind).toBe("primitive");
       }
     });
 

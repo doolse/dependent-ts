@@ -6,8 +6,8 @@
 
 import { describe, test, expect } from "vitest";
 import { parse } from "../parser";
-import { typecheck } from "./typecheck";
-import { Type, primitiveType, literalType, recordType, arrayType, functionType, unwrapMetadata, withMetadata, FunctionType, isVariadicArray, getArrayElementTypes } from "../types/types";
+import { typecheck, inferTypeArguments } from "./typecheck";
+import { Type, primitiveType, literalType, recordType, arrayType, functionType, unwrapMetadata, withMetadata, FunctionType, isVariadicArray, getArrayElementTypes, typeVarType, unionType } from "../types/types";
 import { TypedDecl, TypedExpr } from "../ast/core-ast";
 
 // Helper to parse and typecheck a single expression in a const declaration
@@ -2681,6 +2681,75 @@ describe("Type Checker", () => {
       const importDecl = result.decls[0] as TypedDecl & { kind: "import" };
       expect(importDecl.kind).toBe("import");
       // Should not throw - just type as Unknown
+    });
+  });
+
+  describe("inferTypeArguments", () => {
+    const T = typeVarType("T");
+    const U = typeVarType("U");
+    const Int = primitiveType("Int");
+    const Str = primitiveType("String");
+
+    test("infers direct TypeVar match", () => {
+      // <T>(x: T) called with Int => T = Int
+      const result = inferTypeArguments(["T"], [T], [Int]);
+      expect(result.get("T")).toBe(Int);
+    });
+
+    test("infers multiple TypeVars", () => {
+      // <T, U>(x: T, y: U) called with (Int, String) => T = Int, U = String
+      const result = inferTypeArguments(["T", "U"], [T, U], [Int, Str]);
+      expect(result.get("T")).toBe(Int);
+      expect(result.get("U")).toBe(Str);
+    });
+
+    test("infers from union param type", () => {
+      // <T>(x: T | (() => T)) called with Int => T = Int
+      const unionParam = unionType([T, functionType([], T)]);
+      const result = inferTypeArguments(["T"], [unionParam], [Int]);
+      expect(result.get("T")).toBe(Int);
+    });
+
+    test("infers from function param type", () => {
+      // <T>(f: (x: Int) => T) called with (x: Int) => String => T = String
+      const paramType = functionType([{ name: "x", type: Int, optional: false }], T);
+      const argType = functionType([{ name: "x", type: Int, optional: false }], Str);
+      const result = inferTypeArguments(["T"], [paramType], [argType]);
+      expect(result.get("T")).toBe(Str);
+    });
+
+    test("infers from array element types", () => {
+      // <T>(x: [T, T]) called with [Int, Int] => T = Int
+      const paramType = arrayType([T, T], false);
+      const argType = arrayType([Int, Int], false);
+      const result = inferTypeArguments(["T"], [paramType], [argType]);
+      expect(result.get("T")).toBe(Int);
+    });
+
+    test("infers from record field types", () => {
+      // <T>(x: { value: T }) called with { value: Int } => T = Int
+      const paramType = recordType([{ name: "value", type: T, optional: false, annotations: [] }]);
+      const argType = recordType([{ name: "value", type: Int, optional: false, annotations: [] }]);
+      const result = inferTypeArguments(["T"], [paramType], [argType]);
+      expect(result.get("T")).toBe(Int);
+    });
+
+    test("first binding wins for same TypeVar", () => {
+      // <T>(x: T, y: T) called with (Int, String) => T = Int (first wins)
+      const result = inferTypeArguments(["T"], [T, T], [Int, Str]);
+      expect(result.get("T")).toBe(Int);
+    });
+
+    test("returns empty map when no TypeVars match", () => {
+      const result = inferTypeArguments(["T"], [Int], [Str]);
+      expect(result.size).toBe(0);
+    });
+
+    test("ignores TypeVars not in typeParams", () => {
+      // Only T is a type param, U is a free type var
+      const result = inferTypeArguments(["T"], [T, U], [Int, Str]);
+      expect(result.get("T")).toBe(Int);
+      expect(result.has("U")).toBe(false);
     });
   });
 });

@@ -192,6 +192,11 @@ function translateTopLevel(
       translateFunctionDeclaration(cursor, ctx, values);
       break;
 
+    case "NamespaceDeclaration":
+      // nested namespace declarations (without 'declare' keyword)
+      translateNamespace(cursor, ctx, types, values);
+      break;
+
     case "VariableDeclaration":
       // const declarations inside namespaces
       translateVariableDeclaration(cursor, ctx, values);
@@ -761,8 +766,14 @@ function translateAmbientFunction(
   } while (cursor.nextSibling());
   cursor.parent();
 
+  // Clear type params from scope after translating function
+  for (const param of typeParamNames) {
+    ctx.typeParams.delete(param);
+  }
+
   if (name) {
-    addValue(values, name, functionType(params, returnType));
+    addValue(values, name, functionType(params, returnType, false,
+      typeParamNames.length > 0 ? typeParamNames : undefined));
   }
 }
 
@@ -802,8 +813,14 @@ function translateFunctionDeclaration(
   } while (cursor.nextSibling());
   cursor.parent();
 
+  // Clear type params from scope after translating function
+  for (const param of typeParamNames) {
+    ctx.typeParams.delete(param);
+  }
+
   if (name) {
-    addValue(values, name, functionType(params, returnType));
+    addValue(values, name, functionType(params, returnType, false,
+      typeParamNames.length > 0 ? typeParamNames : undefined));
   }
 }
 
@@ -902,12 +919,19 @@ function translateNamespace(
         break;
 
       case "Block":
-        // Process namespace body
+        // Process namespace body - swap localTypes/localValues so that
+        // type references within the namespace find sibling types
+        const savedLocalTypes = ctx.localTypes;
+        const savedLocalValues = ctx.localValues;
+        ctx.localTypes = nsTypes;
+        ctx.localValues = nsValues;
         cursor.firstChild();
         do {
           translateTopLevel(cursor, ctx, nsTypes, nsValues);
         } while (cursor.nextSibling());
         cursor.parent();
+        ctx.localTypes = savedLocalTypes;
+        ctx.localValues = savedLocalValues;
         break;
     }
   } while (cursor.nextSibling());
@@ -1805,25 +1829,43 @@ function translateIndexedType(cursor: TreeCursor, ctx: TranslationContext): Type
   if (parts.length >= 2) {
     const [objectType, indexType] = parts;
 
-    // If object is a record and index is a literal string, resolve immediately
+    // If object is a record and index is a literal string, resolve immediately (bracket access T["key"])
     if (objectType.kind === "record" && indexType.kind === "literal" && indexType.baseType === "String") {
       const fieldName = indexType.value as string;
-      const field = objectType.fields.find(f => f.name === fieldName);
-      if (field) {
-        return field.type;
+      return resolveRecordField(objectType, fieldName);
+    }
+
+    // Dot access: Ns.Member - object is a typeVar (namespace name), index is a typeVar (member name)
+    if (objectType.kind === "typeVar" && indexType.kind === "typeVar") {
+      const nsRecord = ctx.localValues.get(objectType.name) ?? ctx.importedValues.get(objectType.name);
+      if (nsRecord && nsRecord.kind === "record") {
+        return resolveRecordField(nsRecord, indexType.name);
       }
-      // Field not found - check index type
-      if (objectType.indexType) {
-        return objectType.indexType;
-      }
-      // No such field and no index type - return Never
-      return primitiveType("Never");
+    }
+
+    // Dot access: resolved record.Member - object already resolved to record, index is a typeVar
+    if (objectType.kind === "record" && indexType.kind === "typeVar") {
+      return resolveRecordField(objectType, indexType.name);
     }
 
     // For complex cases, create a deferred IndexedAccessType
     return indexedAccessType(objectType, indexType);
   }
   return primitiveType("Unknown");
+}
+
+/**
+ * Look up a field in a record type by name, falling back to indexType or Never.
+ */
+function resolveRecordField(record: Type & { kind: "record" }, fieldName: string): Type {
+  const field = record.fields.find(f => f.name === fieldName);
+  if (field) {
+    return field.type;
+  }
+  if (record.indexType) {
+    return record.indexType;
+  }
+  return primitiveType("Never");
 }
 
 /**

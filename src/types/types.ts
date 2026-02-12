@@ -103,6 +103,7 @@ export type FunctionType = {
   params: ParamInfo[];
   returnType: Type;
   async: boolean;
+  typeParams?: string[]; // Type parameter names for .d.ts generic functions
 };
 
 /**
@@ -228,9 +229,12 @@ export function recordType(
 export function functionType(
   params: ParamInfo[],
   returnType: Type,
-  async: boolean = false
+  async: boolean = false,
+  typeParams?: string[]
 ): FunctionType {
-  return { kind: "function", params, returnType, async };
+  const fn: FunctionType = { kind: "function", params, returnType, async };
+  if (typeParams && typeParams.length > 0) fn.typeParams = typeParams;
+  return fn;
 }
 
 /**
@@ -487,7 +491,8 @@ export function substituteThis(type: Type, receiverType: Type): Type {
           type: substituteThis(p.type, receiverType),
         })),
         substituteThis(type.returnType, receiverType),
-        type.async
+        type.async,
+        type.typeParams
       );
     case "array":
       return arrayTypeFromElements(
@@ -570,7 +575,8 @@ export function substituteTypeVars(
           type: substituteTypeVars(p.type, substitutions),
         })),
         substituteTypeVars(type.returnType, substitutions),
-        type.async
+        type.async,
+        type.typeParams
       );
 
     case "array":

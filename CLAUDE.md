@@ -468,39 +468,73 @@ Create additional spec files as topics are discussed and decided. Don't create p
 
 ## Current Focus
 
-- No specific focus area at present
+The target example is `examples/react-counter.djs` — an idealised React counter app written to match what the spec says should be possible. The code is kept as-is; development is driven by fixing whatever prevents it from compiling and running.
 
-## Blocking Issues for Working React Example
+**Implementation plan**: `plans/react-counter-implementation.md` — detailed step-by-step plan covering the DTS translator rewrite, `wideTypeOf` builtin, array destructuring, and all related changes.
 
-A browser-runnable React app (using `jsx`/`jsxs` from `react/jsx-runtime` and `useState`) is blocked by the following issues. These were discovered while attempting to build a counter app example.
+### Target example (`examples/react-counter.djs`)
+```depjs
+import { useState } from "react";
+import { jsx, jsxs } from "react/jsx-runtime";
 
-### 1. DTS translator discards type parameter names on generic functions
-**Impact:** High — affects all generic .d.ts-imported functions
-**Location:** `src/dts-loader/dts-translator.ts`, `translateFunctionDeclaration` (~line 806)
-**Details:** When translating `declare function useState<S>(initialState: S | (() => S)): [S, Dispatch<SetStateAction<S>>]`, the function extracts `typeParamNames` but creates a bare `functionType(params, returnType)` without attaching them. Compare with type alias translation (~line 645) which correctly wraps with `withMetadata(bodyType, { name, typeParams: typeParamNames })`. Without the type parameter metadata, the type checker has no way to know which TypeVars in the signature are generic parameters.
+const Counter = () => {
+  const [count, setCount] = useState(0);
 
-### 2. Type checker doesn't infer type arguments during .d.ts function calls
-**Impact:** High — affects all generic .d.ts-imported functions
-**Location:** `src/typecheck/typecheck.ts`, `tryMatchSignature` (~line 1132)
-**Details:** When checking `useState(0)`, `tryMatchSignature` checks `isSubtype(Int, S)` which passes (because `subtype.ts` has a rule that any type satisfies an unbounded TypeVar), but it **doesn't collect the mapping** `S → Int`. It only checks "does it match?" not "what did S resolve to?". For DepJS-defined generics this works because desugaring turns `<T>(x: T)` into `(x: T, T: Type = typeOf(x))` — the type parameter becomes a value parameter. But .d.ts imports bypass that desugaring entirely and need explicit type argument inference.
+  jsxs("div", {
+    children: [
+      jsx("h1", { children: "DepJS Counter" }),
+      jsx("p", { children: `Count: ${count}` }),
+      jsxs("div", {
+        children: [
+          jsx("button", {
+            onClick: () => setCount(count + 1),
+            children: "+"
+          }),
+          jsx("button", {
+            onClick: () => setCount(count - 1),
+            children: "-"
+          })
+        ]
+      })
+    ]
+  })
+};
 
-### 3. Type checker doesn't instantiate return types with inferred type arguments
-**Impact:** High — follows from #2
-**Location:** `src/typecheck/typecheck.ts`, `checkOverloadedCall` (~line 1025)
-**Details:** The return type `[S, Dispatch<SetStateAction<S>>]` is returned directly without substitution. Even if Gap #2 were fixed and we had the mapping `S → Int`, there's no call to `substituteTypeVars(returnType, {S: Int})`. The `substituteTypeVars` function already exists in `src/types/types.ts` (~line 537) — it just needs to be wired into the call path.
+export const App = Counter;
+```
 
-### 4. Parameterized type aliases from .d.ts are not expanded
-**Impact:** High — affects any .d.ts type alias referenced with type arguments
-**Location:** `src/dts-loader/dts-translator.ts`, `translateParameterizedType`
-**Details:** When the DTS translator encounters `Dispatch<SetStateAction<S>>`, `Dispatch` and `SetStateAction` are type aliases defined elsewhere in React's types. Instead of resolving them to their underlying types, they end up as opaque `typeVar` nodes with the full parameterized name as a string (e.g., `typeVar("Dispatch<SetStateAction<S>>")`). This means they can't be recognized as callable, intersected, or structurally compared. The fix requires the translator to look up and instantiate type aliases when they're referenced with type arguments.
+### Blocking issues (in priority order)
 
-### 5. Namespace member types from .d.ts are not resolved
-**Impact:** Medium — affects .d.ts files that use `import * as Ns from "..."`
-**Location:** `src/dts-loader/dts-translator.ts`
-**Details:** When a `.d.ts` file does `import * as React from "./"` and then references `React.ElementType`, this becomes an unresolved `IndexedAccessType(typeVar("React"), typeVar("ElementType"))`. The DTS loader doesn't resolve these namespace member references to concrete types during translation. This affects `react/jsx-runtime` where all parameter/return types reference the React namespace.
+#### 1. Array destructuring not supported
+`const [count, setCount] = useState(0);` fails at the parser/desugaring level. Destructuring bindings (`const [a, b] = ...` and `const { x, y } = ...`) are not yet implemented.
 
-### Fix order
-Gaps 1-3 form a chain: attach type params to functions (#1), collect type argument mappings during call checking (#2), substitute into return types (#3). Gap 4 (alias expansion) is independent but equally important for real-world .d.ts files. Gap 5 is lower priority since it primarily affects subpath modules like `react/jsx-runtime`.
+#### 2. Type argument inference preserves literal types too aggressively
+`useState(0)` infers `S = 0` (the literal type `0`), not `S = Int`. This means `setCount` gets type `(value: 0 | ((prevState: 0) => 0)) => void`, so `setCount(count + 1)` fails because `Int` is not assignable to `0`. TypeScript widens literals during type argument inference; DepJS does not yet. The spec says literal types are preserved in generic inference, but this needs a widening rule for .d.ts generic functions (or a general "infer the widened type" policy for mutable-state APIs).
+
+#### 3. `jsx`/`jsxs` first parameter resolves to `Never`
+`React.ElementType` in React's `index.d.ts` is a complex generic type involving mapped types with conditionals, `keyof JSX.IntrinsicElements`, and default type parameters. The DTS translator cannot fully handle this definition, so it is not added to the namespace. The dot-access `React.ElementType` then falls through to `Never` via the field-not-found path.
+
+#### 4. Explicit type arguments for .d.ts generic functions don't work
+`useState<Int>(0)` is parsed as a DepJS type-argument application (`f<args>` syntax), which doesn't correctly map to the .d.ts function's `typeParams`. The DepJS desugaring treats `<Int>` as a value argument (the Type value), producing the wrong result. This blocks the workaround for issue #2.
+
+## Resolved Issues for Working React Example
+
+The following issues were discovered while attempting to build a counter app and have all been fixed.
+
+### 1. ~~DTS translator discards type parameter names on generic functions~~ FIXED
+**Fix:** Added `typeParams?: string[]` field to `FunctionType`. `translateAmbientFunction` and `translateFunctionDeclaration` now attach type param names to function types and clean up scope after translation.
+
+### 2. ~~Type checker doesn't infer type arguments during .d.ts function calls~~ FIXED
+**Fix:** Added `inferTypeArguments()` function in `typecheck.ts` that structurally walks parameter types and argument types to collect TypeVar→ConcreteType mappings. Wired into both the non-overloaded and overloaded call paths.
+
+### 3. ~~Type checker doesn't instantiate return types with inferred type arguments~~ FIXED
+**Fix:** `tryMatchSignature` now returns inferred type arg mappings. Both `checkCall` (non-overloaded) and `checkOverloadedCall` use `substituteTypeVars` to replace TypeVars in return types with inferred concrete types.
+
+### 4. ~~Parameterized type aliases from .d.ts are not expanded~~ FIXED
+**Fix:** `translateNamespace` now swaps `ctx.localTypes`/`ctx.localValues` to the namespace's own maps during body processing, so type aliases defined earlier in a namespace (e.g., `Dispatch`, `SetStateAction`) are visible when translating later entries (e.g., `useState`).
+
+### 5. ~~Namespace member types from .d.ts are not resolved~~ FIXED
+**Fix:** `translateIndexedType` now resolves dot-access patterns (`Ns.Member`) by looking up namespace values and their record fields. Also added `NamespaceDeclaration` handling to `translateTopLevel` for nested namespaces without `declare`.
 
 ## Open Questions
 
@@ -567,6 +601,12 @@ Design decisions that can be addressed as needed:
 - Rest parameters (`...param: Type[]`)
 - `keyof` operator (inline records resolve immediately; type references create deferred `KeyofType`)
 - Indexed access `T[K]` (inline records with literal keys resolve immediately; others create `IndexedAccessType`)
+- Namespace member dot-access resolution (e.g., `React.ElementType` resolves to concrete types)
+- Generic function type parameters on `.d.ts` imports (tracked via `FunctionType.typeParams`)
+- Type argument inference for `.d.ts` generic function calls (structural matching of arg types to param types)
+- Return type instantiation with inferred type arguments (via `substituteTypeVars`)
+- Parameterized type alias expansion within namespaces (sibling types visible during translation)
+- Nested namespace declarations (without `declare` keyword)
 - Cross-file resolution (follows `import` statements and re-exports within `.d.ts` files)
 - Circular dependency handling (returns empty result to break cycles)
 - Mapped types (`{ [K in keyof T]: ... }`) with modifier support (`-?`, `+?`, `readonly`, `-readonly`)
@@ -584,15 +624,15 @@ Design decisions that can be addressed as needed:
 
 ## Test Summary
 
-All tests passing (752 total):
+All tests passing (770 total):
 
 | Module | Tests |
 |--------|-------|
 | parser/lezer-parser | 78 |
 | dts-loader/dts-parser | 17 |
-| dts-loader/dts-translator | 70 |
+| dts-loader/dts-translator | 79 |
 | typecheck/comptime-eval | 156 |
-| typecheck/typecheck | 277 |
+| typecheck/typecheck | 286 |
 | erasure/erasure | 27 |
 | codegen/codegen | 68 |
 | types/subtype | 59 |
