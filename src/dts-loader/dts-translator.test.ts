@@ -1177,4 +1177,80 @@ type MyType = TypeOnly;
       expect(myType?.kind).toBe("primitive");
     });
   });
+
+  describe("typeof type operator", () => {
+    it("resolves typeof for a declared const", () => {
+      const result = loadDTS(`
+declare const foo: string;
+type FooType = typeof foo;
+`);
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("FooType");
+      expect(type?.kind).toBe("primitive");
+      if (type?.kind === "primitive") {
+        expect(type.name).toBe("String");
+      }
+    });
+
+    it("resolves typeof for a declared function", () => {
+      const result = loadDTS(`
+declare function greet(name: string): string;
+type GreetFn = typeof greet;
+`);
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("GreetFn");
+      expect(type?.kind).toBe("function");
+      if (type?.kind === "function") {
+        expect(type.params).toHaveLength(1);
+        expect(type.returnType.kind).toBe("primitive");
+      }
+    });
+
+    it("resolves typeof for a const with object type", () => {
+      const result = loadDTS(`
+declare const config: { host: string; port: number };
+type Config = typeof config;
+`);
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("Config");
+      expect(type?.kind).toBe("record");
+      if (type?.kind === "record") {
+        expect(type.fields).toHaveLength(2);
+        expect(type.fields.find(f => f.name === "host")?.type.kind).toBe("primitive");
+        expect(type.fields.find(f => f.name === "port")?.type.kind).toBe("primitive");
+      }
+    });
+
+    it("resolves typeof for overloaded function", () => {
+      const result = loadDTS(`
+declare function parse(input: string): number;
+declare function parse(input: number): string;
+type ParseFn = typeof parse;
+`);
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("ParseFn");
+      expect(type?.kind).toBe("intersection");
+    });
+
+    it("returns Unknown for undefined value", () => {
+      const result = loadDTS(`
+type Missing = typeof nonexistent;
+`);
+      const type = result.types.get("Missing");
+      expect(type?.kind).toBe("primitive");
+      if (type?.kind === "primitive") {
+        expect(type.name).toBe("Unknown");
+      }
+    });
+
+    it("resolves typeof used in a larger type expression", () => {
+      const result = loadDTS(`
+declare const x: string;
+type MaybeX = typeof x | null;
+`);
+      expect(result.errors).toHaveLength(0);
+      const type = result.types.get("MaybeX");
+      expect(type?.kind).toBe("union");
+    });
+  });
 });

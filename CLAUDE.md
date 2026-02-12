@@ -468,7 +468,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 
 ## Current Focus
 
-- **`typeof` in type positions** - Would allow `type T = typeof someValue` patterns for TypeScript compatibility
+- No specific focus area at present
 
 ## Open Questions
 
@@ -482,7 +482,6 @@ Design decisions that can be addressed as needed:
 ### TypeScript Compatibility
 - Full type mapping table (expand spec/typescript-compat.md)
 - Handling unsupported TS features (classes, enums, decorators)
-- `typeof` in type positions
 - Template literal types
 
 ### Compile-Time Specifics
@@ -540,11 +539,11 @@ Design decisions that can be addressed as needed:
 - Circular dependency handling (returns empty result to break cycles)
 - Mapped types (`{ [K in keyof T]: ... }`) with modifier support (`-?`, `+?`, `readonly`, `-readonly`)
 - Class declarations (constructor translation to callable function type, instance type mapping)
+- `typeof` in type positions (resolves value types for `typeof foo` patterns)
 
 ### Not Yet Implemented
 
 **TypeScript .d.ts Loading:**
-- `typeof` in type positions
 - Template literal types
 
 **Module System:**

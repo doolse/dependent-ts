@@ -62,6 +62,8 @@ interface TranslationContext {
   importedValues: Map<string, Type>;
   /** Types defined locally in this file (for generic instantiation) */
   localTypes: Map<string, Type>;
+  /** Values defined locally in this file (for typeof resolution) */
+  localValues: Map<string, Type>;
 }
 
 /**
@@ -135,6 +137,7 @@ export function loadDTS(content: string, options?: DTSLoadOptions): DTSLoadResul
     importedTypes: new Map(),
     importedValues: new Map(),
     localTypes: types, // Share the same map so we can look up types as they're defined
+    localValues: values, // Share the same map so typeof can look up value types
   };
 
   const cursor = tree.cursor();
@@ -1439,6 +1442,9 @@ function translateType(cursor: TreeCursor, ctx: TranslationContext): Type | null
     case "VoidType":
       return primitiveType("Void");
 
+    case "TypeofType":
+      return translateTypeofType(cursor, ctx);
+
     case "InferredType":
       // The infer var should be in scope if we're inside a conditional type's extends clause
       // Return the type variable representing the inferred type
@@ -1855,6 +1861,40 @@ function translateLiteralType(cursor: TreeCursor, ctx: TranslationContext): Type
     return literalType(num, baseType);
   }
   return primitiveType("Unknown");
+}
+
+/**
+ * Translate typeof type (e.g., typeof foo)
+ * Looks up the value's type in the values maps.
+ */
+function translateTypeofType(cursor: TreeCursor, ctx: TranslationContext): Type {
+  cursor.firstChild(); // Move to 'typeof' keyword
+  cursor.nextSibling(); // Move to the expression
+  const nodeName = cursor.name as string;
+  let type: Type | undefined;
+
+  if (nodeName === "VariableName") {
+    const name = getText(cursor, ctx.source);
+    // Look up in local values first, then imported values
+    type = ctx.localValues.get(name) ?? ctx.importedValues.get(name);
+  } else if (nodeName === "MemberExpression") {
+    // Handle typeof Foo.bar - extract the full dotted path
+    const text = getText(cursor, ctx.source);
+    const parts = text.split(".");
+    // Look up the root in values
+    const rootType = ctx.localValues.get(parts[0]) ?? ctx.importedValues.get(parts[0]);
+    if (rootType && rootType.kind === "record" && parts.length === 2) {
+      const field = rootType.fields.find(f => f.name === parts[1]);
+      type = field?.type;
+    }
+  }
+
+  cursor.parent();
+
+  if (!type) {
+    return primitiveType("Unknown");
+  }
+  return type;
 }
 
 /**
