@@ -456,7 +456,7 @@ Create additional spec files as topics are discussed and decided. Don't create p
 
 **Current implementation status:**
 - Single file compilation
-- TypeScript `.d.ts` parsing fully integrated with type checker
+- TypeScript `.d.ts` files translated to CoreDecl[] (DepJS AST) and processed uniformly by the type checker
 - Module resolution follows Node.js algorithm (walks up directory tree for `node_modules`)
 - Imports from `@types/*` packages get proper types
 - Export syntax works (`export const x = ...`)
@@ -505,35 +505,29 @@ export const App = Counter;
 
 ### Blocking issues (in priority order)
 
-#### 1. Array destructuring not supported
-`const [count, setCount] = useState(0);` fails at the parser/desugaring level. Destructuring bindings (`const [a, b] = ...` and `const { x, y } = ...`) are not yet implemented.
-
-#### 2. Type argument inference preserves literal types too aggressively
-`useState(0)` infers `S = 0` (the literal type `0`), not `S = Int`. This means `setCount` gets type `(value: 0 | ((prevState: 0) => 0)) => void`, so `setCount(count + 1)` fails because `Int` is not assignable to `0`. TypeScript widens literals during type argument inference; DepJS does not yet. The spec says literal types are preserved in generic inference, but this needs a widening rule for .d.ts generic functions (or a general "infer the widened type" policy for mutable-state APIs).
-
-#### 3. `jsx`/`jsxs` first parameter resolves to `Never`
-`React.ElementType` in React's `index.d.ts` is a complex generic type involving mapped types with conditionals, `keyof JSX.IntrinsicElements`, and default type parameters. The DTS translator cannot fully handle this definition, so it is not added to the namespace. The dot-access `React.ElementType` then falls through to `Never` via the field-not-found path.
-
-#### 4. Explicit type arguments for .d.ts generic functions don't work
-`useState<Int>(0)` is parsed as a DepJS type-argument application (`f<args>` syntax), which doesn't correctly map to the .d.ts function's `typeParams`. The DepJS desugaring treats `<Int>` as a value argument (the Type value), producing the wrong result. This blocks the workaround for issue #2.
+#### 1. `jsx`/`jsxs` first parameter resolves to `Unknown`
+`React.ElementType` in React's `index.d.ts` is a complex generic type involving mapped types with conditionals, `keyof JSX.IntrinsicElements`, and default type parameters. The DTS translator cannot fully handle this definition, so the type falls through to `Unknown`. The `jsx` and `jsxs` function signatures reference `React.ElementType`, making them unusable.
 
 ## Resolved Issues for Working React Example
 
 The following issues were discovered while attempting to build a counter app and have all been fixed.
 
-### 1. ~~DTS translator discards type parameter names on generic functions~~ FIXED
-**Fix:** Added `typeParams?: string[]` field to `FunctionType`. `translateAmbientFunction` and `translateFunctionDeclaration` now attach type param names to function types and clean up scope after translation.
+### 1. ~~Array destructuring not supported~~ FIXED
+**Fix:** Implemented array destructuring (`const [a, b] = expr`) in the parser/desugarer. Desugars to indexed access: `const a = expr[0]; const b = expr[1];` etc. Works with tuple types from `.d.ts` generic functions (e.g., `useState`).
 
-### 2. ~~Type checker doesn't infer type arguments during .d.ts function calls~~ FIXED
-**Fix:** Added `inferTypeArguments()` function in `typecheck.ts` that structurally walks parameter types and argument types to collect TypeVar→ConcreteType mappings. Wired into both the non-overloaded and overloaded call paths.
+### 2. ~~Type argument inference preserves literal types too aggressively~~ FIXED
+**Fix:** DTS translator now uses `wideTypeOf` (instead of `typeOf`) as the default for type parameters. The `wideTypeOf` builtin widens literal types to their base primitives (`0` → `Int`, `"hello"` → `String`). So `useState(0)` now infers `S = Int` (not `S = 0`), and `setCount(count + 1)` type-checks correctly.
 
-### 3. ~~Type checker doesn't instantiate return types with inferred type arguments~~ FIXED
-**Fix:** `tryMatchSignature` now returns inferred type arg mappings. Both `checkCall` (non-overloaded) and `checkOverloadedCall` use `substituteTypeVars` to replace TypeVars in return types with inferred concrete types.
+### 3. ~~DTS translator output was resolved Type objects~~ FIXED (Architecture Change)
+**Fix:** Rewrote the DTS translator to output `CoreDecl[]` (DepJS AST) instead of resolved `Type` objects. The type checker now processes `.d.ts` imports uniformly with DepJS code. This eliminated the need for `FunctionType.typeParams`, `inferTypeArguments()`, and `substituteTypeVars` for return type instantiation — generic `.d.ts` functions are now desugared as regular DepJS functions with Type parameters and `wideTypeOf` defaults.
 
-### 4. ~~Parameterized type aliases from .d.ts are not expanded~~ FIXED
+### 4. ~~Explicit type arguments for .d.ts generic functions don't work~~ FIXED
+**Fix:** With the CoreDecl[] architecture, `.d.ts` generic type params become regular DepJS function params of type `Type`. The `f<args>` syntax naturally passes type values to these params, so `useState<Int>(0)` now works correctly.
+
+### 5. ~~Parameterized type aliases from .d.ts are not expanded~~ FIXED
 **Fix:** `translateNamespace` now swaps `ctx.localTypes`/`ctx.localValues` to the namespace's own maps during body processing, so type aliases defined earlier in a namespace (e.g., `Dispatch`, `SetStateAction`) are visible when translating later entries (e.g., `useState`).
 
-### 5. ~~Namespace member types from .d.ts are not resolved~~ FIXED
+### 6. ~~Namespace member types from .d.ts are not resolved~~ FIXED
 **Fix:** `translateIndexedType` now resolves dot-access patterns (`Ns.Member`) by looking up namespace values and their record fields. Also added `NamespaceDeclaration` handling to `translateTopLevel` for nested namespaces without `declare`.
 
 ## Open Questions
@@ -596,15 +590,16 @@ Design decisions that can be addressed as needed:
 - Union and intersection types
 - Generic types with constraints
 - Conditional types with `infer` keyword
+- DTS translator outputs CoreDecl[] (DepJS AST) — processed uniformly by the type checker
 - Overloaded functions (represented as intersection types)
 - Optional parameters (`param?: Type`)
 - Rest parameters (`...param: Type[]`)
 - `keyof` operator (inline records resolve immediately; type references create deferred `KeyofType`)
 - Indexed access `T[K]` (inline records with literal keys resolve immediately; others create `IndexedAccessType`)
 - Namespace member dot-access resolution (e.g., `React.ElementType` resolves to concrete types)
-- Generic function type parameters on `.d.ts` imports (tracked via `FunctionType.typeParams`)
-- Type argument inference for `.d.ts` generic function calls (structural matching of arg types to param types)
-- Return type instantiation with inferred type arguments (via `substituteTypeVars`)
+- Generic `.d.ts` functions desugared to CoreDecl[] with Type params and `wideTypeOf` defaults (type inference handled uniformly by DepJS type checker)
+- Type argument inference for generic function calls (structural matching, with literal widening via `wideTypeOf`)
+- Array destructuring (`const [a, b] = expr`) desugars to indexed access
 - Parameterized type alias expansion within namespaces (sibling types visible during translation)
 - Nested namespace declarations (without `declare` keyword)
 - Cross-file resolution (follows `import` statements and re-exports within `.d.ts` files)
@@ -624,15 +619,15 @@ Design decisions that can be addressed as needed:
 
 ## Test Summary
 
-All tests passing (770 total):
+All tests passing (746 total):
 
 | Module | Tests |
 |--------|-------|
 | parser/lezer-parser | 78 |
 | dts-loader/dts-parser | 17 |
-| dts-loader/dts-translator | 79 |
+| dts-loader/dts-translator | 64 |
 | typecheck/comptime-eval | 156 |
-| typecheck/typecheck | 286 |
+| typecheck/typecheck | 277 |
 | erasure/erasure | 27 |
 | codegen/codegen | 68 |
 | types/subtype | 59 |

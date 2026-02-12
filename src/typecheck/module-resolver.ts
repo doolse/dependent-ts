@@ -8,8 +8,8 @@
 
 import * as fs from "fs";
 import * as path from "path";
-import { Type } from "../types/types";
-import { loadDTS, DTSLoadResult } from "../dts-loader/dts-translator";
+import { CoreDecl } from "../ast/core-ast";
+import { loadDTS } from "../dts-loader/dts-translator";
 
 /**
  * Result of resolving a module.
@@ -17,10 +17,8 @@ import { loadDTS, DTSLoadResult } from "../dts-loader/dts-translator";
 export interface ResolvedModule {
   /** Path to the .d.ts file */
   dtsPath: string;
-  /** Loaded type exports */
-  types: Map<string, Type>;
-  /** Loaded value exports */
-  values: Map<string, Type>;
+  /** Declarations to be processed by the type checker */
+  decls: CoreDecl[];
 }
 
 /**
@@ -111,8 +109,7 @@ export class ModuleResolver {
       // Return empty result to break the cycle
       return {
         dtsPath,
-        types: new Map(),
-        values: new Map(),
+        decls: [],
       };
     }
 
@@ -121,13 +118,11 @@ export class ModuleResolver {
       const content = fs.readFileSync(dtsPath, "utf-8");
       const result = loadDTS(content, {
         filePath: dtsPath,
-        resolver: (specifier, fromPath) => this.resolveForDTS(specifier, fromPath),
       });
 
       return {
         dtsPath,
-        types: result.types,
-        values: result.values,
+        decls: result.decls,
       };
     } catch (error) {
       // File read or parse error
@@ -135,19 +130,6 @@ export class ModuleResolver {
     } finally {
       this.loading.delete(dtsPath);
     }
-  }
-
-  /**
-   * Resolve a module specifier from within a .d.ts file.
-   * Used as a callback during .d.ts translation.
-   */
-  private resolveForDTS(specifier: string, fromPath: string): { types: Map<string, Type>; values: Map<string, Type>; errors: string[] } | null {
-    const fromDir = path.dirname(fromPath);
-    const resolved = this.resolveFromDir(specifier, fromDir);
-    if (resolved) {
-      return { types: resolved.types, values: resolved.values, errors: [] };
-    }
-    return null;
   }
 
   /**

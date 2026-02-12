@@ -76,8 +76,7 @@ export function desugar(tree: Tree, source: string, options?: ParseOptions): Cor
     // Skip to Program's children
     if (cursor.name === "Program" && cursor.firstChild()) {
       do {
-        const decl = desugarStatement(cursor, source);
-        if (decl) decls.push(decl);
+        decls.push(...desugarStatement(cursor, source));
       } while (cursor.nextSibling());
     }
 
@@ -109,32 +108,33 @@ function nodeName(cursor: TreeCursor): string {
 // Statements
 // ============================================
 
-function desugarStatement(cursor: TreeCursor, source: string): CoreDecl | null {
+function desugarStatement(cursor: TreeCursor, source: string): CoreDecl[] {
   switch (cursor.name) {
     case "ConstDecl":
       return desugarConstDecl(cursor, source);
     case "TypeDecl":
-      return desugarTypeDecl(cursor, source);
+      return [desugarTypeDecl(cursor, source)];
     case "NewtypeDecl":
-      return desugarNewtypeDecl(cursor, source);
+      return [desugarNewtypeDecl(cursor, source)];
     case "ImportDecl":
-      return desugarImportDecl(cursor, source);
+      return [desugarImportDecl(cursor, source)];
     case "ExportDecl":
       return desugarExportDecl(cursor, source);
     case "ExpressionStatement":
-      return desugarExprStatement(cursor, source);
+      return [desugarExprStatement(cursor, source)];
     case "⚠":
       // Parse error - skip
-      return null;
+      return [];
     default:
       // Skip unknown nodes (like whitespace, comments)
-      return null;
+      return [];
   }
 }
 
-function desugarConstDecl(cursor: TreeCursor, source: string): CoreDecl {
+function desugarConstDecl(cursor: TreeCursor, source: string): CoreDecl[] {
   const declLoc = loc(cursor);
   let name = "";
+  let arrayPatternNames: string[] | undefined;
   let typeAnnotation: CoreExpr | undefined;
   let init: CoreExpr | undefined;
   let comptime = false;
@@ -150,6 +150,9 @@ function desugarConstDecl(cursor: TreeCursor, source: string): CoreDecl {
         case "VariableName":
         case "TypeName":
           name = text(cursor, source);
+          break;
+        case "ArrayPattern":
+          arrayPatternNames = desugarArrayPattern(cursor, source);
           break;
         case "TypeAnnotation":
           typeAnnotation = desugarTypeAnnotation(cursor, source);
@@ -169,7 +172,46 @@ function desugarConstDecl(cursor: TreeCursor, source: string): CoreDecl {
     error("const declaration missing initializer", cursor);
   }
 
-  return {
+  // Array destructuring: const [a, b] = expr
+  // Desugars to:
+  //   const _destruct_N = expr;
+  //   const a = _destruct_N[0];
+  //   const b = _destruct_N[1];
+  if (arrayPatternNames) {
+    const tempName = `_destruct_${destructCounter++}`;
+    const decls: CoreDecl[] = [
+      {
+        kind: "const",
+        name: tempName,
+        type: typeAnnotation,
+        init,
+        comptime,
+        exported: false,
+        loc: declLoc,
+      },
+    ];
+
+    for (let i = 0; i < arrayPatternNames.length; i++) {
+      decls.push({
+        kind: "const",
+        name: arrayPatternNames[i],
+        type: undefined,
+        init: {
+          kind: "index",
+          object: { kind: "identifier", name: tempName, loc: declLoc },
+          index: { kind: "literal", value: i, literalKind: "int", loc: declLoc },
+          loc: declLoc,
+        },
+        comptime,
+        exported: false,
+        loc: declLoc,
+      });
+    }
+
+    return decls;
+  }
+
+  return [{
     kind: "const",
     name,
     type: typeAnnotation,
@@ -177,7 +219,30 @@ function desugarConstDecl(cursor: TreeCursor, source: string): CoreDecl {
     comptime,
     exported: false,
     loc: declLoc,
-  };
+  }];
+}
+
+let destructCounter = 0;
+
+function desugarArrayPattern(cursor: TreeCursor, source: string): string[] {
+  const names: string[] = [];
+  if (cursor.firstChild()) {
+    do {
+      if (cursor.name === "ListOf") {
+        if (cursor.firstChild()) {
+          do {
+            const childName = cursor.name as string;
+            if (childName === "VariableName" || childName === "TypeName") {
+              names.push(text(cursor, source));
+            }
+          } while (cursor.nextSibling());
+          cursor.parent();
+        }
+      }
+    } while (cursor.nextSibling());
+    cursor.parent();
+  }
+  return names;
 }
 
 function desugarTypeDecl(cursor: TreeCursor, source: string): CoreDecl {
@@ -504,16 +569,17 @@ function desugarImportSpecifier(cursor: TreeCursor, source: string): CoreImportS
   return { name, alias };
 }
 
-function desugarExportDecl(cursor: TreeCursor, source: string): CoreDecl {
+function desugarExportDecl(cursor: TreeCursor, source: string): CoreDecl[] {
   if (cursor.firstChild()) {
     cursor.nextSibling(); // Skip "export"
-    const decl = desugarStatement(cursor, source);
+    const decls = desugarStatement(cursor, source);
     cursor.parent();
 
-    if (decl && decl.kind === "const") {
-      return { ...decl, exported: true };
+    if (decls.length > 0) {
+      return decls.map(decl =>
+        decl.kind === "const" ? { ...decl, exported: true } : decl
+      );
     }
-    if (decl) return decl;
   }
 
   error("export declaration missing inner declaration", cursor);
@@ -765,12 +831,14 @@ function desugarArrowFn(cursor: TreeCursor, source: string): CoreExpr {
       typeExpr = { kind: "identifier", name: "Type", loc: fnLoc };
     }
 
-    // Create default: typeOf(paramName) if we found a matching param
+    // Create default: wideTypeOf(paramName) if we found a matching param
+    // wideTypeOf widens literal types (e.g., 0 → Int) which is appropriate
+    // for generic defaults where literal preservation is too precise
     let defaultValue: CoreExpr | undefined = typeParam.defaultValue;
     if (!defaultValue && matchingParam) {
       defaultValue = {
         kind: "call",
-        fn: { kind: "identifier", name: "typeOf", loc: fnLoc },
+        fn: { kind: "identifier", name: "wideTypeOf", loc: fnLoc },
         args: [{ kind: "element", value: { kind: "identifier", name: matchingParam.name, loc: fnLoc } }],
         loc: fnLoc,
       };
@@ -1612,9 +1680,9 @@ function desugarBlock(cursor: TreeCursor, source: string): CoreExpr {
       if (cursor.name === "BlockContent") {
         if (cursor.firstChild()) {
           do {
-            const stmt = desugarStatement(cursor, source);
-            if (stmt) {
-              statements.push(stmt);
+            const stmts = desugarStatement(cursor, source);
+            if (stmts.length > 0) {
+              statements.push(...stmts);
             } else if (isExpression(cursor.name)) {
               result = desugarExpr(cursor, source);
             }

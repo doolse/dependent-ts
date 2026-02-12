@@ -29,8 +29,8 @@ import {
   substituteThis,
   isVariadicArray,
   getArrayElementTypes,
-  substituteTypeVars,
   unwrapMetadata,
+  substituteTypeVars,
 } from "../types/types";
 import { isSubtype } from "../types/subtype";
 import { formatType } from "../types/format";
@@ -54,7 +54,7 @@ import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
 import { isComptimeOnlyProperty, getTypePropertyType, getTypeProperty } from "./type-properties";
 import { getArrayMethodType, getArrayElementType } from "./array-methods";
 import { getStringMethodType } from "./string-methods";
-import { ModuleResolver, ModuleResolverConfig } from "./module-resolver";
+import { ModuleResolver } from "./module-resolver";
 
 /**
  * Type checker configuration.
@@ -79,96 +79,30 @@ export function typecheck(
 }
 
 /**
- * Infer type argument bindings by structurally matching argument types against
- * parameter types that contain type variables. Used for .d.ts generic functions
- * where type parameters are tracked on the FunctionType rather than desugared
- * into value parameters.
+ * Widen a type by replacing literal types with their base primitives.
+ * Used during type parameter inference to avoid overly narrow types
+ * (e.g., useState(0) should infer S=Int, not S=0).
  */
-export function inferTypeArguments(
-  typeParams: string[],
-  paramTypes: Type[],
-  argTypes: Type[]
-): Map<string, Type> {
-  const inferences = new Map<string, Type>();
-  const typeParamSet = new Set(typeParams);
-
-  for (let i = 0; i < Math.min(paramTypes.length, argTypes.length); i++) {
-    inferFromTypes(paramTypes[i], argTypes[i], typeParamSet, inferences);
-  }
-
-  return inferences;
-}
-
-/**
- * Recursively walk a parameter type pattern and argument type to extract
- * TypeVar → ConcreteType bindings. First binding wins for each TypeVar.
- */
-function inferFromTypes(
-  paramType: Type,
-  argType: Type,
-  typeParams: Set<string>,
-  inferences: Map<string, Type>
-): void {
-  // Unwrap metadata on both sides
-  if (paramType.kind === "withMetadata") {
-    inferFromTypes(paramType.baseType, argType, typeParams, inferences);
-    return;
-  }
-  if (argType.kind === "withMetadata") {
-    inferFromTypes(paramType, argType.baseType, typeParams, inferences);
-    return;
-  }
-
-  // Direct TypeVar match - if it's one of our type params, record the binding
-  if (paramType.kind === "typeVar" && typeParams.has(paramType.name)) {
-    if (!inferences.has(paramType.name)) {
-      inferences.set(paramType.name, argType);
-    }
-    return;
-  }
-
-  // Union param type: infer from each member that contains a type param
-  if (paramType.kind === "union") {
-    for (const member of paramType.types) {
-      inferFromTypes(member, argType, typeParams, inferences);
-    }
-    return;
-  }
-
-  // Intersection param type: infer from each member
-  if (paramType.kind === "intersection") {
-    for (const member of paramType.types) {
-      inferFromTypes(member, argType, typeParams, inferences);
-    }
-    return;
-  }
-
-  // Function types: match param types and return types
-  if (paramType.kind === "function" && argType.kind === "function") {
-    for (let i = 0; i < Math.min(paramType.params.length, argType.params.length); i++) {
-      inferFromTypes(paramType.params[i].type, argType.params[i].type, typeParams, inferences);
-    }
-    inferFromTypes(paramType.returnType, argType.returnType, typeParams, inferences);
-    return;
-  }
-
-  // Array types: match element types
-  if (paramType.kind === "array" && argType.kind === "array") {
-    for (let i = 0; i < Math.min(paramType.elements.length, argType.elements.length); i++) {
-      inferFromTypes(paramType.elements[i].type, argType.elements[i].type, typeParams, inferences);
-    }
-    return;
-  }
-
-  // Record types: match field types by name
-  if (paramType.kind === "record" && argType.kind === "record") {
-    for (const pField of paramType.fields) {
-      const aField = argType.fields.find((f) => f.name === pField.name);
-      if (aField) {
-        inferFromTypes(pField.type, aField.type, typeParams, inferences);
-      }
-    }
-    return;
+function widenInferredType(t: Type): Type {
+  switch (t.kind) {
+    case "literal":
+      return primitiveType(t.baseType);
+    case "array":
+      return {
+        ...t,
+        elements: t.elements.map(e => ({ ...e, type: widenInferredType(e.type) })),
+      };
+    case "record":
+      return {
+        ...t,
+        fields: t.fields.map(f => ({ ...f, type: widenInferredType(f.type) })),
+      };
+    case "union":
+      return unionType(t.types.map(widenInferredType));
+    case "withMetadata":
+      return withMetadata(widenInferredType(t.baseType), t.metadata);
+    default:
+      return t;
   }
 }
 
@@ -398,39 +332,59 @@ class TypeChecker {
   private checkImportDecl(
     decl: CoreDecl & { kind: "import" }
   ): TypedDecl {
-    // Try to resolve the module and load types from .d.ts
+    // Try to resolve the module and load CoreDecl[] from .d.ts
     const resolved = this.moduleResolver?.resolve(decl.source);
 
-    // Helper to get type for an imported name
-    const getImportedType = (name: string): Type => {
-      if (!resolved) return primitiveType("Unknown");
+    if (!resolved || resolved.decls.length === 0) {
+      // Module not found or empty - define all imported names as Unknown
+      this.defineImportedNamesAsUnknown(decl);
+      return {
+        ...decl,
+        declType: primitiveType("Void"),
+        comptimeOnly: false,
+      };
+    }
 
-      // Check values first (functions, constants), then types
-      const valueType = resolved.values.get(name);
-      if (valueType) return valueType;
+    // Process CoreDecls in a child environment
+    // Save current envs, create children, swap in
+    const parentTypeEnv = this.typeEnv;
+    const parentComptimeEnv = this.comptimeEnv;
+    const childTypeEnv = parentTypeEnv.extend();
+    const childComptimeEnv = parentComptimeEnv.extend();
+    this.typeEnv = childTypeEnv;
+    this.comptimeEnv = childComptimeEnv;
 
-      const typeType = resolved.types.get(name);
-      if (typeType) return typeType;
+    try {
+      // Process each declaration from the .d.ts file
+      // Errors are caught per-declaration since .d.ts files may reference
+      // types we can't resolve (TypeScript globals, complex generics, etc.)
+      // Reset fuel for each declaration to prevent exhaustion from large .d.ts files
+      for (const moduleDecl of resolved.decls) {
+        try {
+          this.evaluator.reset();
+          this.checkDecl(moduleDecl);
+        } catch {
+          // Skip declarations that fail - they may reference unsupported types
+        }
+      }
+    } finally {
+      // Restore parent envs
+      this.typeEnv = parentTypeEnv;
+      this.comptimeEnv = parentComptimeEnv;
+    }
 
-      // For modules with namespace exports (like React), try with namespace prefix
-      // Extract potential namespace name from module specifier
-      const moduleName = decl.source.split("/").pop() ?? "";
-      const namespacePrefix = moduleName.charAt(0).toUpperCase() + moduleName.slice(1);
-      const prefixedName = `${namespacePrefix}.${name}`;
-
-      const prefixedValueType = resolved.values.get(prefixedName);
-      if (prefixedValueType) return prefixedValueType;
-
-      const prefixedTypeType = resolved.types.get(prefixedName);
-      if (prefixedTypeType) return prefixedTypeType;
-
-      return primitiveType("Unknown");
+    // Extract imported names from child scope
+    const getImportedBinding = (name: string): TypeBinding | undefined => {
+      // Look up in child's own bindings first
+      const binding = childTypeEnv.getOwnBindings().get(name);
+      if (binding) return binding;
+      return undefined;
     };
 
     switch (decl.clause.kind) {
       case "default": {
-        // Default import - look for "default" export
-        const type = getImportedType("default");
+        const binding = getImportedBinding("default");
+        const type = binding?.type ?? primitiveType("Unknown");
         this.typeEnv.define(decl.clause.name, {
           type,
           comptimeStatus: "runtime",
@@ -444,58 +398,62 @@ class TypeChecker {
         for (const spec of decl.clause.specifiers) {
           const importedName = spec.name;
           const localName = spec.alias ?? spec.name;
-          const type = getImportedType(importedName);
+          const binding = getImportedBinding(importedName);
+          const type = binding?.type ?? primitiveType("Unknown");
 
           this.typeEnv.define(localName, {
             type,
-            comptimeStatus: "runtime",
+            comptimeStatus: binding?.comptimeStatus ?? "runtime",
             mutable: false,
           });
-          this.comptimeEnv.defineUnavailable(localName);
+
+          // Copy comptime value if available
+          const comptimeEntry = childComptimeEnv.getOwnEntries().get(importedName);
+          if (comptimeEntry && comptimeEntry.status === "evaluated") {
+            this.comptimeEnv.defineEvaluated(localName, comptimeEntry.value);
+          } else if (comptimeEntry && comptimeEntry.status === "unevaluated") {
+            this.comptimeEnv.defineUnevaluated(localName, comptimeEntry.expr, comptimeEntry.typeEnv);
+          } else {
+            this.comptimeEnv.defineUnavailable(localName);
+          }
         }
         break;
 
       case "namespace": {
         // Namespace import: import * as X from "module"
-        // Build a record type from all exports
-        if (resolved) {
-          const fields: FieldInfo[] = [];
+        // Build a record type from all exported bindings in child scope
+        const fields: FieldInfo[] = [];
+        const comptimeFields: Record<string, any> = {};
 
-          // Add all values as fields
-          for (const [name, type] of resolved.values) {
-            // Skip namespace-prefixed names (e.g., "React.useState")
-            if (!name.includes(".")) {
-              fields.push({ name, type, optional: false, annotations: [] });
-            }
+        for (const [name, binding] of childTypeEnv.getOwnBindings()) {
+          fields.push({ name, type: binding.type, optional: false, annotations: [] });
+
+          // Build comptime record: try to get evaluated value
+          const comptimeEntry = childComptimeEnv.getOwnEntries().get(name);
+          if (comptimeEntry?.status === "evaluated") {
+            comptimeFields[name] = comptimeEntry.value.value;
           }
-
-          // Add all types as fields (they're values at the type level)
-          for (const [name, type] of resolved.types) {
-            // Skip namespace-prefixed names
-            if (!name.includes(".")) {
-              fields.push({ name, type, optional: false, annotations: [] });
-            }
-          }
-
-          this.typeEnv.define(decl.clause.name, {
-            type: recordType(fields),
-            comptimeStatus: "runtime",
-            mutable: false,
-          });
-        } else {
-          this.typeEnv.define(decl.clause.name, {
-            type: primitiveType("Unknown"),
-            comptimeStatus: "runtime",
-            mutable: false,
-          });
         }
-        this.comptimeEnv.defineUnavailable(decl.clause.name);
+
+        const nsType = recordType(fields);
+        this.typeEnv.define(decl.clause.name, {
+          type: nsType,
+          comptimeStatus: "comptime",
+          mutable: false,
+        });
+
+        // Make namespace available at comptime so type references like React.ElementType work
+        this.comptimeEnv.defineEvaluated(decl.clause.name, {
+          value: comptimeFields,
+          type: nsType,
+        });
         break;
       }
 
       case "defaultAndNamed": {
         // Default import
-        const defaultType = getImportedType("default");
+        const defaultBinding = getImportedBinding("default");
+        const defaultType = defaultBinding?.type ?? primitiveType("Unknown");
         this.typeEnv.define(decl.clause.defaultName, {
           type: defaultType,
           comptimeStatus: "runtime",
@@ -507,14 +465,23 @@ class TypeChecker {
         for (const spec of decl.clause.specifiers) {
           const importedName = spec.name;
           const localName = spec.alias ?? spec.name;
-          const type = getImportedType(importedName);
+          const binding = getImportedBinding(importedName);
+          const type = binding?.type ?? primitiveType("Unknown");
 
           this.typeEnv.define(localName, {
             type,
-            comptimeStatus: "runtime",
+            comptimeStatus: binding?.comptimeStatus ?? "runtime",
             mutable: false,
           });
-          this.comptimeEnv.defineUnavailable(localName);
+
+          const comptimeEntry = childComptimeEnv.getOwnEntries().get(importedName);
+          if (comptimeEntry && comptimeEntry.status === "evaluated") {
+            this.comptimeEnv.defineEvaluated(localName, comptimeEntry.value);
+          } else if (comptimeEntry && comptimeEntry.status === "unevaluated") {
+            this.comptimeEnv.defineUnevaluated(localName, comptimeEntry.expr, comptimeEntry.typeEnv);
+          } else {
+            this.comptimeEnv.defineUnavailable(localName);
+          }
         }
         break;
       }
@@ -525,6 +492,38 @@ class TypeChecker {
       declType: primitiveType("Void"),
       comptimeOnly: false,
     };
+  }
+
+  /**
+   * Define all imported names as Unknown when module can't be resolved.
+   */
+  private defineImportedNamesAsUnknown(decl: CoreDecl & { kind: "import" }): void {
+    switch (decl.clause.kind) {
+      case "default":
+        this.typeEnv.define(decl.clause.name, { type: primitiveType("Unknown"), comptimeStatus: "runtime", mutable: false });
+        this.comptimeEnv.defineUnavailable(decl.clause.name);
+        break;
+      case "named":
+        for (const spec of decl.clause.specifiers) {
+          const localName = spec.alias ?? spec.name;
+          this.typeEnv.define(localName, { type: primitiveType("Unknown"), comptimeStatus: "runtime", mutable: false });
+          this.comptimeEnv.defineUnavailable(localName);
+        }
+        break;
+      case "namespace":
+        this.typeEnv.define(decl.clause.name, { type: primitiveType("Unknown"), comptimeStatus: "runtime", mutable: false });
+        this.comptimeEnv.defineUnavailable(decl.clause.name);
+        break;
+      case "defaultAndNamed":
+        this.typeEnv.define(decl.clause.defaultName, { type: primitiveType("Unknown"), comptimeStatus: "runtime", mutable: false });
+        this.comptimeEnv.defineUnavailable(decl.clause.defaultName);
+        for (const spec of decl.clause.specifiers) {
+          const localName = spec.alias ?? spec.name;
+          this.typeEnv.define(localName, { type: primitiveType("Unknown"), comptimeStatus: "runtime", mutable: false });
+          this.comptimeEnv.defineUnavailable(localName);
+        }
+        break;
+    }
   }
 
   /**
@@ -989,16 +988,12 @@ class TypeChecker {
       }
     }
 
-    // Infer type arguments for .d.ts generic functions
     let returnType = fnType.returnType;
-    if (fnType.typeParams && fnType.typeParams.length > 0) {
-      const argTypes = expandedArgTypes.map((a) => a.type);
-      const paramTypes = fnType.params.map((p) => p.type);
-      const typeArgMap = inferTypeArguments(fnType.typeParams, paramTypes, argTypes);
-      if (typeArgMap.size > 0) {
-        returnType = substituteTypeVars(returnType, typeArgMap);
-      }
-    }
+
+    // Substitute type parameters in return type
+    // When a function has params of type Type that receive concrete types,
+    // substitute the matching typeVars in the return type
+    returnType = this.substituteTypeParamsInReturnType(fnType, expandedArgTypes.map(a => a.type));
 
     // Handle generic return type inference for array methods
     if (expr.fn.kind === "property") {
@@ -1124,17 +1119,12 @@ class TypeChecker {
         const comptimeOnly =
           fn.comptimeOnly || args.some((a) => a.comptimeOnly);
 
-        // Substitute inferred type arguments into return type
-        let returnType = sig.returnType;
-        if (matchResult.typeArgMap && matchResult.typeArgMap.size > 0) {
-          returnType = substituteTypeVars(returnType, matchResult.typeArgMap);
-        }
-
+        const resolvedReturnType = this.substituteTypeParamsInReturnType(sig, args.map(a => a.type));
         return {
           ...expr,
           fn,
           args: typedArgs as unknown as CoreArgument[],
-          type: returnType,
+          type: resolvedReturnType,
           comptimeOnly,
         };
       }
@@ -1246,7 +1236,7 @@ class TypeChecker {
     sig: Type & { kind: "function" },
     args: TypedExpr[],
     _coreArgs: CoreArgument[]
-  ): { matches: boolean; typeArgMap?: Map<string, Type> } {
+  ): { matches: boolean } {
     // Check argument count
     const hasRestParam = sig.params.length > 0 && sig.params[sig.params.length - 1].rest;
     const nonRestParams = hasRestParam ? sig.params.slice(0, -1) : sig.params;
@@ -1286,15 +1276,129 @@ class TypeChecker {
       }
     }
 
-    // Infer type arguments if the signature has type params
-    let typeArgMap: Map<string, Type> | undefined;
-    if (sig.typeParams && sig.typeParams.length > 0) {
-      const paramTypes = sig.params.map((p) => p.type);
-      const argTypes = args.map((a) => a.type);
-      typeArgMap = inferTypeArguments(sig.typeParams, paramTypes, argTypes);
+    return { matches: true };
+  }
+
+  /**
+   * Substitute type parameters in a function's return type.
+   * Identifies type params (params of type Type), infers their values from
+   * value argument types via structural matching, and substitutes in return type.
+   */
+  private substituteTypeParamsInReturnType(
+    fnType: Type & { kind: "function" },
+    argTypes: Type[]
+  ): Type {
+    // Find type params: params whose type is Type (primitive)
+    const typeParamNames: string[] = [];
+    const valueParamTypes: Type[] = [];
+    const valueArgTypes: Type[] = [];
+
+    for (let i = 0; i < fnType.params.length; i++) {
+      const param = fnType.params[i];
+      if (param.type.kind === "primitive" && param.type.name === "Type") {
+        typeParamNames.push(param.name);
+      } else {
+        valueParamTypes.push(param.type);
+        if (i < argTypes.length) {
+          valueArgTypes.push(argTypes[i]);
+        }
+      }
     }
 
-    return { matches: true, typeArgMap };
+    if (typeParamNames.length === 0) return fnType.returnType;
+
+    // Infer type arg values by structurally matching value args to value params
+    const inferences = new Map<string, Type>();
+    const typeParamSet = new Set(typeParamNames);
+
+    for (let i = 0; i < Math.min(valueParamTypes.length, valueArgTypes.length); i++) {
+      this.inferFromTypes(valueParamTypes[i], valueArgTypes[i], typeParamSet, inferences);
+    }
+
+    if (inferences.size === 0) return fnType.returnType;
+
+    // Widen inferred types (literal → primitive) for type params.
+    // DTS generics use wideTypeOf defaults which widen literals;
+    // structural inference gives the literal type, so we widen here.
+    const widenedInferences = new Map<string, Type>();
+    for (const [name, type] of inferences) {
+      widenedInferences.set(name, widenInferredType(type));
+    }
+
+    return substituteTypeVars(fnType.returnType, widenedInferences);
+  }
+
+  /**
+   * Recursively walk a parameter type and argument type to extract
+   * TypeVar → ConcreteType bindings. First binding wins for each TypeVar.
+   */
+  private inferFromTypes(
+    paramType: Type,
+    argType: Type,
+    typeParams: Set<string>,
+    inferences: Map<string, Type>
+  ): void {
+    // Unwrap metadata
+    if (paramType.kind === "withMetadata") {
+      this.inferFromTypes(paramType.baseType, argType, typeParams, inferences);
+      return;
+    }
+    if (argType.kind === "withMetadata") {
+      this.inferFromTypes(paramType, argType.baseType, typeParams, inferences);
+      return;
+    }
+
+    // TypeVar match
+    if (paramType.kind === "typeVar" && typeParams.has(paramType.name)) {
+      if (!inferences.has(paramType.name)) {
+        inferences.set(paramType.name, argType);
+      }
+      return;
+    }
+
+    // Union: infer from each member
+    if (paramType.kind === "union") {
+      for (const member of paramType.types) {
+        this.inferFromTypes(member, argType, typeParams, inferences);
+      }
+      return;
+    }
+
+    // Intersection: infer from each member
+    if (paramType.kind === "intersection") {
+      for (const member of paramType.types) {
+        this.inferFromTypes(member, argType, typeParams, inferences);
+      }
+      return;
+    }
+
+    // Function types
+    if (paramType.kind === "function" && argType.kind === "function") {
+      for (let i = 0; i < Math.min(paramType.params.length, argType.params.length); i++) {
+        this.inferFromTypes(paramType.params[i].type, argType.params[i].type, typeParams, inferences);
+      }
+      this.inferFromTypes(paramType.returnType, argType.returnType, typeParams, inferences);
+      return;
+    }
+
+    // Array types
+    if (paramType.kind === "array" && argType.kind === "array") {
+      for (let i = 0; i < Math.min(paramType.elements.length, argType.elements.length); i++) {
+        this.inferFromTypes(paramType.elements[i].type, argType.elements[i].type, typeParams, inferences);
+      }
+      return;
+    }
+
+    // Record types
+    if (paramType.kind === "record" && argType.kind === "record") {
+      for (const pField of paramType.fields) {
+        const aField = argType.fields.find(f => f.name === pField.name);
+        if (aField) {
+          this.inferFromTypes(pField.type, aField.type, typeParams, inferences);
+        }
+      }
+      return;
+    }
   }
 
   /**
@@ -1736,10 +1840,13 @@ class TypeChecker {
         this.typeEnv = childTypeEnv;
         this.comptimeEnv = childComptimeEnv;
 
-        const defaultTyped = this.checkExpr(param.defaultValue, paramType);
-
-        this.typeEnv = savedTypeEnvTemp;
-        this.comptimeEnv = savedComptimeEnvTemp;
+        let defaultTyped: TypedExpr;
+        try {
+          defaultTyped = this.checkExpr(param.defaultValue, paramType);
+        } finally {
+          this.typeEnv = savedTypeEnvTemp;
+          this.comptimeEnv = savedComptimeEnvTemp;
+        }
 
         if (!isSubtype(defaultTyped.type, paramType)) {
           throw new CompileError(
@@ -1776,31 +1883,34 @@ class TypeChecker {
     this.typeEnv = childTypeEnv;
     this.comptimeEnv = childComptimeEnv;
 
-    // Check return type annotation if present
-    // Use child environments since return type may reference type params
     let returnType: Type | undefined;
-    if (expr.returnType) {
-      const typeValue = this.evaluator.evaluate(
-        expr.returnType,
-        childComptimeEnv,
-        childTypeEnv
-      );
-      if (!isTypeValue(typeValue)) {
-        throw new CompileError(
-          `Return type must be a Type`,
-          "typecheck",
-          expr.returnType.loc
+    let typedBody: TypedExpr;
+    try {
+      // Check return type annotation if present
+      // Use child environments since return type may reference type params
+      if (expr.returnType) {
+        const typeValue = this.evaluator.evaluate(
+          expr.returnType,
+          childComptimeEnv,
+          childTypeEnv
         );
+        if (!isTypeValue(typeValue)) {
+          throw new CompileError(
+            `Return type must be a Type`,
+            "typecheck",
+            expr.returnType.loc
+          );
+        }
+        returnType = typeValue.value as Type;
       }
-      returnType = typeValue.value as Type;
+
+      // Check body
+      typedBody = this.checkExpr(expr.body, returnType);
+    } finally {
+      // Restore environments (must happen even on error)
+      this.typeEnv = savedTypeEnv;
+      this.comptimeEnv = savedComptimeEnv;
     }
-
-    // Check body
-    const typedBody = this.checkExpr(expr.body, returnType);
-
-    // Restore environments
-    this.typeEnv = savedTypeEnv;
-    this.comptimeEnv = savedComptimeEnv;
 
     // Determine return type
     const finalReturnType = returnType ?? typedBody.type;
@@ -1825,25 +1935,23 @@ class TypeChecker {
   }
 
   /**
-   * Check if a parameter is a desugared type parameter (from generic syntax <T>).
-   * Type params are identified by:
-   * - Type annotation being Type or Type<Constraint>
-   * - Having a default value that calls typeOf (e.g., typeOf(x))
+   * Check if a parameter is a type parameter.
    *
-   * This distinguishes from regular Type value parameters like (T: Type) which
-   * don't have a typeOf default.
+   * A param is a type param if its type annotation is Type or Type<Constraint>.
+   * This covers both:
+   * - Desugared generic params with typeOf/wideTypeOf defaults: (x: T, T: Type = wideTypeOf(x))
+   * - Type alias params without defaults: (T: Type) from `type Foo<T> = ...`
    */
   private isTypeParam(param: CoreParam): boolean {
     if (!param.type) return false;
 
-    // Check for typeOf default value - this distinguishes desugared type params
-    // from regular Type value parameters
-    const hasTypeOfDefault =
-      param.defaultValue?.kind === "call" &&
-      param.defaultValue.fn.kind === "identifier" &&
-      param.defaultValue.fn.name === "typeOf";
-
-    if (!hasTypeOfDefault) return false;
+    // Must have a default value using typeOf or wideTypeOf to be a type param
+    // (desugared from <T> generic syntax)
+    if (!param.defaultValue) return false;
+    if (param.defaultValue.kind !== "call") return false;
+    if (param.defaultValue.fn.kind !== "identifier") return false;
+    const defaultFnName = param.defaultValue.fn.name;
+    if (defaultFnName !== "typeOf" && defaultFnName !== "wideTypeOf") return false;
 
     // Plain Type
     if (param.type.kind === "identifier" && param.type.name === "Type") {
@@ -2032,31 +2140,32 @@ class TypeChecker {
 
     const typedStatements: TypedDecl[] = [];
     let comptimeOnly = false;
-
-    for (const stmt of expr.statements) {
-      const typed = this.checkDecl(stmt);
-      typedStatements.push(typed);
-      comptimeOnly = comptimeOnly || typed.comptimeOnly;
-    }
-
     let resultType: Type = primitiveType("Undefined");
     let typedResult: TypedExpr | undefined;
 
-    if (expr.result) {
-      typedResult = this.checkExpr(expr.result);
-      resultType = typedResult.type;
-      comptimeOnly = comptimeOnly || typedResult.comptimeOnly;
-    } else if (typedStatements.length > 0) {
-      // If no trailing expression, use the last statement's type if it's an expression statement
-      // This handles cases like { throw "error"; } where the block has type Never
-      const lastStmt = typedStatements[typedStatements.length - 1];
-      if (lastStmt.kind === "expr") {
-        resultType = lastStmt.expr.type;
+    try {
+      for (const stmt of expr.statements) {
+        const typed = this.checkDecl(stmt);
+        typedStatements.push(typed);
+        comptimeOnly = comptimeOnly || typed.comptimeOnly;
       }
-    }
 
-    this.typeEnv = savedTypeEnv;
-    this.comptimeEnv = savedComptimeEnv;
+      if (expr.result) {
+        typedResult = this.checkExpr(expr.result);
+        resultType = typedResult.type;
+        comptimeOnly = comptimeOnly || typedResult.comptimeOnly;
+      } else if (typedStatements.length > 0) {
+        // If no trailing expression, use the last statement's type if it's an expression statement
+        // This handles cases like { throw "error"; } where the block has type Never
+        const lastStmt = typedStatements[typedStatements.length - 1];
+        if (lastStmt.kind === "expr") {
+          resultType = lastStmt.expr.type;
+        }
+      }
+    } finally {
+      this.typeEnv = savedTypeEnv;
+      this.comptimeEnv = savedComptimeEnv;
+    }
 
     return {
       ...expr,
@@ -2083,44 +2192,47 @@ class TypeChecker {
       const savedTypeEnv = this.typeEnv;
       this.typeEnv = childTypeEnv;
 
-      // Compute narrowed type for this case
-      const narrowedType = this.narrowTypeByPattern(matchExpr.type, c.pattern);
+      let bodyExpr: TypedExpr;
+      try {
+        // Compute narrowed type for this case
+        const narrowedType = this.narrowTypeByPattern(matchExpr.type, c.pattern);
 
-      // If the scrutinee is an identifier, shadow it with the narrowed type
-      if (expr.expr.kind === "identifier") {
-        this.typeEnv.define(expr.expr.name, {
-          type: narrowedType,
-          comptimeStatus: "runtime",
-          mutable: false,
-        });
-      }
-
-      // Add pattern bindings to environment (using narrowed type)
-      this.addPatternBindings(c.pattern, narrowedType);
-
-      // Check guard if present
-      if (c.guard) {
-        const guardExpr = this.checkExpr(c.guard);
-        if (!isSubtype(guardExpr.type, primitiveType("Boolean"))) {
-          throw new CompileError(
-            `Guard must be Boolean`,
-            "typecheck",
-            c.guard.loc
-          );
+        // If the scrutinee is an identifier, shadow it with the narrowed type
+        if (expr.expr.kind === "identifier") {
+          this.typeEnv.define(expr.expr.name, {
+            type: narrowedType,
+            comptimeStatus: "runtime",
+            mutable: false,
+          });
         }
-        comptimeOnly = comptimeOnly || guardExpr.comptimeOnly;
+
+        // Add pattern bindings to environment (using narrowed type)
+        this.addPatternBindings(c.pattern, narrowedType);
+
+        // Check guard if present
+        if (c.guard) {
+          const guardExpr = this.checkExpr(c.guard);
+          if (!isSubtype(guardExpr.type, primitiveType("Boolean"))) {
+            throw new CompileError(
+              `Guard must be Boolean`,
+              "typecheck",
+              c.guard.loc
+            );
+          }
+          comptimeOnly = comptimeOnly || guardExpr.comptimeOnly;
+        }
+
+        // Check body
+        bodyExpr = this.checkExpr(c.body);
+        caseTypes.push(bodyExpr.type);
+        comptimeOnly = comptimeOnly || bodyExpr.comptimeOnly;
+      } finally {
+        this.typeEnv = savedTypeEnv;
       }
-
-      // Check body
-      const bodyExpr = this.checkExpr(c.body);
-      caseTypes.push(bodyExpr.type);
-      comptimeOnly = comptimeOnly || bodyExpr.comptimeOnly;
-
-      this.typeEnv = savedTypeEnv;
 
       typedCases.push({
         ...c,
-        body: bodyExpr,
+        body: bodyExpr!,
       });
     }
 

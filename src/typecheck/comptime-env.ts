@@ -220,6 +220,13 @@ export class ComptimeEnv {
   }
 
   /**
+   * Get all entries in this scope (not including parent).
+   */
+  getOwnEntries(): Map<string, ComptimeEntry> {
+    return new Map(this.entries);
+  }
+
+  /**
    * Get entry from this scope or parent.
    */
   private getEntry(name: string): ComptimeEntry | undefined {

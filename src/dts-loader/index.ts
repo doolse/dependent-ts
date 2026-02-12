@@ -1,13 +1,13 @@
 /**
  * TypeScript .d.ts Loader
  *
- * Parses and translates TypeScript declaration files (.d.ts) into DepJS types.
+ * Parses and translates TypeScript declaration files (.d.ts) into CoreDecl[].
+ * The type checker then processes these declarations uniformly with native DepJS code.
  *
  * Usage:
  *   import { loadDTS } from "./dts-loader";
  *   const result = loadDTS(dtsContent);
- *   // result.types - Map of exported type names to Type values
- *   // result.values - Map of exported value names (functions, consts) to Type values
+ *   // result.decls - Array of CoreDecl to be processed by the type checker
  *   // result.errors - Array of error messages
  */
 

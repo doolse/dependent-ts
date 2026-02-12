@@ -152,6 +152,7 @@ export function createInitialComptimeEnv(): ComptimeEnv {
 
   // Special builtins
   env.defineEvaluated("typeOf", wrapBuiltinValue(builtinTypeOf));
+  env.defineEvaluated("wideTypeOf", wrapBuiltinValue(builtinWideTypeOf));
   env.defineEvaluated("assert", wrapBuiltinValue(builtinAssert));
   env.defineEvaluated("fromEntries", wrapBuiltinValue(builtinFromEntries));
   env.defineEvaluated("buildRecord", wrapBuiltinValue(builtinBuildRecord));
@@ -319,8 +320,17 @@ export function createInitialTypeEnv(): TypeEnv {
     mutable: false,
   });
 
-  // typeOf and assert have special handling in the type checker
+  // typeOf and wideTypeOf have special handling in the type checker
   env.define("typeOf", {
+    type: functionType(
+      [{ name: "value", type: primitiveType("Unknown"), optional: false }],
+      typeType
+    ),
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
+  env.define("wideTypeOf", {
     type: functionType(
       [{ name: "value", type: primitiveType("Unknown"), optional: false }],
       typeType
@@ -880,6 +890,57 @@ const builtinLiteralType: ComptimeBuiltin = {
         loc
       );
     }
+  },
+};
+
+/**
+ * Widen a type by replacing literal types with their base primitive types.
+ * Used by wideTypeOf for generic defaults in .d.ts functions where
+ * literal preservation is too aggressive (e.g., useState(0) should infer S=Int, not S=0).
+ */
+function widenType(t: Type): Type {
+  switch (t.kind) {
+    case "literal":
+      return primitiveType(t.baseType);
+    case "array": {
+      const widenedElements = t.elements.map(el => ({
+        ...el,
+        type: widenType(el.type),
+      }));
+      return { ...t, elements: widenedElements };
+    }
+    case "record": {
+      const widenedFields = t.fields.map(f => ({
+        ...f,
+        type: widenType(f.type),
+      }));
+      return { ...t, fields: widenedFields };
+    }
+    case "union":
+      return unionType(t.types.map(widenType));
+    case "withMetadata":
+      return withMetadata(widenType(t.baseType), t.metadata);
+    default:
+      return t;
+  }
+}
+
+/**
+ * wideTypeOf builtin - like typeOf but widens literal types to their base types.
+ * Used for generic defaults in .d.ts functions.
+ */
+const builtinWideTypeOf: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "wideTypeOf",
+  impl: (args, _evaluator, loc) => {
+    if (args.length !== 1) {
+      throw new CompileError(
+        "wideTypeOf expects exactly 1 argument",
+        "typecheck",
+        loc
+      );
+    }
+    return wrapTypeValue(widenType(args[0].type));
   },
 };
 

@@ -22,8 +22,10 @@ statement {
 }
 
 ConstDecl {
-  kw<"comptime">? kw<"const"> identifierOrTypeName TypeAnnotation? "=" expression ";"
+  kw<"comptime">? kw<"const"> (identifierOrTypeName | ArrayPattern) TypeAnnotation? "=" expression ";"
 }
+
+ArrayPattern { "[" ListOf<identifierOrTypeName> "]" }
 
 TypeDecl {
   Annotation* kw<"type"> TypeName TypeParams? "=" typeExpression ";"
