@@ -57,7 +57,11 @@ export function erase(program: TypedProgram): RuntimeProgram {
   for (const decl of program.decls) {
     const erased = eraseDecl(decl);
     if (erased) {
-      decls.push(erased);
+      if (erased.kind === "letrec") {
+        decls.push(...erased.decls); // Flatten at top level
+      } else {
+        decls.push(erased);
+      }
     }
   }
 
@@ -108,6 +112,16 @@ function eraseDecl(decl: TypedDecl): CoreDecl | null {
         expr: eraseExpr(expr),
         loc: decl.loc,
       };
+    }
+
+    case "letrec": {
+      // Flatten: erase each child, collect non-null results
+      const children = decl.decls
+        .map(child => eraseDecl(child as TypedDecl))
+        .filter((c): c is CoreDecl => c !== null);
+      if (children.length === 0) return null;
+      if (children.length === 1) return children[0];
+      return { kind: "letrec", decls: children, loc: decl.loc };
     }
   }
 }

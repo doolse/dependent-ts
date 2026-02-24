@@ -2684,4 +2684,33 @@ describe("Type Checker", () => {
     });
   });
 
+  describe("letrec declarations", () => {
+    test("forward-referencing type aliases work in .d.ts imports", () => {
+      // The React .d.ts has forward references between namespace members
+      // (e.g., type A uses type B defined later). The letrec wrapping in
+      // checkImportDecl enables this. If letrec didn't work, these imports
+      // would fail with undefined type errors.
+      const decls = parse(`
+        import { useState } from "react";
+        const _test = useState;
+      `);
+      const result = typecheck(decls, { baseDir: process.cwd() });
+      const constDecl = result.decls.find(d => d.kind === "const") as TypedDecl & { kind: "const" };
+      expect(constDecl).toBeDefined();
+      expect(constDecl.init.type.kind).toBe("function");
+    });
+
+    test("type aliases in block work when defined in order", () => {
+      const result = check(`
+        const _test = () => {
+          type MyStr = String;
+          const greet = (name: MyStr): MyStr => name;
+          greet("hello")
+        };
+      `);
+      const constDecl = result.decls[0] as TypedDecl & { kind: "const" };
+      expect(constDecl).toBeDefined();
+    });
+  });
+
 });

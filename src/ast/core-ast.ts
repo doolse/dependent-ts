@@ -150,7 +150,8 @@ export type CoreDeclBase =
       exported: boolean;
     }
   | { kind: "import"; clause: CoreImportClause; source: string }
-  | { kind: "expr"; expr: CoreExpr }; // Expression statement (for effects like assert)
+  | { kind: "expr"; expr: CoreExpr } // Expression statement (for effects like assert)
+  | { kind: "letrec"; decls: CoreDecl[] }; // Mutually recursive declarations
 
 export type CoreImportClause =
   | { kind: "default"; name: string }
@@ -197,7 +198,8 @@ export type TypedDeclBase =
       exported: boolean;
     }
   | { kind: "import"; clause: CoreImportClause; source: string }
-  | { kind: "expr"; expr: TypedExpr };
+  | { kind: "expr"; expr: TypedExpr }
+  | { kind: "letrec"; decls: TypedDecl[] };
 
 export type TypedDecl = Located<TypedDeclBase> & {
   declType: Type;

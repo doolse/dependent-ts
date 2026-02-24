@@ -33,6 +33,9 @@ export function genDecl(decl: CoreDecl, ctx: GenExprContext): string {
     case "expr":
       return genExprStmt(decl.expr, ctx);
 
+    case "letrec":
+      return decl.decls.map(d => genDecl(d, ctx)).join("");
+
     default: {
       const _exhaustive: never = decl;
       throw new Error(`Unknown declaration kind: ${(decl as any).kind}`);

@@ -162,6 +162,10 @@ interface TranslationContext {
   namespaces: Map<string, CoreDecl[]>;
   /** Namespace nesting depth (0 = top-level) */
   nsDepth: number;
+  /** Stack of enclosing namespace names (for self-reference stripping) */
+  namespaceStack: string[];
+  /** Inferred type variables from `infer X` in conditional types — replaced with Unknown */
+  inferredTypeVars: Set<string>;
 }
 
 // ============================================
@@ -186,6 +190,8 @@ export function loadDTS(content: string, options?: DTSLoadOptions): DTSLoadResul
     emittedFunctions: new Set(),
     namespaces: new Map(),
     nsDepth: 0,
+    namespaceStack: [],
+    inferredTypeVars: new Set(),
   };
 
   const decls: CoreDecl[] = [];
@@ -754,6 +760,8 @@ function translateNamespace(cursor: TreeCursor, ctx: TranslationContext): CoreDe
     switch (cursor.name) {
       case "VariableDefinition":
         name = getText(cursor, ctx.source);
+        // Push namespace name onto stack for self-reference stripping
+        if (name) ctx.namespaceStack.push(name);
         break;
       case "Block":
         cursor.firstChild();
@@ -765,6 +773,9 @@ function translateNamespace(cursor: TreeCursor, ctx: TranslationContext): CoreDe
     }
   } while (cursor.nextSibling());
   cursor.parent();
+
+  // Pop namespace name from stack
+  if (name) ctx.namespaceStack.pop();
 
   // Restore function tracking and depth
   ctx.emittedFunctions = savedEmittedFunctions;
@@ -786,7 +797,10 @@ function translateNamespace(cursor: TreeCursor, ctx: TranslationContext): CoreDe
       .map(d => (d as { name: string }).name);
 
     if (memberNames.length > 0) {
-      // Build: { <member decls...>; { member1: member1, member2: member2, ... } }
+      // Build: { letrec { <member decls...> }; { member1: member1, ... } }
+      // Wrap in letrec so namespace members have mutual visibility
+      const letrecDecl: CoreDecl = { kind: "letrec", decls: nsDecls, loc: dtsLoc };
+
       const recordFields: CoreRecordField[] = memberNames.map(n => ({
         kind: "field" as const,
         name: n,
@@ -795,7 +809,7 @@ function translateNamespace(cursor: TreeCursor, ctx: TranslationContext): CoreDe
 
       const blockExpr: CoreExpr = {
         kind: "block",
-        statements: nsDecls,
+        statements: [letrecDecl],
         result: { kind: "record", fields: recordFields, loc: dtsLoc },
         loc: dtsLoc,
       };
@@ -1605,6 +1619,8 @@ function translateType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr | 
 
     case "ConditionalType": {
       // T extends U ? X : Y → ConditionalType(T, U, X, Y)
+      // Track type params added by `infer` so we can clean them up
+      const beforeTypeParams = new Set(ctx.typeParams);
       const condParts: CoreExpr[] = [];
       cursor.firstChild();
       do {
@@ -1616,6 +1632,13 @@ function translateType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr | 
         }
       } while (cursor.nextSibling());
       cursor.parent();
+      // Clean up inferred type params and inferred type vars
+      for (const name of ctx.typeParams) {
+        if (!beforeTypeParams.has(name)) {
+          ctx.typeParams.delete(name);
+          ctx.inferredTypeVars.delete(name);
+        }
+      }
       if (condParts.length >= 4) {
         return coreCall("ConditionalType", condParts[0], condParts[1], condParts[2], condParts[3]);
       }
@@ -1625,8 +1648,21 @@ function translateType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr | 
     case "TypeofType":
       return translateTypeofType(cursor, ctx);
 
-    case "InferredType":
+    case "InferredType": {
+      // `infer X` — track X so references in conditional branches are replaced with Unknown
+      cursor.firstChild();
+      do {
+        if ((cursor.name as string) === "TypeName" || (cursor.name as string) === "TypeDefinition") {
+          const inferredName = getText(cursor, ctx.source);
+          if (inferredName) {
+            ctx.typeParams.add(inferredName);
+            ctx.inferredTypeVars.add(inferredName);
+          }
+        }
+      } while (cursor.nextSibling());
+      cursor.parent();
       return coreId("Unknown");
+    }
 
     default:
       return null;
@@ -1639,6 +1675,12 @@ function translateTypeName(cursor: TreeCursor, ctx: TranslationContext): CoreExp
   // Check primitives
   if (name in PRIMITIVE_MAP) {
     return coreId(PRIMITIVE_MAP[name]);
+  }
+
+  // Inferred type vars (from `infer X` in conditional types) have no binding
+  // in the type checker — replace with Unknown
+  if (ctx.inferredTypeVars.has(name)) {
+    return coreId("Unknown");
   }
 
   // Type parameters in scope or other references — just emit identifier
@@ -1833,6 +1875,10 @@ function translateIndexedType(cursor: TreeCursor, ctx: TranslationContext): Core
 
     // Dot access pattern: both are identifiers → property access
     if (objectExpr.kind === "identifier" && indexExpr.kind === "identifier") {
+      // Strip self-references: React.X inside namespace React → just X
+      if (ctx.namespaceStack.includes(objectExpr.name)) {
+        return coreId(indexExpr.name);
+      }
       return coreProperty(objectExpr, indexExpr.name);
     }
 

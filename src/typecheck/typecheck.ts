@@ -46,6 +46,7 @@ import {
   TypedProgram,
   CompileError,
   SourceLocation,
+  dummyLoc,
 } from "../ast/core-ast";
 import { TypeEnv, TypeBinding, ComptimeStatus } from "./type-env";
 import { ComptimeEnv, TypedComptimeValue, isTypeValue, isClosureValue, isBuiltinValue, isRawTypeValue } from "./comptime-env";
@@ -158,6 +159,8 @@ class TypeChecker {
         return this.checkImportDecl(decl);
       case "expr":
         return this.checkExprDecl(decl);
+      case "letrec":
+        return this.checkLetrecDecl(decl);
     }
   }
 
@@ -330,6 +333,193 @@ class TypeChecker {
   }
 
   /**
+   * Type check a letrec declaration (group of mutually recursive declarations).
+   * Two-phase algorithm: pre-register all typed bindings, then type-check all initializers.
+   */
+  private checkLetrecDecl(
+    decl: CoreDecl & { kind: "letrec" }
+  ): TypedDecl {
+    const typedChildren: TypedDecl[] = [];
+
+    // Phase 1: Pre-register all const bindings that have enough type info.
+    // This gives all declarations mutual visibility.
+    const preRegistered = new Set<string>();
+
+    for (const child of decl.decls) {
+      if (child.kind !== "const") continue;
+
+      try {
+        if (child.type) {
+          // Has type annotation — evaluate it and pre-register
+          this.evaluator.reset();
+          const typeValue = this.evaluator.evaluate(child.type, this.comptimeEnv, this.typeEnv);
+          if (!isTypeValue(typeValue)) {
+            throw new CompileError(
+              `Type annotation must evaluate to a Type`,
+              "typecheck",
+              child.type.loc
+            );
+          }
+          const declaredType = typeValue.value as Type;
+          this.typeEnv.define(child.name, {
+            type: declaredType,
+            comptimeStatus: "runtime",
+            mutable: false,
+          });
+          this.comptimeEnv.defineUnevaluated(child.name, child.init, this.typeEnv);
+          preRegistered.add(child.name);
+        } else if (
+          child.init.kind === "lambda" &&
+          child.init.returnType &&
+          child.init.params.every(p => p.type) &&
+          !child.init.params.some(p => this.isTypeParam(p))
+        ) {
+          // Fully-typed lambda — compute function type from signature
+          this.evaluator.reset();
+          const paramInfos: ParamInfo[] = child.init.params.map(p => {
+            const tv = this.evaluator.evaluate(p.type!, this.comptimeEnv, this.typeEnv);
+            if (!isTypeValue(tv)) {
+              throw new CompileError(
+                `Parameter type must evaluate to a Type`,
+                "typecheck",
+                p.type!.loc
+              );
+            }
+            return {
+              name: p.name,
+              type: tv.value as Type,
+              optional: !!p.defaultValue,
+              rest: p.rest,
+            };
+          });
+          const rtv = this.evaluator.evaluate(child.init.returnType, this.comptimeEnv, this.typeEnv);
+          if (!isTypeValue(rtv)) {
+            throw new CompileError(
+              `Return type must evaluate to a Type`,
+              "typecheck",
+              child.init.returnType.loc
+            );
+          }
+          const fnType: Type = {
+            kind: "function",
+            params: paramInfos,
+            returnType: rtv.value as Type,
+            async: child.init.async,
+          };
+          this.typeEnv.define(child.name, {
+            type: fnType,
+            comptimeStatus: "runtime",
+            mutable: false,
+          });
+          this.comptimeEnv.defineUnevaluated(child.name, child.init, this.typeEnv);
+          preRegistered.add(child.name);
+        } else if (child.comptime) {
+          // Comptime-only consts (e.g., non-generic type aliases from .d.ts) always produce Type.
+          // Pre-register with Type so forward references work.
+          const declaredType = primitiveType("Type");
+          this.typeEnv.define(child.name, {
+            type: declaredType,
+            comptimeStatus: "comptimeOnly",
+            mutable: false,
+          });
+          this.comptimeEnv.defineUnevaluated(child.name, child.init, this.typeEnv);
+          preRegistered.add(child.name);
+        }
+      } catch {
+        // Phase 1 pre-registration can fail if type evaluation references
+        // names not yet available (e.g., nested namespace types).
+        // Fall through — the declaration will be processed in Phase 2 without pre-registration.
+      }
+    }
+
+    // Phase 2: Type-check all declarations.
+    // Pre-registered consts are type-checked against their pre-registered type.
+    // Everything else goes through normal checkDecl.
+    // Individual declarations may fail (e.g., unsupported TypeScript features in .d.ts).
+    // We tolerate these failures: the pre-registered types from Phase 1 remain available,
+    // and failing non-pre-registered declarations are silently skipped.
+    for (const child of decl.decls) {
+      this.evaluator.reset();
+
+      if (child.kind === "const" && preRegistered.has(child.name)) {
+        const declaredType = this.typeEnv.lookupOrThrow(child.name, child.loc).type;
+
+        try {
+          // Type check the initializer with contextual typing
+          const typedInit = this.checkExpr(child.init, declaredType);
+
+          // Check assignability
+          if (!isSubtype(typedInit.type, declaredType)) {
+            throw new CompileError(
+              `Type '${formatType(typedInit.type)}' is not assignable to type '${formatType(declaredType)}'`,
+              "typecheck",
+              child.init.loc
+            );
+          }
+
+          // Determine comptime status
+          let comptimeStatus: ComptimeStatus = "runtime";
+          if (child.comptime) {
+            comptimeStatus = "comptimeOnly";
+          } else if (typedInit.comptimeOnly) {
+            comptimeStatus = "comptimeOnly";
+          } else if (isComptimeOnlyType(declaredType)) {
+            comptimeStatus = "comptimeOnly";
+          }
+
+          // Update the binding with final comptime status
+          this.typeEnv.update(child.name, {
+            type: declaredType,
+            comptimeStatus,
+            mutable: false,
+          });
+
+          // Update comptime env
+          if (comptimeStatus === "comptimeOnly" || child.comptime) {
+            try {
+              const value = this.evaluator.evaluate(child.init, this.comptimeEnv, this.typeEnv);
+              this.comptimeEnv.defineEvaluated(child.name, value);
+            } catch (e) {
+              if (e instanceof CompileError && !e.message.includes("not available at compile time")) {
+                throw e;
+              }
+              this.comptimeEnv.defineUnavailable(child.name);
+            }
+          }
+          // Otherwise the lazy unevaluated entry from Phase 1 is kept
+
+          typedChildren.push({
+            ...child,
+            init: typedInit,
+            declType: declaredType,
+            comptimeOnly: comptimeStatus === "comptimeOnly",
+          });
+        } catch {
+          // Phase 2 failure for pre-registered const: keep the Phase 1 type binding
+          // but mark as unavailable in comptime env. The type is still usable.
+          this.comptimeEnv.defineUnavailable(child.name);
+        }
+      } else {
+        try {
+          // Not pre-registered — process normally
+          typedChildren.push(this.checkDecl(child));
+        } catch {
+          // Silently skip declarations that fail to type-check.
+          // This handles unsupported TypeScript features (e.g., complex infer patterns).
+        }
+      }
+    }
+
+    return {
+      kind: "letrec",
+      decls: typedChildren,
+      loc: decl.loc,
+      declType: primitiveType("Void"),
+      comptimeOnly: typedChildren.every(c => c.comptimeOnly),
+    };
+  }
+
+  /**
    * Type check an import declaration.
    */
   private checkImportDecl(
@@ -362,27 +552,33 @@ class TypeChecker {
     this.currentModuleDir = path.dirname(resolved.dtsPath);
 
     try {
-      // Process declarations from the .d.ts file using multi-pass evaluation.
-      // TypeScript namespaces have forward-reference semantics (all declarations
-      // are mutually visible), but our type checker processes sequentially.
-      // Multi-pass handles this: each pass may resolve more bindings as
-      // dependencies from earlier passes become available.
-      let remaining = [...resolved.decls];
-      let madeProgress = true;
-      while (remaining.length > 0 && madeProgress) {
-        madeProgress = false;
-        const failed: CoreDecl[] = [];
-        for (const moduleDecl of remaining) {
-          try {
-            this.evaluator.reset();
-            this.checkDecl(moduleDecl);
-            madeProgress = true;
-          } catch (e: any) {
-            // Retry in next pass — dependency may be resolved then
-            failed.push(moduleDecl);
-          }
+      // Separate imports from non-imports.
+      // Imports bring in external names and must be processed first.
+      // Non-imports get mutual visibility via letrec.
+      const imports: CoreDecl[] = [];
+      const nonImports: CoreDecl[] = [];
+      for (const moduleDecl of resolved.decls) {
+        if (moduleDecl.kind === "import") {
+          imports.push(moduleDecl);
+        } else {
+          nonImports.push(moduleDecl);
         }
-        remaining = failed;
+      }
+
+      // Process imports first (they bring in external names)
+      for (const importDecl of imports) {
+        this.evaluator.reset();
+        this.checkDecl(importDecl);
+      }
+
+      // Process remaining declarations as a letrec (mutual visibility)
+      if (nonImports.length > 0) {
+        const letrecDecl: CoreDecl = {
+          kind: "letrec",
+          decls: nonImports,
+          loc: dummyLoc(),
+        };
+        this.checkDecl(letrecDecl);
       }
     } finally {
       // Restore parent envs and module directory

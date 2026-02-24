@@ -768,6 +768,44 @@ export = NS;
       const lambda = expectLambda(getInit(barDecl));
       expectThrow(lambda.body);
     });
+
+    it("strips namespace self-references in type positions", () => {
+      const result = loadDTS(`
+declare namespace React {
+  type ReactNode = string | number;
+  type ElementType = string | React.ReactNode;
+}
+export = React;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      // React.ReactNode inside namespace React should strip the React. prefix
+      // so ElementType references ReactNode directly (not React.ReactNode)
+      const elemDecl = findDecl(result.decls, "ElementType");
+      expect(elemDecl).toBeDefined();
+      // The init should reference ReactNode (not React.ReactNode)
+      const json = JSON.stringify(getInit(elemDecl));
+      expect(json).toContain('"ReactNode"');
+      // Should NOT contain a property access on React
+      expect(json).not.toMatch(/"object".*"React".*"name".*"ReactNode"/);
+    });
+
+    it("wraps nested namespace body in letrec for mutual visibility", () => {
+      const result = loadDTS(`
+declare namespace NS {
+  type A = string;
+  type B = A;
+}
+export = NS;
+`);
+
+      expect(result.errors).toHaveLength(0);
+      // Both types should be accessible
+      const aDecl = findDecl(result.decls, "A");
+      expect(aDecl.comptime).toBe(true);
+      const bDecl = findDecl(result.decls, "B");
+      expect(bDecl.comptime).toBe(true);
+    });
   });
 
   describe("variable declarations", () => {

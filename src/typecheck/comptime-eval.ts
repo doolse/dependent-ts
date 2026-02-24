@@ -820,6 +820,21 @@ export class ComptimeEvaluator implements ComptimeEvaluatorInterface {
       } else if (stmt.kind === "expr") {
         // Execute for side effects
         this.evaluate(stmt.expr, blockEnv, blockTypeEnv);
+      } else if (stmt.kind === "letrec") {
+        // Phase 1: Register all names lazily
+        for (const child of stmt.decls) {
+          if (child.kind === "const") {
+            blockEnv.defineUnevaluated(child.name, child.init, blockTypeEnv);
+          }
+        }
+        // Phase 2: Force evaluation of each
+        for (const child of stmt.decls) {
+          if (child.kind === "const") {
+            blockEnv.getValue(child.name, this);
+          } else if (child.kind === "expr") {
+            this.evaluate(child.expr, blockEnv, blockTypeEnv);
+          }
+        }
       }
       // Ignore imports in comptime blocks
     }
