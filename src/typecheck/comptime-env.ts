@@ -276,6 +276,10 @@ export function isRawTypeValue(value: unknown): value is Type {
       "this",
       "withMetadata",
       "boundedType",
+      "keyof",
+      "indexedAccess",
+      "mapped",
+      "conditional",
     ].includes(value.kind)
   );
 }
@@ -343,6 +347,11 @@ export function isRecordValue(value: RawComptimeValue): value is RawComptimeReco
         "typeVar",
         "this",
         "withMetadata",
+        "boundedType",
+        "keyof",
+        "indexedAccess",
+        "mapped",
+        "conditional",
         "closure",
         "builtin",
       ].includes(kind)

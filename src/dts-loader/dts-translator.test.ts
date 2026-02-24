@@ -1063,7 +1063,7 @@ type X = React.ElementType;
       expect(prop.name).toBe("ElementType");
     });
 
-    it("degrades bracket access with literal type index to Unknown", () => {
+    it("translates bracket access with literal type index to IndexedAccess", () => {
       const result = loadDTS(`
 type PersonName = { name: string; age: number }["name"];
 `);
@@ -1073,13 +1073,22 @@ type PersonName = { name: string; age: number }["name"];
       const wm = unwrapWithMetadata(getInit(decl));
 
       // The index "name" is parsed as LiteralType("name") — a call, not a raw literal —
-      // so the translator falls through to the general case and produces Unknown.
-      expect(expectId(wm.body)).toBe("Unknown");
+      // so the translator produces IndexedAccess(RecordType(...), LiteralType("name"))
+      const call = expectCall(wm.body);
+      expect(expectId(call.fn)).toBe("IndexedAccess");
+      expect(call.args.length).toBe(2);
+      // First arg is RecordType(...)
+      const rtCall = expectCall(call.args[0]);
+      expect(expectId(rtCall.fn)).toBe("RecordType");
+      // Second arg is LiteralType("name")
+      const ltCall = expectCall(call.args[1]);
+      expect(expectId(ltCall.fn)).toBe("LiteralType");
+      expect(expectLiteral(ltCall.args[0]).value).toBe("name");
     });
   });
 
   describe("conditional types", () => {
-    it("degrades conditional types to Unknown", () => {
+    it("translates conditional types to ConditionalType call", () => {
       const result = loadDTS(`type IsString<T> = T extends string ? true : false;`);
 
       expect(result.errors).toHaveLength(0);
@@ -1090,14 +1099,26 @@ type PersonName = { name: string; age: number }["name"];
       expect(lambda.params.length).toBe(1);
       expect(lambda.params[0].name).toBe("T");
 
-      // Body is WithMetadata(Unknown, ...)  since conditional types degrade to Unknown
+      // Body is WithMetadata(ConditionalType(T, String, LiteralType(true), LiteralType(false)), ...)
       const wm = unwrapWithMetadata(lambda.body);
-      expect(expectId(wm.body)).toBe("Unknown");
+      const call = expectCall(wm.body);
+      expect(expectId(call.fn)).toBe("ConditionalType");
+      expect(call.args.length).toBe(4);
+      expect(expectId(call.args[0])).toBe("T");
+      expect(expectId(call.args[1])).toBe("String");
+      // True branch: LiteralType(true)
+      const trueCall = expectCall(call.args[2]);
+      expect(expectId(trueCall.fn)).toBe("LiteralType");
+      expect(expectLiteral(trueCall.args[0]).value).toBe(true);
+      // False branch: LiteralType(false)
+      const falseCall = expectCall(call.args[3]);
+      expect(expectId(falseCall.fn)).toBe("LiteralType");
+      expect(expectLiteral(falseCall.args[0]).value).toBe(false);
     });
   });
 
   describe("keyof types", () => {
-    it("degrades keyof to Unknown", () => {
+    it("translates keyof to Keyof call", () => {
       const result = loadDTS(`type Keys<T> = keyof T;`);
 
       expect(result.errors).toHaveLength(0);
@@ -1105,8 +1126,11 @@ type PersonName = { name: string; age: number }["name"];
 
       const lambda = expectLambda(getInit(decl));
       const wm = unwrapWithMetadata(lambda.body);
-      // keyof degrades to Unknown in current translator
-      expect(expectId(wm.body)).toBe("Unknown");
+      // keyof T → Keyof(T)
+      const call = expectCall(wm.body);
+      expect(expectId(call.fn)).toBe("Keyof");
+      expect(call.args.length).toBe(1);
+      expect(expectId(call.args[0])).toBe("T");
     });
   });
 

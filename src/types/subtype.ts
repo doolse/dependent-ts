@@ -194,6 +194,14 @@ export function isSubtype(sub: Type, sup: Type): boolean {
            subBase.readonly === supBase.readonly;
   }
 
+  // Conditional types: check structural equality
+  if (subBase.kind === "conditional" && supBase.kind === "conditional") {
+    return typesEqual(subBase.checkType, supBase.checkType) &&
+           typesEqual(subBase.extendsType, supBase.extendsType) &&
+           typesEqual(subBase.trueType, supBase.trueType) &&
+           typesEqual(subBase.falseType, supBase.falseType);
+  }
+
   return false;
 }
 
@@ -559,6 +567,14 @@ export function typesEqual(a: Type, b: Type): boolean {
              typesEqual(aBase.valueType, bMapped.valueType) &&
              aBase.optional === bMapped.optional &&
              aBase.readonly === bMapped.readonly;
+    }
+
+    case "conditional": {
+      const bCond = bBase as typeof aBase;
+      return typesEqual(aBase.checkType, bCond.checkType) &&
+             typesEqual(aBase.extendsType, bCond.extendsType) &&
+             typesEqual(aBase.trueType, bCond.trueType) &&
+             typesEqual(aBase.falseType, bCond.falseType);
     }
   }
 }

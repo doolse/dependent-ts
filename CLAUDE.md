@@ -505,8 +505,30 @@ export const App = Counter;
 
 ### Blocking issues (in priority order)
 
-#### 1. `jsx`/`jsxs` first parameter resolves to `Unknown`
-`React.ElementType` in React's `index.d.ts` is a complex generic type involving mapped types with conditionals, `keyof JSX.IntrinsicElements`, and default type parameters. The DTS translator cannot fully handle this definition, so the type falls through to `Unknown`. The `jsx` and `jsxs` function signatures reference `React.ElementType`, making them unusable.
+#### 1. `jsx`/`jsxs` resolve to `Unknown` due to forward-reference and namespace self-reference issues
+
+**Status: Phase 1-6 of the plan complete, Phase 7 (integration) in progress.**
+
+The DTS translator now supports `keyof`, conditional types, mapped types, indexed access types, and type parameter defaults/constraints. Multi-pass evaluation was added to handle forward references in namespaces.
+
+**Remaining blockers (discovered during integration testing):**
+
+1. **Namespace self-references**: Inside `namespace React { namespace JSX { type ElementType = string | React.JSXElementConstructor<any>; } }`, the `React.` prefix refers to the parent namespace. But at comptime, `React` isn't a binding (we're still building it). The translator needs to either:
+   - Strip self-references (`React.X` → `X` when inside the React namespace)
+   - Or make the parent namespace available as a binding during nested namespace evaluation
+
+2. **`bigint` type not mapped**: `type Key = string | bigint | number` fails because `bigint` is not defined. Need to add `bigint` → `Int` (or `Number`) mapping.
+
+3. **Generic types called without args as type aliases**: `type NativeAnimationEvent = AnimationEvent` where `AnimationEvent` is generic `(T?: Type) => Type` fails with "not assignable to Type". The translator treats these as function calls that need to be invoked (with defaults) rather than direct assignments.
+
+4. **Missing DOM globals**: `HTMLElement`, `Element`, `AnimationEvent`, etc. — browser DOM types aren't loaded. Need either stub types or a `lib.dom.d.ts` loader.
+
+**Changes made in this session:**
+- Multi-pass evaluation for module declarations (handles forward references in namespaces)
+- Nested namespace const binding emission (JSX inside React → `const JSX = { ElementType, ... }`)
+- `currentModuleDir` tracking for resolving relative imports within `.d.ts` files
+- Pre-processing strips `export as namespace` and triple-backtick JSDoc code fences that break Lezer parser
+- Fixed TS2367 build errors in `KeyofType` and `ConditionalType` cursor.name comparisons
 
 ## Resolved Issues for Working React Example
 
@@ -607,11 +629,24 @@ Design decisions that can be addressed as needed:
 - Mapped types (`{ [K in keyof T]: ... }`) with modifier support (`-?`, `+?`, `readonly`, `-readonly`)
 - Class declarations (constructor translation to callable function type, instance type mapping)
 - `typeof` in type positions (resolves value types for `typeof foo` patterns)
+- Conditional types (`T extends U ? X : Y`) with `infer` keyword support
+- `keyof T` operator (deferred `KeyofType` for type parameters, eager resolution for concrete records)
+- Indexed access types `T[K]` (deferred `IndexedAccessType` for non-literal keys)
+- Type parameter defaults and constraints in DTS translator (`<P = any, T extends Foo = Bar>`)
+- Interface `extends` clause (produces `Intersection(Parent, RecordType([fields]))`)
+- Call signatures in interfaces (produces `FunctionType` or `Intersection(FunctionType, RecordType)`)
+- Multi-pass evaluation for module declarations (handles forward references in TypeScript namespaces)
+- Nested namespace const binding emission (e.g., `JSX` inside `React` becomes accessible via property access)
+- Pre-processing for Lezer parser compatibility (strips `export as namespace`, triple-backtick JSDoc)
+- Relative import resolution from `.d.ts` file directory (not source file directory)
 
 ### Not Yet Implemented
 
 **TypeScript .d.ts Loading:**
 - Template literal types
+- Namespace self-references (`React.X` inside `namespace React`)
+- `bigint` type mapping
+- DOM global types (`HTMLElement`, `Element`, browser event types)
 
 **Module System:**
 - DepJS-to-DepJS imports

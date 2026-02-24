@@ -118,6 +118,9 @@ export function formatType(t: Type): string {
       const optMod = base.optional === "add" ? "?" : base.optional === "remove" ? "-?" : "";
       return `{ [${base.keyVar} in ${formatType(base.keyDomain)}]${optMod}: ${formatType(base.valueType)} }`;
     }
+
+    case "conditional":
+      return `${formatTypeParens(base.checkType)} extends ${formatTypeParens(base.extendsType)} ? ${formatType(base.trueType)} : ${formatType(base.falseType)}`;
   }
 }
 

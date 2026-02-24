@@ -19,6 +19,12 @@ import {
   withMetadata,
   literalType,
   boundedType,
+  keyofType,
+  indexedAccessType,
+  mappedType,
+  conditionalType,
+  typeVarType,
+  resolveConditionalType,
   FieldInfo,
   TypeMetadata,
   Unknown,
@@ -35,6 +41,8 @@ import {
   isTypeValue,
   isRawTypeValue,
   isRecordValue,
+  isClosureValue,
+  isBuiltinValue,
   wrapTypeValue,
   wrapValue,
 } from "./comptime-env";
@@ -149,6 +157,13 @@ export function createInitialComptimeEnv(): ComptimeEnv {
   env.defineEvaluated("WithMetadata", wrapBuiltinValue(builtinWithMetadata));
   env.defineEvaluated("Branded", wrapBuiltinValue(builtinBranded));
   env.defineEvaluated("LiteralType", wrapBuiltinValue(builtinLiteralType));
+
+  // Type construct builtins (used by DTS translator)
+  env.defineEvaluated("Keyof", wrapBuiltinValue(builtinKeyof));
+  env.defineEvaluated("IndexedAccess", wrapBuiltinValue(builtinIndexedAccess));
+  env.defineEvaluated("MappedType", wrapBuiltinValue(builtinMappedType));
+  env.defineEvaluated("ConditionalType", wrapBuiltinValue(builtinConditionalType));
+  env.defineEvaluated("TypeVar", wrapBuiltinValue(builtinTypeVar));
 
   // Special builtins
   env.defineEvaluated("typeOf", wrapBuiltinValue(builtinTypeOf));
@@ -314,6 +329,66 @@ export function createInitialTypeEnv(): TypeEnv {
   env.define("TryResult", {
     type: functionType(
       [{ name: "T", type: typeType, optional: false }],
+      typeType
+    ),
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
+  // Type construct builtins
+  env.define("Keyof", {
+    type: functionType(
+      [{ name: "T", type: typeType, optional: false }],
+      typeType
+    ),
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
+  env.define("IndexedAccess", {
+    type: functionType(
+      [
+        { name: "T", type: typeType, optional: false },
+        { name: "K", type: typeType, optional: false },
+      ],
+      typeType
+    ),
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
+  env.define("MappedType", {
+    type: functionType(
+      [
+        { name: "keyVar", type: primitiveType("String"), optional: false },
+        { name: "domain", type: typeType, optional: false },
+        { name: "valueFn", type: functionType([{ name: "K", type: typeType, optional: false }], typeType), optional: false },
+        { name: "optional", type: primitiveType("String"), optional: true },
+        { name: "readonly", type: primitiveType("String"), optional: true },
+      ],
+      typeType
+    ),
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
+  env.define("ConditionalType", {
+    type: functionType(
+      [
+        { name: "check", type: typeType, optional: false },
+        { name: "extends", type: typeType, optional: false },
+        { name: "trueType", type: typeType, optional: false },
+        { name: "falseType", type: typeType, optional: false },
+      ],
+      typeType
+    ),
+    comptimeStatus: "comptimeOnly",
+    mutable: false,
+  });
+
+  env.define("TypeVar", {
+    type: functionType(
+      [{ name: "name", type: primitiveType("String"), optional: false }],
       typeType
     ),
     comptimeStatus: "comptimeOnly",
@@ -1194,6 +1269,286 @@ const builtinBuildRecord: ComptimeBuiltin = {
     return wrapValue(result, targetType);
   },
 };
+
+// ============================================
+// Type construct builtins (for DTS translator)
+// ============================================
+
+/**
+ * Keyof builtin - creates a KeyofType or resolves eagerly for concrete records.
+ * Keyof(T) => keyof T
+ */
+const builtinKeyof: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "Keyof",
+  impl: (args, _evaluator, loc) => {
+    if (args.length !== 1) {
+      throw new CompileError("Keyof requires 1 argument", "typecheck", loc);
+    }
+    if (!isTypeValue(args[0])) {
+      throw new CompileError("Keyof argument must be a Type", "typecheck", loc);
+    }
+    const operand = args[0].value as Type;
+
+    // Try to resolve eagerly if operand is a record
+    if (operand.kind === "record") {
+      if (operand.fields.length === 0) {
+        return wrapTypeValue(primitiveType("Never"));
+      }
+      return wrapTypeValue(
+        unionType(operand.fields.map(f => literalType(f.name, "String")))
+      );
+    }
+
+    // Deferred: create KeyofType
+    return wrapTypeValue(keyofType(operand));
+  },
+};
+
+/**
+ * IndexedAccess builtin - creates an IndexedAccessType or resolves eagerly.
+ * IndexedAccess(T, K) => T[K]
+ */
+const builtinIndexedAccess: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "IndexedAccess",
+  impl: (args, _evaluator, loc) => {
+    if (args.length !== 2) {
+      throw new CompileError("IndexedAccess requires 2 arguments", "typecheck", loc);
+    }
+    if (!isTypeValue(args[0])) {
+      throw new CompileError("IndexedAccess first argument must be a Type", "typecheck", loc);
+    }
+    if (!isTypeValue(args[1])) {
+      throw new CompileError("IndexedAccess second argument must be a Type", "typecheck", loc);
+    }
+    const objectType = args[0].value as Type;
+    const indexType = args[1].value as Type;
+
+    // Try to resolve eagerly
+    if (objectType.kind === "record" && indexType.kind === "literal" && indexType.baseType === "String") {
+      const fieldName = indexType.value as string;
+      const field = objectType.fields.find(f => f.name === fieldName);
+      if (field) return wrapTypeValue(field.type);
+      if (objectType.indexType) return wrapTypeValue(objectType.indexType);
+      return wrapTypeValue(primitiveType("Never"));
+    }
+
+    // If index is a union of string literals and object is a record, resolve each
+    if (objectType.kind === "record" && indexType.kind === "union") {
+      const types: Type[] = [];
+      for (const member of indexType.types) {
+        if (member.kind === "literal" && member.baseType === "String") {
+          const field = objectType.fields.find(f => f.name === member.value as string);
+          if (field) types.push(field.type);
+          else if (objectType.indexType) types.push(objectType.indexType);
+        } else {
+          // Can't fully resolve, fall back to deferred
+          return wrapTypeValue(indexedAccessType(objectType, indexType));
+        }
+      }
+      if (types.length > 0) return wrapTypeValue(unionType(types));
+    }
+
+    // Deferred
+    return wrapTypeValue(indexedAccessType(objectType, indexType));
+  },
+};
+
+/**
+ * MappedType builtin - creates a MappedType.
+ * MappedType(keyVar, domain, valueFn, optional?, readonly?)
+ * The valueFn is a lambda (K: Type) => Type that is called per key.
+ */
+const builtinMappedType: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "MappedType",
+  impl: (args, evaluator, loc) => {
+    if (args.length < 3) {
+      throw new CompileError("MappedType requires at least 3 arguments (keyVar, domain, valueFn)", "typecheck", loc);
+    }
+
+    const keyVarName = args[0].value;
+    if (typeof keyVarName !== "string") {
+      throw new CompileError("MappedType keyVar must be a string", "typecheck", loc);
+    }
+
+    if (!isTypeValue(args[1])) {
+      throw new CompileError("MappedType domain must be a Type", "typecheck", loc);
+    }
+    const domain = args[1].value as Type;
+
+    // The third argument is a lambda (K: Type) => Type
+    const valueFnRaw = args[2].value;
+    if (!isClosureValue(valueFnRaw) && !isBuiltinValue(valueFnRaw)) {
+      throw new CompileError("MappedType valueFn must be a function", "typecheck", loc);
+    }
+
+    const optionalMod = args.length > 3 && typeof args[3].value === "string"
+      ? args[3].value as "add" | "remove" | "preserve"
+      : undefined;
+    const readonlyMod = args.length > 4 && typeof args[4].value === "string"
+      ? args[4].value as "add" | "remove" | "preserve"
+      : undefined;
+
+    // Try to resolve eagerly by expanding the domain
+    const keys = extractKeyTypes(domain);
+    if (keys !== null) {
+      const fields: FieldInfo[] = [];
+
+      for (const { name: keyName, originalOptional } of keys) {
+        const keyLiteralType = literalType(keyName, "String");
+        // Call the value function with the key literal type
+        let resolvedValueType: Type;
+        if (isClosureValue(valueFnRaw)) {
+          const result = evaluator.applyClosureWithValues(
+            valueFnRaw,
+            [wrapTypeValue(keyLiteralType)],
+            loc
+          );
+          if (!isTypeValue(result)) {
+            throw new CompileError("MappedType valueFn must return a Type", "typecheck", loc);
+          }
+          resolvedValueType = result.value as Type;
+        } else {
+          // Builtin function
+          const result = (valueFnRaw as ComptimeBuiltin).impl(
+            [wrapTypeValue(keyLiteralType)],
+            evaluator,
+            loc
+          );
+          if (!isTypeValue(result)) {
+            throw new CompileError("MappedType valueFn must return a Type", "typecheck", loc);
+          }
+          resolvedValueType = result.value as Type;
+        }
+
+        // Determine optionality
+        let isOptional = originalOptional ?? false;
+        if (optionalMod === "add") isOptional = true;
+        if (optionalMod === "remove") isOptional = false;
+
+        fields.push({
+          name: keyName,
+          type: resolvedValueType,
+          optional: isOptional,
+          annotations: [],
+        });
+      }
+
+      return wrapTypeValue(recordType(fields));
+    }
+
+    // Can't resolve eagerly - create a deferred mapped type.
+    // For this we need the value type as a Type with the keyVar as a typeVar.
+    // Call the valueFn with a typeVar to get the template.
+    const keyVarTypeVal = typeVarType(keyVarName);
+    let valueTemplate: Type;
+    if (isClosureValue(valueFnRaw)) {
+      const result = evaluator.applyClosureWithValues(
+        valueFnRaw,
+        [wrapTypeValue(keyVarTypeVal)],
+        loc
+      );
+      if (!isTypeValue(result)) {
+        throw new CompileError("MappedType valueFn must return a Type", "typecheck", loc);
+      }
+      valueTemplate = result.value as Type;
+    } else {
+      const result = (valueFnRaw as ComptimeBuiltin).impl(
+        [wrapTypeValue(keyVarTypeVal)],
+        evaluator,
+        loc
+      );
+      if (!isTypeValue(result)) {
+        throw new CompileError("MappedType valueFn must return a Type", "typecheck", loc);
+      }
+      valueTemplate = result.value as Type;
+    }
+
+    return wrapTypeValue(mappedType(keyVarName, domain, valueTemplate, {
+      optional: optionalMod,
+      readonly: readonlyMod,
+    }));
+  },
+};
+
+/**
+ * ConditionalType builtin - creates a ConditionalType or resolves eagerly.
+ * ConditionalType(check, extends, trueType, falseType)
+ */
+const builtinConditionalType: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "ConditionalType",
+  impl: (args, _evaluator, loc) => {
+    if (args.length !== 4) {
+      throw new CompileError("ConditionalType requires 4 arguments", "typecheck", loc);
+    }
+    for (let i = 0; i < 4; i++) {
+      if (!isTypeValue(args[i])) {
+        throw new CompileError(`ConditionalType argument ${i} must be a Type`, "typecheck", loc);
+      }
+    }
+    const checkType = args[0].value as Type;
+    const extendsType = args[1].value as Type;
+    const trueType = args[2].value as Type;
+    const falseType = args[3].value as Type;
+
+    return wrapTypeValue(resolveConditionalType(checkType, extendsType, trueType, falseType));
+  },
+};
+
+/**
+ * TypeVar builtin - creates a typeVar type.
+ * TypeVar(name) => typeVar(name)
+ */
+const builtinTypeVar: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "TypeVar",
+  impl: (args, _evaluator, loc) => {
+    if (args.length !== 1) {
+      throw new CompileError("TypeVar requires 1 argument (name)", "typecheck", loc);
+    }
+    const name = args[0].value;
+    if (typeof name !== "string") {
+      throw new CompileError("TypeVar name must be a string", "typecheck", loc);
+    }
+    return wrapTypeValue(typeVarType(name));
+  },
+};
+
+/**
+ * Extract keys and optionality from a domain type (keyof record, union of literals).
+ * Returns null if the domain cannot be expanded to concrete keys.
+ */
+function extractKeyTypes(domain: Type): { name: string; originalOptional?: boolean }[] | null {
+  // keyof record: get field names with their optionality
+  if (domain.kind === "keyof" && domain.operand.kind === "record") {
+    return domain.operand.fields.map(f => ({
+      name: f.name,
+      originalOptional: f.optional,
+    }));
+  }
+
+  // Union of string literals
+  if (domain.kind === "literal" && domain.baseType === "String") {
+    return [{ name: domain.value as string }];
+  }
+
+  if (domain.kind === "union") {
+    const results: { name: string; originalOptional?: boolean }[] = [];
+    for (const member of domain.types) {
+      if (member.kind === "literal" && member.baseType === "String") {
+        results.push({ name: member.value as string });
+      } else {
+        return null;
+      }
+    }
+    return results;
+  }
+
+  return null;
+}
 
 /**
  * Type builtin - creates bounded or unbounded Type.

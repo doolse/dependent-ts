@@ -55,6 +55,7 @@ import { isComptimeOnlyProperty, getTypePropertyType, getTypeProperty } from "./
 import { getArrayMethodType, getArrayElementType } from "./array-methods";
 import { getStringMethodType } from "./string-methods";
 import { ModuleResolver } from "./module-resolver";
+import * as path from "path";
 
 /**
  * Type checker configuration.
@@ -114,6 +115,8 @@ class TypeChecker {
   private comptimeEnv: ComptimeEnv;
   private evaluator: ComptimeEvaluator;
   private moduleResolver: ModuleResolver | null;
+  /** Directory of the current .d.ts module being processed (for relative import resolution) */
+  private currentModuleDir: string | null = null;
 
   constructor(config: TypeCheckConfig = {}) {
     this.typeEnv = createInitialTypeEnv();
@@ -333,7 +336,8 @@ class TypeChecker {
     decl: CoreDecl & { kind: "import" }
   ): TypedDecl {
     // Try to resolve the module and load CoreDecl[] from .d.ts
-    const resolved = this.moduleResolver?.resolve(decl.source);
+    // Use the current module's directory for relative imports within .d.ts files
+    const resolved = this.moduleResolver?.resolve(decl.source, this.currentModuleDir ?? undefined);
 
     if (!resolved || resolved.decls.length === 0) {
       // Module not found or empty - define all imported names as Unknown
@@ -349,28 +353,42 @@ class TypeChecker {
     // Save current envs, create children, swap in
     const parentTypeEnv = this.typeEnv;
     const parentComptimeEnv = this.comptimeEnv;
+    const parentModuleDir = this.currentModuleDir;
     const childTypeEnv = parentTypeEnv.extend();
     const childComptimeEnv = parentComptimeEnv.extend();
     this.typeEnv = childTypeEnv;
     this.comptimeEnv = childComptimeEnv;
+    // Set module directory for resolving relative imports within this .d.ts file
+    this.currentModuleDir = path.dirname(resolved.dtsPath);
 
     try {
-      // Process each declaration from the .d.ts file
-      // Errors are caught per-declaration since .d.ts files may reference
-      // types we can't resolve (TypeScript globals, complex generics, etc.)
-      // Reset fuel for each declaration to prevent exhaustion from large .d.ts files
-      for (const moduleDecl of resolved.decls) {
-        try {
-          this.evaluator.reset();
-          this.checkDecl(moduleDecl);
-        } catch {
-          // Skip declarations that fail - they may reference unsupported types
+      // Process declarations from the .d.ts file using multi-pass evaluation.
+      // TypeScript namespaces have forward-reference semantics (all declarations
+      // are mutually visible), but our type checker processes sequentially.
+      // Multi-pass handles this: each pass may resolve more bindings as
+      // dependencies from earlier passes become available.
+      let remaining = [...resolved.decls];
+      let madeProgress = true;
+      while (remaining.length > 0 && madeProgress) {
+        madeProgress = false;
+        const failed: CoreDecl[] = [];
+        for (const moduleDecl of remaining) {
+          try {
+            this.evaluator.reset();
+            this.checkDecl(moduleDecl);
+            madeProgress = true;
+          } catch (e: any) {
+            // Retry in next pass — dependency may be resolved then
+            failed.push(moduleDecl);
+          }
         }
+        remaining = failed;
       }
     } finally {
-      // Restore parent envs
+      // Restore parent envs and module directory
       this.typeEnv = parentTypeEnv;
       this.comptimeEnv = parentComptimeEnv;
+      this.currentModuleDir = parentModuleDir;
     }
 
     // Extract imported names from child scope

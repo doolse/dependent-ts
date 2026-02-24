@@ -78,7 +78,8 @@ export type Type =
   | BoundedTypeType
   | KeyofType
   | IndexedAccessType
-  | MappedType;
+  | MappedType
+  | ConditionalType;
 
 export type PrimitiveType = {
   kind: "primitive";
@@ -196,6 +197,18 @@ export type MappedType = {
   valueType: Type;          // The value type expression (may reference keyVar)
   optional?: "add" | "remove" | "preserve"; // Modifier for optionality (+?, -?, ?)
   readonly?: "add" | "remove" | "preserve"; // Modifier for readonly (+readonly, -readonly)
+};
+
+/**
+ * Conditional type - represents `T extends U ? X : Y`.
+ * Used when the check/extends types are not yet fully resolved.
+ */
+export type ConditionalType = {
+  kind: "conditional";
+  checkType: Type;
+  extendsType: Type;
+  trueType: Type;
+  falseType: Type;
 };
 
 // ============================================
@@ -355,6 +368,15 @@ export function indexedAccessType(objectType: Type, indexType: Type): IndexedAcc
   return { kind: "indexedAccess", objectType, indexType };
 }
 
+export function conditionalType(
+  checkType: Type,
+  extendsType: Type,
+  trueType: Type,
+  falseType: Type
+): ConditionalType {
+  return { kind: "conditional", checkType, extendsType, trueType, falseType };
+}
+
 export function mappedType(
   keyVar: string,
   keyDomain: Type,
@@ -437,6 +459,9 @@ export function containsTypeType(t: Type): boolean {
       return containsTypeType(t.objectType) || containsTypeType(t.indexType);
     case "mapped":
       return containsTypeType(t.keyDomain) || containsTypeType(t.valueType);
+    case "conditional":
+      return containsTypeType(t.checkType) || containsTypeType(t.extendsType) ||
+             containsTypeType(t.trueType) || containsTypeType(t.falseType);
   }
 }
 
@@ -526,6 +551,13 @@ export function substituteThis(type: Type, receiverType: Type): Type {
         substituteThis(type.keyDomain, receiverType),
         substituteThis(type.valueType, receiverType),
         { optional: type.optional, readonly: type.readonly }
+      );
+    case "conditional":
+      return conditionalType(
+        substituteThis(type.checkType, receiverType),
+        substituteThis(type.extendsType, receiverType),
+        substituteThis(type.trueType, receiverType),
+        substituteThis(type.falseType, receiverType),
       );
   }
 }
@@ -649,6 +681,15 @@ export function substituteTypeVars(
       );
       return resolved;
     }
+
+    case "conditional": {
+      const substitutedCheck = substituteTypeVars(type.checkType, substitutions);
+      const substitutedExtends = substituteTypeVars(type.extendsType, substitutions);
+      const substitutedTrue = substituteTypeVars(type.trueType, substitutions);
+      const substitutedFalse = substituteTypeVars(type.falseType, substitutions);
+
+      return resolveConditionalType(substitutedCheck, substitutedExtends, substitutedTrue, substitutedFalse);
+    }
   }
 }
 
@@ -719,6 +760,33 @@ function resolveMappedType(
 }
 
 /**
+ * Try to resolve a conditional type.
+ * - If checkType is Unknown (the `any` equivalent), return Union(trueType, falseType)
+ * - If checkType contains no typeVars, we can't fully resolve without isSubtype
+ *   (which lives in subtype.ts), so just return a ConditionalType for deferred resolution.
+ * - The actual resolution with isSubtype happens in resolveType in type-properties.ts.
+ */
+export function resolveConditionalType(
+  checkType: Type,
+  extendsType: Type,
+  trueType: Type,
+  falseType: Type,
+): Type {
+  // Special case: `any extends T ? X : Y` resolves to `X | Y`
+  if (checkType.kind === "primitive" && checkType.name === "Unknown") {
+    return unionType([trueType, falseType]);
+  }
+
+  // If check type is Never, conditional resolves to Never
+  if (checkType.kind === "primitive" && checkType.name === "Never") {
+    return primitiveType("Never");
+  }
+
+  // Can't resolve without isSubtype — return deferred conditional
+  return conditionalType(checkType, extendsType, trueType, falseType);
+}
+
+/**
  * Extract string literal values from a type if it's a union of string literals.
  * Returns null if the type is not a concrete set of string literals.
  */
@@ -778,5 +846,8 @@ export function containsThis(type: Type): boolean {
       return containsThis(type.objectType) || containsThis(type.indexType);
     case "mapped":
       return containsThis(type.keyDomain) || containsThis(type.valueType);
+    case "conditional":
+      return containsThis(type.checkType) || containsThis(type.extendsType) ||
+             containsThis(type.trueType) || containsThis(type.falseType);
   }
 }

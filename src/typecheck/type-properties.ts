@@ -19,6 +19,7 @@ import {
   literalType,
   KeyofType,
   IndexedAccessType,
+  ConditionalType,
 } from "../types/types";
 import { formatType } from "../types/format";
 import { isSubtype, computeKeyofRecord } from "../types/subtype";
@@ -99,8 +100,79 @@ export function resolveType(type: Type): Type {
       return base;
     }
 
+    case "conditional": {
+      // Try to resolve the conditional type
+      const resolvedCheck = resolveType(base.checkType);
+      const resolvedExtends = resolveType(base.extendsType);
+      const resolvedTrue = resolveType(base.trueType);
+      const resolvedFalse = resolveType(base.falseType);
+
+      // Special case: `any` (Unknown) extends T ? X : Y => X | Y
+      if (resolvedCheck.kind === "primitive" && resolvedCheck.name === "Unknown") {
+        return unionType([resolvedTrue, resolvedFalse]);
+      }
+
+      // Never extends T ? X : Y => Never
+      if (resolvedCheck.kind === "primitive" && resolvedCheck.name === "Never") {
+        return primitiveType("Never");
+      }
+
+      // Try to resolve with isSubtype if both sides are concrete
+      if (!containsTypeVars(resolvedCheck) && !containsTypeVars(resolvedExtends)) {
+        return isSubtype(resolvedCheck, resolvedExtends) ? resolvedTrue : resolvedFalse;
+      }
+
+      // Can't resolve, return with resolved components
+      return {
+        kind: "conditional",
+        checkType: resolvedCheck,
+        extendsType: resolvedExtends,
+        trueType: resolvedTrue,
+        falseType: resolvedFalse,
+      };
+    }
+
     default:
       return type;
+  }
+}
+
+/**
+ * Check if a type contains unresolved type variables.
+ */
+function containsTypeVars(type: Type): boolean {
+  switch (type.kind) {
+    case "typeVar":
+      return true;
+    case "primitive":
+    case "literal":
+    case "this":
+      return false;
+    case "record":
+      return type.fields.some(f => containsTypeVars(f.type)) ||
+             (type.indexType ? containsTypeVars(type.indexType) : false);
+    case "function":
+      return type.params.some(p => containsTypeVars(p.type)) ||
+             containsTypeVars(type.returnType);
+    case "array":
+      return type.elements.some(e => containsTypeVars(e.type));
+    case "union":
+    case "intersection":
+      return type.types.some(containsTypeVars);
+    case "branded":
+    case "withMetadata":
+      return containsTypeVars(type.baseType);
+    case "boundedType":
+      return containsTypeVars(type.bound);
+    case "keyof":
+      return containsTypeVars(type.operand);
+    case "indexedAccess":
+      return containsTypeVars(type.objectType) || containsTypeVars(type.indexType);
+    case "mapped":
+      return containsTypeVars(type.keyDomain) || containsTypeVars(type.valueType);
+    case "conditional":
+      return containsTypeVars(type.checkType) || containsTypeVars(type.extendsType) ||
+             containsTypeVars(type.trueType) || containsTypeVars(type.falseType);
   }
 }
 

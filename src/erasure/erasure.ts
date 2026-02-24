@@ -590,6 +590,10 @@ function isRuntimeUsable(type: Type): boolean {
     case "mapped":
       // Mapped types are comptime-only (used for type transformations)
       return false;
+
+    case "conditional":
+      // Conditional types are comptime-only
+      return false;
   }
 }
 

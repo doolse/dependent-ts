@@ -46,8 +46,8 @@ export class ModuleResolver {
    * Resolve a module specifier to its types.
    * Returns null if the module cannot be resolved.
    */
-  resolve(specifier: string): ResolvedModule | null {
-    return this.resolveFromDir(specifier, this.baseDir);
+  resolve(specifier: string, fromDir?: string): ResolvedModule | null {
+    return this.resolveFromDir(specifier, fromDir ?? this.baseDir);
   }
 
   /**

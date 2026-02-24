@@ -160,6 +160,8 @@ interface TranslationContext {
   emittedFunctions: Set<string>;
   /** Track namespace bodies for export = Ns pattern */
   namespaces: Map<string, CoreDecl[]>;
+  /** Namespace nesting depth (0 = top-level) */
+  nsDepth: number;
 }
 
 // ============================================
@@ -170,6 +172,12 @@ interface TranslationContext {
  * Load and translate a .d.ts file to CoreDecl[].
  */
 export function loadDTS(content: string, options?: DTSLoadOptions): DTSLoadResult {
+  // Pre-process: strip syntax the Lezer parser can't handle
+  // 1. `export as namespace Name;` — TypeScript UMD global syntax
+  content = content.replace(/^export\s+as\s+namespace\s+\w+\s*;/gm, "");
+  // 2. Triple-backtick code blocks in JSDoc comments confuse the Lezer parser,
+  //    causing cascading parse errors that corrupt subsequent declarations
+  content = content.replace(/```[\s\S]*?```/g, "");
   const tree = parseDTS(content);
   const ctx: TranslationContext = {
     source: content,
@@ -177,6 +185,7 @@ export function loadDTS(content: string, options?: DTSLoadOptions): DTSLoadResul
     typeParams: new Set(),
     emittedFunctions: new Set(),
     namespaces: new Map(),
+    nsDepth: 0,
   };
 
   const decls: CoreDecl[] = [];
@@ -285,7 +294,7 @@ function translateTopLevel(cursor: TreeCursor, ctx: TranslationContext): CoreDec
  */
 function translateTypeAlias(cursor: TreeCursor, ctx: TranslationContext): CoreDecl[] {
   let name = "";
-  let typeParamNames: string[] = [];
+  let typeParamInfos: TypeParamInfo[] = [];
   let bodyExpr: CoreExpr | null = null;
 
   cursor.firstChild();
@@ -295,7 +304,7 @@ function translateTypeAlias(cursor: TreeCursor, ctx: TranslationContext): CoreDe
         name = getText(cursor, ctx.source);
         break;
       case "TypeParamList":
-        typeParamNames = translateTypeParamList(cursor, ctx);
+        typeParamInfos = translateTypeParamListFull(cursor, ctx);
         break;
       default: {
         const translated = translateType(cursor, ctx);
@@ -307,8 +316,8 @@ function translateTypeAlias(cursor: TreeCursor, ctx: TranslationContext): CoreDe
   cursor.parent();
 
   // Clean up type params from scope
-  for (const p of typeParamNames) {
-    ctx.typeParams.delete(p);
+  for (const p of typeParamInfos) {
+    ctx.typeParams.delete(p.name);
   }
 
   if (!name || !bodyExpr) return [];
@@ -318,17 +327,18 @@ function translateTypeAlias(cursor: TreeCursor, ctx: TranslationContext): CoreDe
     { kind: "field", name: "name", value: coreLit(name, "string") },
   ];
 
-  if (typeParamNames.length > 0) {
+  if (typeParamInfos.length > 0) {
     metadataFields.push({
       kind: "field",
       name: "typeArgs",
-      value: coreArray(typeParamNames.map(n => coreId(n))),
+      value: coreArray(typeParamInfos.map(n => coreId(n.name))),
     });
 
     // Wrap in lambda: (A: Type) => WithMetadata(body, metadata)
-    const params: CoreParam[] = typeParamNames.map(n => ({
-      name: n,
-      type: coreId("Type"),
+    const params: CoreParam[] = typeParamInfos.map(tp => ({
+      name: tp.name,
+      type: tp.constraint ? coreCall("Type", tp.constraint) : coreId("Type"),
+      defaultValue: tp.default,
       annotations: [],
     }));
 
@@ -351,8 +361,10 @@ function translateTypeAlias(cursor: TreeCursor, ctx: TranslationContext): CoreDe
  */
 function translateInterface(cursor: TreeCursor, ctx: TranslationContext): CoreDecl[] {
   let name = "";
-  let typeParamNames: string[] = [];
-  let fields: CoreExpr[] = [];
+  let typeParamInfos: TypeParamInfo[] = [];
+  let objectResult: ObjectTypeResult | null = null;
+  const extendsTypes: CoreExpr[] = [];
+  let expectingExtends = false;
 
   cursor.firstChild();
   do {
@@ -361,38 +373,76 @@ function translateInterface(cursor: TreeCursor, ctx: TranslationContext): CoreDe
         name = getText(cursor, ctx.source);
         break;
       case "TypeParamList":
-        typeParamNames = translateTypeParamList(cursor, ctx);
+        typeParamInfos = translateTypeParamListFull(cursor, ctx);
+        break;
+      case "extends":
+        expectingExtends = true;
         break;
       case "ObjectType":
-        fields = translateObjectTypeFields(cursor, ctx);
+        objectResult = translateObjectTypeInner(cursor, ctx);
+        expectingExtends = false;
+        break;
+      default:
+        if (expectingExtends) {
+          const translated = translateType(cursor, ctx);
+          if (translated) extendsTypes.push(translated);
+        }
         break;
     }
   } while (cursor.nextSibling());
   cursor.parent();
 
   // Clean up type params
-  for (const p of typeParamNames) {
-    ctx.typeParams.delete(p);
+  for (const p of typeParamInfos) {
+    ctx.typeParams.delete(p.name);
   }
 
   if (!name) return [];
 
-  const bodyExpr = coreCall("RecordType", coreArray(fields));
+  // Build the body expression from the object result
+  let bodyExpr: CoreExpr;
+  if (objectResult) {
+    switch (objectResult.kind) {
+      case "fields":
+        bodyExpr = coreCall("RecordType", coreArray(objectResult.fields));
+        break;
+      case "mapped":
+        bodyExpr = objectResult.expr;
+        break;
+      case "callSignature":
+        if (objectResult.fields.length > 0) {
+          bodyExpr = coreCall("Intersection", objectResult.expr, coreCall("RecordType", coreArray(objectResult.fields)));
+        } else {
+          bodyExpr = objectResult.expr;
+        }
+        break;
+    }
+  } else {
+    bodyExpr = coreCall("RecordType", coreArray([]));
+  }
+
+  // Handle extends clause: produce Intersection(Parent1, Parent2, ..., RecordType([fields]))
+  if (extendsTypes.length > 0) {
+    bodyExpr = [...extendsTypes, bodyExpr].reduce((left, right) =>
+      coreCall("Intersection", left, right)
+    );
+  }
 
   const metadataFields: CoreRecordField[] = [
     { kind: "field", name: "name", value: coreLit(name, "string") },
   ];
 
-  if (typeParamNames.length > 0) {
+  if (typeParamInfos.length > 0) {
     metadataFields.push({
       kind: "field",
       name: "typeArgs",
-      value: coreArray(typeParamNames.map(n => coreId(n))),
+      value: coreArray(typeParamInfos.map(n => coreId(n.name))),
     });
 
-    const params: CoreParam[] = typeParamNames.map(n => ({
-      name: n,
-      type: coreId("Type"),
+    const params: CoreParam[] = typeParamInfos.map(tp => ({
+      name: tp.name,
+      type: tp.constraint ? coreCall("Type", tp.constraint) : coreId("Type"),
+      defaultValue: tp.default,
       annotations: [],
     }));
 
@@ -443,7 +493,7 @@ function translateAmbientDeclaration(cursor: TreeCursor, ctx: TranslationContext
  */
 function translateAmbientFunction(cursor: TreeCursor, ctx: TranslationContext): CoreDecl[] {
   let name = "";
-  let typeParamNames: string[] = [];
+  let typeParamInfos: TypeParamInfo[] = [];
   let params: { name: string; type: CoreExpr; optional: boolean; rest: boolean }[] = [];
   let returnTypeExpr: CoreExpr = coreId("Void");
 
@@ -454,7 +504,7 @@ function translateAmbientFunction(cursor: TreeCursor, ctx: TranslationContext): 
         name = getText(cursor, ctx.source);
         break;
       case "TypeParamList":
-        typeParamNames = translateTypeParamList(cursor, ctx);
+        typeParamInfos = translateTypeParamListFull(cursor, ctx);
         break;
       case "ParamList":
         params = translateParamList(cursor, ctx);
@@ -468,8 +518,8 @@ function translateAmbientFunction(cursor: TreeCursor, ctx: TranslationContext): 
   cursor.parent();
 
   // Clean up type params
-  for (const p of typeParamNames) {
-    ctx.typeParams.delete(p);
+  for (const p of typeParamInfos) {
+    ctx.typeParams.delete(p.name);
   }
 
   if (!name) return [];
@@ -478,7 +528,7 @@ function translateAmbientFunction(cursor: TreeCursor, ctx: TranslationContext): 
   if (ctx.emittedFunctions.has(name)) return [];
   ctx.emittedFunctions.add(name);
 
-  return [buildFunctionDecl(name, typeParamNames, params, returnTypeExpr)];
+  return [buildFunctionDecl(name, typeParamInfos, params, returnTypeExpr)];
 }
 
 /**
@@ -486,7 +536,7 @@ function translateAmbientFunction(cursor: TreeCursor, ctx: TranslationContext): 
  */
 function translateFunctionDeclaration(cursor: TreeCursor, ctx: TranslationContext): CoreDecl[] {
   let name = "";
-  let typeParamNames: string[] = [];
+  let typeParamInfos: TypeParamInfo[] = [];
   let params: { name: string; type: CoreExpr; optional: boolean; rest: boolean }[] = [];
   let returnTypeExpr: CoreExpr = coreId("Void");
 
@@ -497,7 +547,7 @@ function translateFunctionDeclaration(cursor: TreeCursor, ctx: TranslationContex
         name = getText(cursor, ctx.source);
         break;
       case "TypeParamList":
-        typeParamNames = translateTypeParamList(cursor, ctx);
+        typeParamInfos = translateTypeParamListFull(cursor, ctx);
         break;
       case "ParamList":
         params = translateParamList(cursor, ctx);
@@ -511,8 +561,8 @@ function translateFunctionDeclaration(cursor: TreeCursor, ctx: TranslationContex
   cursor.parent();
 
   // Clean up type params
-  for (const p of typeParamNames) {
-    ctx.typeParams.delete(p);
+  for (const p of typeParamInfos) {
+    ctx.typeParams.delete(p.name);
   }
 
   if (!name) return [];
@@ -521,7 +571,7 @@ function translateFunctionDeclaration(cursor: TreeCursor, ctx: TranslationContex
   if (ctx.emittedFunctions.has(name)) return [];
   ctx.emittedFunctions.add(name);
 
-  return [buildFunctionDecl(name, typeParamNames, params, returnTypeExpr)];
+  return [buildFunctionDecl(name, typeParamInfos, params, returnTypeExpr)];
 }
 
 /**
@@ -529,7 +579,7 @@ function translateFunctionDeclaration(cursor: TreeCursor, ctx: TranslationContex
  */
 function buildFunctionDecl(
   name: string,
-  typeParamNames: string[],
+  typeParamInfos: TypeParamInfo[],
   params: { name: string; type: CoreExpr; optional: boolean; rest: boolean }[],
   returnTypeExpr: CoreExpr
 ): CoreDecl {
@@ -541,18 +591,23 @@ function buildFunctionDecl(
     rest: p.rest || undefined,
   }));
 
-  if (typeParamNames.length > 0) {
-    // Generic function: add type params with wideTypeOf defaults
-    for (const tp of typeParamNames) {
-      // Find first value param whose type mentions this type param
-      const matchingParam = params.find(p => exprMentions(p.type, tp));
-      const defaultValue = matchingParam
-        ? coreCall("wideTypeOf", coreId(matchingParam.name))
-        : undefined;
+  if (typeParamInfos.length > 0) {
+    // Generic function: add type params with wideTypeOf defaults or explicit defaults
+    for (const tp of typeParamInfos) {
+      // If there's an explicit default from the type param declaration, use it
+      let defaultValue: CoreExpr | undefined = tp.default;
+
+      if (!defaultValue) {
+        // Find first value param whose type mentions this type param
+        const matchingParam = params.find(p => exprMentions(p.type, tp.name));
+        defaultValue = matchingParam
+          ? coreCall("wideTypeOf", coreId(matchingParam.name))
+          : undefined;
+      }
 
       coreParams.push({
-        name: tp,
-        type: coreId("Type"),
+        name: tp.name,
+        type: tp.constraint ? coreCall("Type", tp.constraint) : coreId("Type"),
         defaultValue,
         annotations: [],
       });
@@ -625,7 +680,7 @@ function translateVariableDeclaration(cursor: TreeCursor, ctx: TranslationContex
  */
 function translateClassDeclaration(cursor: TreeCursor, ctx: TranslationContext): CoreDecl[] {
   let name = "";
-  let typeParamNames: string[] = [];
+  let typeParamInfos: TypeParamInfo[] = [];
   let fields: CoreExpr[] = [];
   let constructorParams: { name: string; type: CoreExpr; optional: boolean; rest: boolean }[] | null = null;
 
@@ -636,7 +691,7 @@ function translateClassDeclaration(cursor: TreeCursor, ctx: TranslationContext):
         name = getText(cursor, ctx.source);
         break;
       case "TypeParamList":
-        typeParamNames = translateTypeParamList(cursor, ctx);
+        typeParamInfos = translateTypeParamListFull(cursor, ctx);
         break;
       case "ClassBody":
         const result = translateClassBody(cursor, ctx);
@@ -648,8 +703,8 @@ function translateClassDeclaration(cursor: TreeCursor, ctx: TranslationContext):
   cursor.parent();
 
   // Clean up type params
-  for (const p of typeParamNames) {
-    ctx.typeParams.delete(p);
+  for (const p of typeParamInfos) {
+    ctx.typeParams.delete(p.name);
   }
 
   if (!name) return [];
@@ -691,6 +746,8 @@ function translateNamespace(cursor: TreeCursor, ctx: TranslationContext): CoreDe
   // Save and clear function tracking for namespace scope
   const savedEmittedFunctions = ctx.emittedFunctions;
   ctx.emittedFunctions = new Set();
+  const isNested = ctx.nsDepth > 0;
+  ctx.nsDepth++;
 
   cursor.firstChild();
   do {
@@ -709,22 +766,51 @@ function translateNamespace(cursor: TreeCursor, ctx: TranslationContext): CoreDe
   } while (cursor.nextSibling());
   cursor.parent();
 
-  // Restore function tracking
+  // Restore function tracking and depth
   ctx.emittedFunctions = savedEmittedFunctions;
+  ctx.nsDepth--;
 
   if (name) {
     // Store namespace decls for potential export = Ns promotion
     ctx.namespaces.set(name, nsDecls);
   }
 
-  // Always emit the namespace as a "block" that defines all members,
-  // and then create a record value for namespace access (e.g., React.useState)
-  // The namespace members are NOT directly available at the parent scope
-  // unless export = Ns promotes them.
+  // If the namespace has declarations, emit a const binding that creates a block
+  // expression which defines all members and returns a record of them.
+  // This makes nested namespaces (like JSX inside React) accessible via property
+  // access (e.g., JSX.IntrinsicElements).
+  if (isNested && name && nsDecls.length > 0) {
+    // Collect names of const declarations to build the record
+    const memberNames = nsDecls
+      .filter(d => d.kind === "const")
+      .map(d => (d as { name: string }).name);
 
-  // For namespace access like React.ElementType, we need the namespace value.
-  // We'll emit nothing here — the export = Ns path adds members to top-level,
-  // and the type checker builds the namespace record when processing imports.
+    if (memberNames.length > 0) {
+      // Build: { <member decls...>; { member1: member1, member2: member2, ... } }
+      const recordFields: CoreRecordField[] = memberNames.map(n => ({
+        kind: "field" as const,
+        name: n,
+        value: coreId(n),
+      }));
+
+      const blockExpr: CoreExpr = {
+        kind: "block",
+        statements: nsDecls,
+        result: { kind: "record", fields: recordFields, loc: dtsLoc },
+        loc: dtsLoc,
+      };
+
+      return [{
+        kind: "const",
+        name,
+        init: blockExpr,
+        comptime: true,
+        exported: false,
+        loc: dtsLoc,
+      }];
+    }
+  }
+
   return [];
 }
 
@@ -1005,18 +1091,81 @@ function parseExportGroup(
 // Type Parameter List
 // ============================================
 
+/**
+ * Parsed type parameter with optional constraint and default.
+ */
+interface TypeParamInfo {
+  name: string;
+  constraint?: CoreExpr;  // extends clause → Type(bound)
+  default?: CoreExpr;     // = default value
+}
+
 function translateTypeParamList(cursor: TreeCursor, ctx: TranslationContext): string[] {
-  const names: string[] = [];
+  const infos = translateTypeParamListFull(cursor, ctx);
+  return infos.map(i => i.name);
+}
+
+function translateTypeParamListFull(cursor: TreeCursor, ctx: TranslationContext): TypeParamInfo[] {
+  const params: TypeParamInfo[] = [];
+  let currentName = "";
+  let currentConstraint: CoreExpr | undefined;
+  let currentDefault: CoreExpr | undefined;
+  let expectingConstraint = false;
+  let expectingDefault = false;
+
   cursor.firstChild();
   do {
-    if (cursor.name === "TypeDefinition") {
-      const name = getText(cursor, ctx.source);
-      names.push(name);
-      ctx.typeParams.add(name);
+    switch (cursor.name) {
+      case "TypeDefinition": {
+        // Finish previous param if any
+        if (currentName) {
+          params.push({ name: currentName, constraint: currentConstraint, default: currentDefault });
+          ctx.typeParams.add(currentName);
+        }
+        currentName = getText(cursor, ctx.source);
+        currentConstraint = undefined;
+        currentDefault = undefined;
+        expectingConstraint = false;
+        expectingDefault = false;
+        // Add to scope immediately so later params can reference earlier ones
+        ctx.typeParams.add(currentName);
+        break;
+      }
+      case "extends":
+        expectingConstraint = true;
+        expectingDefault = false;
+        break;
+      case "Equals":
+      case "=":
+        expectingDefault = true;
+        expectingConstraint = false;
+        break;
+      default: {
+        if (expectingConstraint) {
+          const translated = translateType(cursor, ctx);
+          if (translated) {
+            currentConstraint = translated;
+            expectingConstraint = false;
+          }
+        } else if (expectingDefault) {
+          const translated = translateType(cursor, ctx);
+          if (translated) {
+            currentDefault = translated;
+            expectingDefault = false;
+          }
+        }
+        break;
+      }
     }
   } while (cursor.nextSibling());
   cursor.parent();
-  return names;
+
+  // Don't forget the last param
+  if (currentName) {
+    params.push({ name: currentName, constraint: currentConstraint, default: currentDefault });
+  }
+
+  return params;
 }
 
 // ============================================
@@ -1194,18 +1343,175 @@ function translateMethodDeclaration(
 // Object Type Fields
 // ============================================
 
-function translateObjectTypeFields(cursor: TreeCursor, ctx: TranslationContext): CoreExpr[] {
+/**
+ * Result from translating an ObjectType — either a list of fields (for RecordType)
+ * or a single expression if the object is actually a mapped type or call signature.
+ */
+type ObjectTypeResult =
+  | { kind: "fields"; fields: CoreExpr[] }
+  | { kind: "mapped"; expr: CoreExpr }
+  | { kind: "callSignature"; expr: CoreExpr; fields: CoreExpr[] };
+
+function translateObjectTypeInner(cursor: TreeCursor, ctx: TranslationContext): ObjectTypeResult {
   const fields: CoreExpr[] = [];
+  let mappedExpr: CoreExpr | null = null;
+  let callSignatureExpr: CoreExpr | null = null;
+
   cursor.firstChild();
   do {
     if (cursor.name === "PropertyType") {
       const field = translatePropertyType(cursor, ctx);
       if (field) fields.push(field);
+    } else if (cursor.name === "IndexSignature") {
+      const result = translateIndexSignature(cursor, ctx);
+      if (result) mappedExpr = result;
+    } else if (cursor.name === "CallSignature") {
+      callSignatureExpr = translateCallSignature(cursor, ctx);
+    } else if (cursor.name === "NewSignature") {
+      // Constructor signatures - translate similarly to call signatures
+      callSignatureExpr = translateCallSignature(cursor, ctx);
     }
-    // Skip IndexSignature, mapped types, etc. for now
   } while (cursor.nextSibling());
   cursor.parent();
-  return fields;
+
+  if (mappedExpr) {
+    return { kind: "mapped", expr: mappedExpr };
+  }
+
+  if (callSignatureExpr && fields.length > 0) {
+    return { kind: "callSignature", expr: callSignatureExpr, fields };
+  }
+
+  if (callSignatureExpr) {
+    return { kind: "callSignature", expr: callSignatureExpr, fields: [] };
+  }
+
+  return { kind: "fields", fields };
+}
+
+function translateObjectTypeFields(cursor: TreeCursor, ctx: TranslationContext): CoreExpr[] {
+  const result = translateObjectTypeInner(cursor, ctx);
+  if (result.kind === "fields") return result.fields;
+  // For mapped types and call signatures from the field-only callers, return empty
+  return [];
+}
+
+/**
+ * Translate an IndexSignature that represents a mapped type.
+ * Detects: { [K in Domain]: ValueType } with optional modifiers.
+ * Adds the key variable to scope before translating the value type.
+ */
+function translateIndexSignature(cursor: TreeCursor, ctx: TranslationContext): CoreExpr | null {
+  let keyVarName = "";
+  let domainExpr: CoreExpr | null = null;
+  let valueExpr: CoreExpr | null = null;
+  let hasIn = false;
+  let optionalMod: string | null = null;
+  let hasMinus = false;
+  let hasReadonly = false;
+  let readonlyHasMinus = false;
+
+  cursor.firstChild();
+  do {
+    switch (cursor.name) {
+      case "readonly":
+        hasReadonly = true;
+        break;
+      case "PropertyDefinition":
+        keyVarName = getText(cursor, ctx.source);
+        break;
+      case "in":
+        hasIn = true;
+        // Add key variable to scope so value type translation sees it
+        if (keyVarName) ctx.typeParams.add(keyVarName);
+        break;
+      case "ArithOp": {
+        const text = getText(cursor, ctx.source);
+        if (text === "-") hasMinus = true;
+        break;
+      }
+      case "Optional":
+        optionalMod = hasMinus ? "remove" : "add";
+        hasMinus = false;
+        break;
+      case "TypeAnnotation": {
+        const t = translateTypeAnnotation(cursor, ctx);
+        if (t) valueExpr = t;
+        break;
+      }
+      default: {
+        if (hasIn && !domainExpr) {
+          const translated = translateType(cursor, ctx);
+          if (translated) domainExpr = translated;
+        }
+        break;
+      }
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  // Clean up key variable from scope
+  if (keyVarName) ctx.typeParams.delete(keyVarName);
+
+  if (!hasIn || !keyVarName || !domainExpr) return null;
+
+  // Default value type is Unknown
+  if (!valueExpr) valueExpr = coreId("Unknown");
+
+  // Build the lambda: (K: Type): Type => valueExpr
+  const valueLambda = coreLambda(
+    [{ name: keyVarName, type: coreId("Type"), annotations: [] }],
+    valueExpr,
+    coreId("Type"),
+  );
+
+  // Build args for MappedType call
+  const args: CoreExpr[] = [
+    coreLit(keyVarName, "string"),
+    domainExpr,
+    valueLambda,
+  ];
+
+  if (optionalMod) {
+    args.push(coreLit(optionalMod, "string"));
+  }
+
+  return coreCall("MappedType", ...args);
+}
+
+/**
+ * Translate a call signature inside an interface/object type.
+ * (params): ReturnType → FunctionType([params], ReturnType)
+ */
+function translateCallSignature(cursor: TreeCursor, ctx: TranslationContext): CoreExpr {
+  let params: { name: string; type: CoreExpr; optional: boolean; rest: boolean }[] = [];
+  let returnTypeExpr: CoreExpr = coreId("Unknown");
+
+  cursor.firstChild();
+  do {
+    switch (cursor.name) {
+      case "ParamList":
+        params = translateParamList(cursor, ctx);
+        break;
+      case "TypeAnnotation": {
+        const t = translateTypeAnnotation(cursor, ctx);
+        if (t) returnTypeExpr = t;
+        break;
+      }
+      default: {
+        const translated = translateType(cursor, ctx);
+        if (translated) returnTypeExpr = translated;
+        break;
+      }
+    }
+  } while (cursor.nextSibling());
+  cursor.parent();
+
+  return coreCall(
+    "FunctionType",
+    coreArray(params.map(p => coreParamInfo(p.name, p.type, p.optional, p.rest))),
+    returnTypeExpr,
+  );
 }
 
 function translatePropertyType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr | null {
@@ -1282,13 +1588,39 @@ function translateType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr | 
     case "IndexedType":
       return translateIndexedType(cursor, ctx);
 
-    case "KeyofType":
-      // Degrade to Unknown for now
-      return coreId("Unknown");
+    case "KeyofType": {
+      // keyof T → Keyof(T)
+      let operandExpr: CoreExpr | null = null;
+      cursor.firstChild();
+      do {
+        const childName = cursor.name as string;
+        if (childName !== "keyof") {
+          const translated = translateType(cursor, ctx);
+          if (translated) operandExpr = translated;
+        }
+      } while (cursor.nextSibling());
+      cursor.parent();
+      return operandExpr ? coreCall("Keyof", operandExpr) : coreId("Unknown");
+    }
 
-    case "ConditionalType":
-      // Degrade to Unknown for now
+    case "ConditionalType": {
+      // T extends U ? X : Y → ConditionalType(T, U, X, Y)
+      const condParts: CoreExpr[] = [];
+      cursor.firstChild();
+      do {
+        const childName = cursor.name as string;
+        // Skip keywords and operators: extends, LogicOp (? and :)
+        if (childName !== "extends" && childName !== "LogicOp") {
+          const translated = translateType(cursor, ctx);
+          if (translated) condParts.push(translated);
+        }
+      } while (cursor.nextSibling());
+      cursor.parent();
+      if (condParts.length >= 4) {
+        return coreCall("ConditionalType", condParts[0], condParts[1], condParts[2], condParts[3]);
+      }
       return coreId("Unknown");
+    }
 
     case "TypeofType":
       return translateTypeofType(cursor, ctx);
@@ -1346,8 +1678,20 @@ function translateIntersectionType(cursor: TreeCursor, ctx: TranslationContext):
 }
 
 function translateObjectType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr {
-  const fields = translateObjectTypeFields(cursor, ctx);
-  return coreCall("RecordType", coreArray(fields));
+  const result = translateObjectTypeInner(cursor, ctx);
+
+  switch (result.kind) {
+    case "fields":
+      return coreCall("RecordType", coreArray(result.fields));
+    case "mapped":
+      return result.expr;
+    case "callSignature":
+      if (result.fields.length > 0) {
+        // Both call signature and properties: Intersection(FunctionType, RecordType)
+        return coreCall("Intersection", result.expr, coreCall("RecordType", coreArray(result.fields)));
+      }
+      return result.expr;
+  }
 }
 
 function translateArrayType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr {
@@ -1497,8 +1841,8 @@ function translateIndexedType(cursor: TreeCursor, ctx: TranslationContext): Core
       return coreProperty(objectExpr, indexExpr.value as string);
     }
 
-    // General case: degrade to Unknown
-    return coreId("Unknown");
+    // General case: IndexedAccess(T, K)
+    return coreCall("IndexedAccess", objectExpr, indexExpr);
   }
 
   return coreId("Unknown");
