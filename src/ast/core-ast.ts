@@ -208,6 +208,8 @@ export type TypedDecl = Located<TypedDeclBase> & {
 
 export type TypedProgram = {
   decls: TypedDecl[];
+  /** Non-fatal warnings collected during type checking (e.g., .d.ts type resolution failures) */
+  warnings?: string[];
 };
 
 // ============================================

@@ -132,13 +132,21 @@ function parseArgs(args: string[]): Options {
   return options;
 }
 
-function compile(source: string, filename: string): string {
+function compile(source: string, filename: string, verbose?: boolean): string {
   // Parse with file path for source locations
   const decls = parse(source, { filePath: filename });
 
   // Type check with module resolution from file's directory
   const baseDir = path.dirname(path.resolve(filename));
   const typed = typecheck(decls, { baseDir });
+
+  // Show warnings if verbose
+  if (verbose && typed.warnings && typed.warnings.length > 0) {
+    console.error(colors.yellow + `${typed.warnings.length} warning(s):` + colors.reset);
+    for (const w of typed.warnings) {
+      console.error(colors.dim + `  ⚠ ${w}` + colors.reset);
+    }
+  }
 
   // Erase comptime-only code
   const runtime = erase(typed);
@@ -185,7 +193,7 @@ async function main(): Promise<void> {
       }
 
       case "compile": {
-        const js = compile(source, inputPath);
+        const js = compile(source, inputPath, options.verbose);
 
         if (options.outputFile) {
           const outputPath = path.resolve(options.outputFile);
@@ -201,7 +209,7 @@ async function main(): Promise<void> {
       }
 
       case "run": {
-        const js = compile(source, inputPath);
+        const js = compile(source, inputPath, options.verbose);
 
         if (options.verbose) {
           console.error(colors.dim + "--- Generated JavaScript ---" + colors.reset);

@@ -1678,6 +1678,176 @@ const builtinComptimeReadFile: ComptimeBuiltin = {
   },
 };
 
+// ============================================
+// TypeScript Global Type Stubs
+// ============================================
+
+/**
+ * Populate an environment with TypeScript global type stubs.
+ * These are approximate mappings for types commonly referenced in .d.ts files
+ * (Iterable, ReadonlyArray, Readonly, Partial, etc.) that are not part of DepJS's
+ * core type system. Added to module-level child environments during import processing.
+ */
+export function defineTypeScriptGlobalStubs(
+  comptimeEnv: ComptimeEnv,
+  typeEnv: TypeEnv
+): void {
+  const typeType = primitiveType("Type");
+  const stubNames = [
+    "Iterable", "Iterator", "IterableIterator",
+    "ReadonlyArray", "Readonly", "Partial", "Required",
+    "NonNullable", "Exclude", "Extract", "Omit", "Pick",
+    "Record", "Promise", "PromiseLike", "Awaited",
+  ];
+
+  const stubImpls: Record<string, ComptimeBuiltin> = {
+    "Iterable": builtinIdentityType("Iterable"),
+    "Iterator": builtinIdentityType("Iterator"),
+    "IterableIterator": builtinIdentityType("IterableIterator"),
+    "ReadonlyArray": builtinReadonlyArray,
+    "Readonly": builtinIdentityTypeConstructor,
+    "Partial": builtinIdentityTypeConstructor,
+    "Required": builtinIdentityTypeConstructor,
+    "NonNullable": builtinIdentityTypeConstructor,
+    "Exclude": builtinExclude,
+    "Extract": builtinExtract,
+    "Omit": builtinIdentityTypeConstructor,
+    "Pick": builtinIdentityTypeConstructor,
+    "Record": builtinTSRecord,
+    "Promise": builtinPromiseType,
+    "PromiseLike": builtinPromiseType,
+    "Awaited": builtinIdentityTypeConstructor,
+  };
+
+  for (const name of stubNames) {
+    // Only define if not already present (don't override real definitions)
+    if (!typeEnv.lookup(name)) {
+      typeEnv.define(name, {
+        type: functionType(
+          [{ name: "T", type: typeType, optional: false, rest: true }],
+          typeType
+        ),
+        comptimeStatus: "comptimeOnly",
+        mutable: false,
+      });
+      comptimeEnv.defineEvaluated(name, wrapBuiltinValue(stubImpls[name]));
+    }
+  }
+}
+
+/**
+ * Identity type constructor stub: (T: Type) => T
+ * Used for Readonly, Partial, Required, NonNullable, etc.
+ */
+const builtinIdentityTypeConstructor: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "IdentityType",
+  impl: (args, _evaluator, _loc) => {
+    if (args.length > 0 && isRawTypeValue(args[0].value)) {
+      return wrapTypeValue(args[0].value as Type);
+    }
+    return wrapTypeValue(Unknown);
+  },
+};
+
+/**
+ * Identity type constructor that wraps result in WithMetadata with given name.
+ * Used for Iterable, Iterator, IterableIterator — maps T → Array(T) approximately.
+ */
+function builtinIdentityType(name: string): ComptimeBuiltin {
+  return {
+    kind: "builtin",
+    name,
+    impl: (args, _evaluator, _loc) => {
+      if (args.length > 0 && isRawTypeValue(args[0].value)) {
+        const elementType = args[0].value as Type;
+        return wrapTypeValue(
+          withMetadata(
+            arrayType([elementType], true),
+            { name }
+          )
+        );
+      }
+      return wrapTypeValue(
+        withMetadata(arrayType([Unknown], true), { name })
+      );
+    },
+  };
+}
+
+/**
+ * ReadonlyArray<T> → Array(T)
+ */
+const builtinReadonlyArray: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "ReadonlyArray",
+  impl: (args, _evaluator, _loc) => {
+    if (args.length > 0 && isRawTypeValue(args[0].value)) {
+      return wrapTypeValue(arrayType([args[0].value as Type], true));
+    }
+    return wrapTypeValue(arrayType([Unknown], true));
+  },
+};
+
+/**
+ * Exclude<T, U> → ConditionalType(T, U, Never, T) approximately.
+ * In practice, just returns T (a rough approximation).
+ */
+const builtinExclude: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "Exclude",
+  impl: (args, _evaluator, _loc) => {
+    if (args.length > 0 && isRawTypeValue(args[0].value)) {
+      return wrapTypeValue(args[0].value as Type);
+    }
+    return wrapTypeValue(Unknown);
+  },
+};
+
+/**
+ * Extract<T, U> → U approximately.
+ */
+const builtinExtract: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "Extract",
+  impl: (args, _evaluator, _loc) => {
+    if (args.length > 1 && isRawTypeValue(args[1].value)) {
+      return wrapTypeValue(args[1].value as Type);
+    }
+    return wrapTypeValue(Unknown);
+  },
+};
+
+/**
+ * Record<K, V> → { [key: K]: V } approximately → RecordType([], V)
+ */
+const builtinTSRecord: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "Record",
+  impl: (args, _evaluator, _loc) => {
+    const valueType = args.length > 1 && isRawTypeValue(args[1].value)
+      ? args[1].value as Type
+      : Unknown;
+    return wrapTypeValue(recordType([], { indexType: valueType }));
+  },
+};
+
+/**
+ * Promise<T> → WithMetadata(T, { name: "Promise" }) approximately.
+ */
+const builtinPromiseType: ComptimeBuiltin = {
+  kind: "builtin",
+  name: "Promise",
+  impl: (args, _evaluator, _loc) => {
+    const innerType = args.length > 0 && isRawTypeValue(args[0].value)
+      ? args[0].value as Type
+      : Unknown;
+    return wrapTypeValue(
+      withMetadata(innerType, { name: "Promise" })
+    );
+  },
+};
+
 /**
  * Create the comptime namespace record containing comptime-only functions.
  * This is stored as a record value where each field is a builtin function.

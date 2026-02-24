@@ -505,52 +505,22 @@ export const App = Counter;
 
 ### Blocking issues (in priority order)
 
-#### 1. `jsx`/`jsxs` resolve to `Unknown` due to forward-reference and namespace self-reference issues
+None — `react-counter.djs` compiles successfully!
 
-**Status: Phase 1-6 of the plan complete, Phase 7 (integration) in progress.**
+**What was fixed to get here:**
+- `bigint` and `symbol` added to PRIMITIVE_MAP
+- `/// <reference path="...">` directives now processed (loads React's `global.d.ts` with DOM stubs)
+- `translateParameterizedType` handles member expression bases (e.g., `React.JSXElementConstructor<any>`)
+- Auto-invoke for generic types used without args in type annotation positions (e.g., `React.ElementType`)
+- TypeScript global type stubs (Iterable, ReadonlyArray, Partial, etc.) added to module child environments
+- Lenient param type evaluation in letrec Phase 1 (`tryEvaluateAsType` falls back to `Unknown`)
+- Optional parameters in `.d.ts` functions now get `defaultValue` so they're recognized as optional
+- Silent exception handling replaced with warning collection (visible with `-v` flag)
 
-The DTS translator now supports `keyof`, conditional types, mapped types, indexed access types, and type parameter defaults/constraints. Multi-pass evaluation was added to handle forward references in namespaces.
-
-**Remaining blockers (discovered during integration testing):**
-
-1. **Namespace self-references**: Inside `namespace React { namespace JSX { type ElementType = string | React.JSXElementConstructor<any>; } }`, the `React.` prefix refers to the parent namespace. But at comptime, `React` isn't a binding (we're still building it). The translator needs to either:
-   - Strip self-references (`React.X` → `X` when inside the React namespace)
-   - Or make the parent namespace available as a binding during nested namespace evaluation
-
-2. **`bigint` type not mapped**: `type Key = string | bigint | number` fails because `bigint` is not defined. Need to add `bigint` → `Int` (or `Number`) mapping.
-
-3. **Generic types called without args as type aliases**: `type NativeAnimationEvent = AnimationEvent` where `AnimationEvent` is generic `(T?: Type) => Type` fails with "not assignable to Type". The translator treats these as function calls that need to be invoked (with defaults) rather than direct assignments.
-
-4. **Missing DOM globals**: `HTMLElement`, `Element`, `AnimationEvent`, etc. — browser DOM types aren't loaded. Need either stub types or a `lib.dom.d.ts` loader.
-
-**Changes made in this session:**
-- Multi-pass evaluation for module declarations (handles forward references in namespaces)
-- Nested namespace const binding emission (JSX inside React → `const JSX = { ElementType, ... }`)
-- `currentModuleDir` tracking for resolving relative imports within `.d.ts` files
-- Pre-processing strips `export as namespace` and triple-backtick JSDoc code fences that break Lezer parser
-- Fixed TS2367 build errors in `KeyofType` and `ConditionalType` cursor.name comparisons
-
-## Resolved Issues for Working React Example
-
-The following issues were discovered while attempting to build a counter app and have all been fixed.
-
-### 1. ~~Array destructuring not supported~~ FIXED
-**Fix:** Implemented array destructuring (`const [a, b] = expr`) in the parser/desugarer. Desugars to indexed access: `const a = expr[0]; const b = expr[1];` etc. Works with tuple types from `.d.ts` generic functions (e.g., `useState`).
-
-### 2. ~~Type argument inference preserves literal types too aggressively~~ FIXED
-**Fix:** DTS translator now uses `wideTypeOf` (instead of `typeOf`) as the default for type parameters. The `wideTypeOf` builtin widens literal types to their base primitives (`0` → `Int`, `"hello"` → `String`). So `useState(0)` now infers `S = Int` (not `S = 0`), and `setCount(count + 1)` type-checks correctly.
-
-### 3. ~~DTS translator output was resolved Type objects~~ FIXED (Architecture Change)
-**Fix:** Rewrote the DTS translator to output `CoreDecl[]` (DepJS AST) instead of resolved `Type` objects. The type checker now processes `.d.ts` imports uniformly with DepJS code. This eliminated the need for `FunctionType.typeParams`, `inferTypeArguments()`, and `substituteTypeVars` for return type instantiation — generic `.d.ts` functions are now desugared as regular DepJS functions with Type parameters and `wideTypeOf` defaults.
-
-### 4. ~~Explicit type arguments for .d.ts generic functions don't work~~ FIXED
-**Fix:** With the CoreDecl[] architecture, `.d.ts` generic type params become regular DepJS function params of type `Type`. The `f<args>` syntax naturally passes type values to these params, so `useState<Int>(0)` now works correctly.
-
-### 5. ~~Parameterized type aliases from .d.ts are not expanded~~ FIXED
-**Fix:** `translateNamespace` now swaps `ctx.localTypes`/`ctx.localValues` to the namespace's own maps during body processing, so type aliases defined earlier in a namespace (e.g., `Dispatch`, `SetStateAction`) are visible when translating later entries (e.g., `useState`).
-
-### 6. ~~Namespace member types from .d.ts are not resolved~~ FIXED
-**Fix:** `translateIndexedType` now resolves dot-access patterns (`Ns.Member`) by looking up namespace values and their record fields. Also added `NamespaceDeclaration` handling to `translateTopLevel` for nested namespaces without `declare`.
+**Known quality issues visible via `depjs compile -v`:**
+- ~438 warnings when loading React types (CSS type properties, complex mapped types, fuel limit)
+- Some param types on `jsx`/`jsxs` resolve to `Unknown` (e.g., `React.ElementType`) — works at runtime but less type-safe
+- These are all `.d.ts` loading robustness issues, not DepJS language issues
 
 ## Open Questions
 
@@ -639,14 +609,17 @@ Design decisions that can be addressed as needed:
 - Nested namespace const binding emission (e.g., `JSX` inside `React` becomes accessible via property access)
 - Pre-processing for Lezer parser compatibility (strips `export as namespace`, triple-backtick JSDoc)
 - Relative import resolution from `.d.ts` file directory (not source file directory)
+- `/// <reference path="...">` directive processing (loads referenced `.d.ts` files like React's `global.d.ts`)
+- `bigint` → `Int` and `symbol` → `Unknown` primitive type mapping
+- Parameterized type with member expression base (e.g., `React.JSXElementConstructor<any>`)
+- Auto-invoke generic types used without args in type annotation positions (closures with all-default params)
+- TypeScript global type stubs in module child envs (Iterable, ReadonlyArray, Partial, Record, Promise, etc.)
 
 ### Not Yet Implemented
 
 **TypeScript .d.ts Loading:**
 - Template literal types
-- Namespace self-references (`React.X` inside `namespace React`)
-- `bigint` type mapping
-- DOM global types (`HTMLElement`, `Element`, browser event types)
+- Higher-fidelity resolution for complex React types (ElementType, CSS properties, etc.)
 
 **Module System:**
 - DepJS-to-DepJS imports
@@ -654,18 +627,18 @@ Design decisions that can be addressed as needed:
 
 ## Test Summary
 
-All tests passing (746 total):
+All tests passing (750 total):
 
-| Module | Tests |
-|--------|-------|
-| parser/lezer-parser | 78 |
-| dts-loader/dts-parser | 17 |
-| dts-loader/dts-translator | 64 |
-| typecheck/comptime-eval | 156 |
-| typecheck/typecheck | 277 |
-| erasure/erasure | 27 |
-| codegen/codegen | 68 |
-| types/subtype | 59 |
+| Module                      | Tests |
+|-----------------------------|-------|
+| parser/lezer-parser         | 78    |
+| dts-loader/dts-parser       | 17    |
+| dts-loader/dts-translator   | 64    |
+| typecheck/comptime-eval     | 156   |
+| typecheck/typecheck         | 279   |
+| erasure/erasure             | 27    |
+| codegen/codegen             | 68    |
+| types/subtype               | 59    |
 
 Run tests: `npm test`
 Run single file: `npm run depjs -- path/to/file.djs`

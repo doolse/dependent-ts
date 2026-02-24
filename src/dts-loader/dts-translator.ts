@@ -145,6 +145,8 @@ const PRIMITIVE_MAP: Record<string, string> = {
   unknown: "Unknown",
   any: "Unknown",
   object: "Unknown",
+  bigint: "Int",
+  symbol: "Unknown",
 };
 
 // ============================================
@@ -590,11 +592,13 @@ function buildFunctionDecl(
   returnTypeExpr: CoreExpr
 ): CoreDecl {
   // Build value params
+  // Optional params get `undefined` as defaultValue so the type checker recognizes them as optional
   const coreParams: CoreParam[] = params.map(p => ({
     name: p.name,
     type: p.type,
     annotations: [],
     rest: p.rest || undefined,
+    defaultValue: p.optional ? coreLit(undefined, "undefined") : undefined,
   }));
 
   if (typeParamInfos.length > 0) {
@@ -1789,6 +1793,7 @@ function translateFunctionSignature(cursor: TreeCursor, ctx: TranslationContext)
 
 function translateParameterizedType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr {
   let baseName = "";
+  let baseExpr: CoreExpr | null = null;
   const typeArgs: CoreExpr[] = [];
 
   cursor.firstChild();
@@ -1805,9 +1810,20 @@ function translateParameterizedType(cursor: TreeCursor, ctx: TranslationContext)
         } while (cursor.nextSibling());
         cursor.parent();
         break;
+      default:
+        // Handle non-TypeName bases (e.g., React.JSXElementConstructor<any>
+        // where the base is an IndexedType/MemberExpression)
+        if (!baseExpr) {
+          const translated = translateType(cursor, ctx);
+          if (translated) baseExpr = translated;
+        }
+        break;
     }
   } while (cursor.nextSibling());
   cursor.parent();
+
+  // Determine the effective base expression
+  const effectiveBase = baseName ? null : baseExpr;
 
   // Special case: Array<T> → Array(T)
   if (baseName === "Array" && typeArgs.length === 1) {
@@ -1820,12 +1836,12 @@ function translateParameterizedType(cursor: TreeCursor, ctx: TranslationContext)
   }
 
   // Generic type application: Foo<A, B> → Foo(A, B)
-  // The type checker will resolve Foo and call it with the args
   if (typeArgs.length > 0) {
-    return coreCall(coreId(baseName), ...typeArgs);
+    const fnExpr = effectiveBase ?? coreId(baseName);
+    return coreCall(fnExpr, ...typeArgs);
   }
 
-  return coreId(baseName);
+  return effectiveBase ?? coreId(baseName);
 }
 
 function translateParenthesizedType(cursor: TreeCursor, ctx: TranslationContext): CoreExpr {

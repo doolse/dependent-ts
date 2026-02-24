@@ -51,7 +51,7 @@ import {
 import { TypeEnv, TypeBinding, ComptimeStatus } from "./type-env";
 import { ComptimeEnv, TypedComptimeValue, isTypeValue, isClosureValue, isBuiltinValue, isRawTypeValue } from "./comptime-env";
 import { ComptimeEvaluator } from "./comptime-eval";
-import { createInitialComptimeEnv, createInitialTypeEnv } from "./builtins";
+import { createInitialComptimeEnv, createInitialTypeEnv, defineTypeScriptGlobalStubs } from "./builtins";
 import { isComptimeOnlyProperty, getTypePropertyType, getTypeProperty } from "./type-properties";
 import { getArrayMethodType, getArrayElementType } from "./array-methods";
 import { getStringMethodType } from "./string-methods";
@@ -118,6 +118,8 @@ class TypeChecker {
   private moduleResolver: ModuleResolver | null;
   /** Directory of the current .d.ts module being processed (for relative import resolution) */
   private currentModuleDir: string | null = null;
+  /** Non-fatal warnings collected during type checking */
+  private warnings: string[] = [];
 
   constructor(config: TypeCheckConfig = {}) {
     this.typeEnv = createInitialTypeEnv();
@@ -145,7 +147,10 @@ class TypeChecker {
       typedDecls.push(typed);
     }
 
-    return { decls: typedDecls };
+    return {
+      decls: typedDecls,
+      warnings: this.warnings.length > 0 ? this.warnings : undefined,
+    };
   }
 
   /**
@@ -178,22 +183,8 @@ class TypeChecker {
     let preRegistered = false;
 
     if (decl.type) {
-      // Type annotation must evaluate to a Type
-      const typeValue = this.evaluator.evaluate(
-        decl.type,
-        this.comptimeEnv,
-        this.typeEnv
-      );
-
-      if (!isTypeValue(typeValue)) {
-        throw new CompileError(
-          `Type annotation must evaluate to a Type, got ${typeof typeValue.value}`,
-          "typecheck",
-          decl.type.loc
-        );
-      }
-
-      declaredType = typeValue.value as Type;
+      // Type annotation must evaluate to a Type (auto-invokes generic types with all defaults)
+      declaredType = this.evaluateAsType(decl.type, this.comptimeEnv, this.typeEnv);
 
       // Pre-register binding to enable recursive function references.
       // This allows the initializer to reference the binding being defined.
@@ -213,45 +204,17 @@ class TypeChecker {
     ) {
       // Lambda with explicit return type and all params typed - compute function type
       // This enables recursive functions like: const f = (n: Int): Int => f(n-1)
-      const paramInfos: ParamInfo[] = [];
-      for (const p of decl.init.params) {
-        const paramTypeValue = this.evaluator.evaluate(
-          p.type!,
-          this.comptimeEnv,
-          this.typeEnv
-        );
-        if (!isTypeValue(paramTypeValue)) {
-          throw new CompileError(
-            `Parameter type must evaluate to a Type`,
-            "typecheck",
-            p.type!.loc
-          );
-        }
-        paramInfos.push({
-          name: p.name,
-          type: paramTypeValue.value as Type,
-          optional: p.defaultValue !== undefined,
-          rest: p.rest,
-        });
-      }
-
-      const returnTypeValue = this.evaluator.evaluate(
-        decl.init.returnType,
-        this.comptimeEnv,
-        this.typeEnv
-      );
-      if (!isTypeValue(returnTypeValue)) {
-        throw new CompileError(
-          `Return type must evaluate to a Type`,
-          "typecheck",
-          decl.init.returnType.loc
-        );
-      }
+      const paramInfos: ParamInfo[] = decl.init.params.map(p => ({
+        name: p.name,
+        type: this.evaluateAsType(p.type!, this.comptimeEnv, this.typeEnv),
+        optional: p.defaultValue !== undefined,
+        rest: p.rest,
+      }));
 
       declaredType = {
         kind: "function",
         params: paramInfos,
-        returnType: returnTypeValue.value as Type,
+        returnType: this.evaluateAsType(decl.init.returnType, this.comptimeEnv, this.typeEnv),
         async: decl.init.async,
       };
 
@@ -352,15 +315,7 @@ class TypeChecker {
         if (child.type) {
           // Has type annotation — evaluate it and pre-register
           this.evaluator.reset();
-          const typeValue = this.evaluator.evaluate(child.type, this.comptimeEnv, this.typeEnv);
-          if (!isTypeValue(typeValue)) {
-            throw new CompileError(
-              `Type annotation must evaluate to a Type`,
-              "typecheck",
-              child.type.loc
-            );
-          }
-          const declaredType = typeValue.value as Type;
+          const declaredType = this.evaluateAsType(child.type, this.comptimeEnv, this.typeEnv);
           this.typeEnv.define(child.name, {
             type: declaredType,
             comptimeStatus: "runtime",
@@ -375,35 +330,20 @@ class TypeChecker {
           !child.init.params.some(p => this.isTypeParam(p))
         ) {
           // Fully-typed lambda — compute function type from signature
+          // Use tryEvaluateAsType for best-effort: if a param type fails, use Unknown
+          // rather than failing the entire declaration (important for .d.ts letrecs
+          // where some types may not be resolvable)
           this.evaluator.reset();
-          const paramInfos: ParamInfo[] = child.init.params.map(p => {
-            const tv = this.evaluator.evaluate(p.type!, this.comptimeEnv, this.typeEnv);
-            if (!isTypeValue(tv)) {
-              throw new CompileError(
-                `Parameter type must evaluate to a Type`,
-                "typecheck",
-                p.type!.loc
-              );
-            }
-            return {
-              name: p.name,
-              type: tv.value as Type,
-              optional: !!p.defaultValue,
-              rest: p.rest,
-            };
-          });
-          const rtv = this.evaluator.evaluate(child.init.returnType, this.comptimeEnv, this.typeEnv);
-          if (!isTypeValue(rtv)) {
-            throw new CompileError(
-              `Return type must evaluate to a Type`,
-              "typecheck",
-              child.init.returnType.loc
-            );
-          }
+          const paramInfos: ParamInfo[] = child.init.params.map(p => ({
+            name: p.name,
+            type: this.tryEvaluateAsType(p.type!, this.comptimeEnv, this.typeEnv),
+            optional: !!p.defaultValue,
+            rest: p.rest,
+          }));
           const fnType: Type = {
             kind: "function",
             params: paramInfos,
-            returnType: rtv.value as Type,
+            returnType: this.tryEvaluateAsType(child.init.returnType, this.comptimeEnv, this.typeEnv),
             async: child.init.async,
           };
           this.typeEnv.define(child.name, {
@@ -425,10 +365,12 @@ class TypeChecker {
           this.comptimeEnv.defineUnevaluated(child.name, child.init, this.typeEnv);
           preRegistered.add(child.name);
         }
-      } catch {
+      } catch (e) {
         // Phase 1 pre-registration can fail if type evaluation references
         // names not yet available (e.g., nested namespace types).
         // Fall through — the declaration will be processed in Phase 2 without pre-registration.
+        const msg = e instanceof CompileError ? e.message : String(e);
+        this.warnings.push(`letrec phase 1: skipping '${child.name}': ${msg}`);
       }
     }
 
@@ -494,18 +436,23 @@ class TypeChecker {
             declType: declaredType,
             comptimeOnly: comptimeStatus === "comptimeOnly",
           });
-        } catch {
+        } catch (e) {
           // Phase 2 failure for pre-registered const: keep the Phase 1 type binding
           // but mark as unavailable in comptime env. The type is still usable.
           this.comptimeEnv.defineUnavailable(child.name);
+          const msg = e instanceof CompileError ? e.message : String(e);
+          this.warnings.push(`letrec phase 2: failed to check '${child.name}': ${msg}`);
         }
       } else {
         try {
           // Not pre-registered — process normally
           typedChildren.push(this.checkDecl(child));
-        } catch {
-          // Silently skip declarations that fail to type-check.
+        } catch (e) {
+          // Skip declarations that fail to type-check.
           // This handles unsupported TypeScript features (e.g., complex infer patterns).
+          const name = child.kind === "const" ? child.name : child.kind;
+          const msg = e instanceof CompileError ? e.message : String(e);
+          this.warnings.push(`letrec phase 2: skipping '${name}': ${msg}`);
         }
       }
     }
@@ -550,6 +497,11 @@ class TypeChecker {
     this.comptimeEnv = childComptimeEnv;
     // Set module directory for resolving relative imports within this .d.ts file
     this.currentModuleDir = path.dirname(resolved.dtsPath);
+
+    // Pre-populate with TypeScript global type stubs (Iterable, ReadonlyArray, etc.)
+    // These are approximate mappings that prevent cascading failures when .d.ts files
+    // reference standard TS library types that don't exist in DepJS.
+    defineTypeScriptGlobalStubs(childComptimeEnv, childTypeEnv);
 
     try {
       // Separate imports from non-imports.
@@ -1266,7 +1218,8 @@ class TypeChecker {
         const result = this.evaluator.evaluate(expr, this.comptimeEnv, this.typeEnv);
         comptimeValue = result.value;
       } catch {
-        // If evaluation fails, that's OK - we just won't have a comptimeValue
+        // Opportunistic comptime eval for branch elimination — expected to fail
+        // when type params or runtime values are involved. Not a warning.
       }
     }
 
@@ -2021,20 +1974,8 @@ class TypeChecker {
       let paramType: Type;
 
       if (param.type) {
-        // Explicit type annotation - evaluate it (using child env which has type params)
-        const typeValue = this.evaluator.evaluate(
-          param.type,
-          childComptimeEnv,
-          childTypeEnv
-        );
-        if (!isTypeValue(typeValue)) {
-          throw new CompileError(
-            `Parameter type must be a Type`,
-            "typecheck",
-            param.type.loc
-          );
-        }
-        paramType = typeValue.value as Type;
+        // Explicit type annotation - evaluate it (auto-invokes generic types with all defaults)
+        paramType = this.evaluateAsType(param.type, childComptimeEnv, childTypeEnv);
       } else if (contextParams && i < contextParams.length) {
         // Infer from context
         paramType = contextParams[i].type;
@@ -2103,19 +2044,7 @@ class TypeChecker {
       // Check return type annotation if present
       // Use child environments since return type may reference type params
       if (expr.returnType) {
-        const typeValue = this.evaluator.evaluate(
-          expr.returnType,
-          childComptimeEnv,
-          childTypeEnv
-        );
-        if (!isTypeValue(typeValue)) {
-          throw new CompileError(
-            `Return type must be a Type`,
-            "typecheck",
-            expr.returnType.loc
-          );
-        }
-        returnType = typeValue.value as Type;
+        returnType = this.evaluateAsType(expr.returnType, childComptimeEnv, childTypeEnv);
       }
 
       // Check body
@@ -2146,6 +2075,56 @@ class TypeChecker {
       type: fnType,
       comptimeOnly: false, // Lambdas themselves aren't comptimeOnly
     };
+  }
+
+  /**
+   * Evaluate an expression as a Type. If the result is a closure with all-default params
+   * (i.e., a generic type used without args like `React.ElementType`), auto-invoke it.
+   */
+  private evaluateAsType(
+    expr: CoreExpr,
+    comptimeEnv: ComptimeEnv,
+    typeEnv: TypeEnv
+  ): Type {
+    const value = this.evaluator.evaluate(expr, comptimeEnv, typeEnv);
+    if (isTypeValue(value)) return value.value as Type;
+
+    // Auto-invoke: generic type used without args → call with defaults
+    if (isClosureValue(value.value)) {
+      const closure = value.value;
+      if (closure.params.length > 0 && closure.params.every(p => p.defaultValue)) {
+        const result = this.evaluator.evaluate(
+          { kind: "call", fn: expr, args: [], loc: expr.loc },
+          comptimeEnv, typeEnv
+        );
+        if (isTypeValue(result)) return result.value as Type;
+      }
+    }
+
+    throw new CompileError(
+      `Type annotation must evaluate to a Type, got ${typeof value.value}`,
+      "typecheck",
+      expr.loc
+    );
+  }
+
+  /**
+   * Like evaluateAsType but returns Unknown on failure instead of throwing.
+   * Used in letrec Phase 1 where we want best-effort type registration.
+   * Collects a warning when falling back to Unknown.
+   */
+  private tryEvaluateAsType(
+    expr: CoreExpr,
+    comptimeEnv: ComptimeEnv,
+    typeEnv: TypeEnv
+  ): Type {
+    try {
+      return this.evaluateAsType(expr, comptimeEnv, typeEnv);
+    } catch (e) {
+      const msg = e instanceof CompileError ? e.message : String(e);
+      this.warnings.push(`type annotation fallback to Unknown: ${msg}`);
+      return primitiveType("Unknown");
+    }
   }
 
   /**

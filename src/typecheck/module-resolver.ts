@@ -116,13 +116,26 @@ export class ModuleResolver {
     this.loading.add(dtsPath);
     try {
       const content = fs.readFileSync(dtsPath, "utf-8");
+
+      // Process /// <reference path="..." /> directives
+      const refDecls: CoreDecl[] = [];
+      const refRegex = /\/\/\/\s*<reference\s+path\s*=\s*"([^"]+)"\s*\/>/g;
+      let match;
+      while ((match = refRegex.exec(content)) !== null) {
+        const refPath = path.resolve(path.dirname(dtsPath), match[1]);
+        const refResult = this.loadDTSFile(refPath);
+        if (refResult) {
+          refDecls.push(...refResult.decls);
+        }
+      }
+
       const result = loadDTS(content, {
         filePath: dtsPath,
       });
 
       return {
         dtsPath,
-        decls: result.decls,
+        decls: [...refDecls, ...result.decls],
       };
     } catch (error) {
       // File read or parse error
